@@ -952,6 +952,7 @@ fn agent_named_targets_keep_user_project_and_cross_agent_directories() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .current_dir(project.path())
         .args(["agent", "install", "claude"])
         .assert()
@@ -959,6 +960,7 @@ fn agent_named_targets_keep_user_project_and_cross_agent_directories() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .current_dir(project.path())
         .args(["agent", "install", "codex", "--project"])
         .assert()
@@ -966,6 +968,7 @@ fn agent_named_targets_keep_user_project_and_cross_agent_directories() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .current_dir(project.path())
         .args(["agent", "install", "agents"])
         .assert()
@@ -1572,6 +1575,7 @@ fn bare_agent_install_never_creates_an_unselected_third_party_directory() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .args(["agent", "install"])
         .assert()
         .code(2)
@@ -1591,6 +1595,7 @@ fn bare_agent_install_refuses_to_guess_even_one_existing_agent_directory() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .args(["agent", "install"])
         .assert()
         .code(2)
@@ -1635,6 +1640,7 @@ fn agents_convention_is_project_scoped_without_project_flag() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .current_dir(project.path())
         .args(["agent", "install", "agents"])
         .assert()

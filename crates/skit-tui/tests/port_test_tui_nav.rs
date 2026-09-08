@@ -49,9 +49,9 @@ use skit_tui::{
     HitTarget, TuiSession, ViewGeometry, render_add, render_with_session,
 };
 use skit_ui::{
-    Action, AddAction, AddEffect, AddStage, AddWorkflowState, KnownEntryKind, LibraryState,
-    PreferencesAction, PreferencesControlId, ReviewDefaults, ReviewState, RunFormView, Screen,
-    SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
+    Action, AddAction, AddEffect, AddStage, AddWorkflowState, FormField, FormPurpose, FormView,
+    KnownEntryKind, LibraryState, PreferencesAction, PreferencesControlId, ReviewDefaults,
+    ReviewState, RunFormView, Screen, SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
 };
 
 // The oracle drives every form at size (130, 40); the render size is load-bearing for the footer
@@ -79,6 +79,10 @@ fn control_key(character: char) -> Event {
 
 fn left_click(column: u16, row: u16) -> Event {
     mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn left_release(column: u16, row: u16) -> Event {
+    mouse(MouseEventKind::Up(MouseButton::Left), column, row)
 }
 
 fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
@@ -126,6 +130,34 @@ fn drive(
     handling
 }
 
+fn drive_click(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    column: u16,
+    row: u16,
+) -> EventHandling {
+    assert_eq!(
+        drive(session, state, geometry, left_click(column, row)),
+        EventHandling::Consumed
+    );
+    drive(session, state, geometry, left_release(column, row))
+}
+
+fn add_click(
+    session: &mut AddScreenSession,
+    state: &AddWorkflowState,
+    geometry: &AddScreenGeometry,
+    column: u16,
+    row: u16,
+) -> Option<AddScreenEvent> {
+    assert_eq!(
+        session.handle_event(left_click(column, row), state, geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    session.handle_event(left_release(column, row), state, geometry)
+}
+
 /// Press one key through the root and apply its action.
 fn press(session: &mut TuiSession, state: &mut LibraryState, code: KeyCode) {
     let (_, geometry) = draw(session, state);
@@ -142,7 +174,7 @@ fn click_chip(session: &mut TuiSession, state: &mut LibraryState, command: UiCom
         .find(|hit| hit.action == HitTarget::Command(command))
         .unwrap_or_else(|| panic!("no footer chip fires {command:?}"))
         .rect;
-    drive(session, state, &geometry, left_click(rect.x, rect.y));
+    let _ = drive_click(session, state, &geometry, rect.x, rect.y);
 }
 
 // --- run-form fixture: the oracle's two-const-str entry ---
@@ -209,6 +241,13 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
         "the first field must be a typeable input"
     );
 
+    // The backward chip must use the widget's wrapped focus ring. A generic reducer
+    // `FocusPrevious` action only clamps at field zero and is not the keyboard endpoint.
+    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    assert_eq!(state.focused_form_field(), Some(2));
+    click_chip(&mut session, &mut state, UiCommand::FocusNext);
+    assert_eq!(state.focused_form_field(), Some(0));
+
     // ↓ moves on, ↑ comes back.
     press(&mut session, &mut state, KeyCode::Down);
     assert_eq!(state.focused_form_field(), Some(1));
@@ -226,6 +265,30 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
     assert_eq!(state.focused_form_field(), Some(1));
     let (_, geometry) = draw(&mut session, &state);
     drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(state.focused_form_field(), Some(0));
+}
+
+#[test]
+fn generic_form_footer_focus_uses_the_same_wrapped_ring_as_the_keyboard() {
+    let mut state = present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Fields".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![
+            FormField::text("one", "One", "1"),
+            FormField::text("two", "Two", "2"),
+            FormField::text("three", "Three", "3"),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    }));
+    let mut session = TuiSession::default();
+
+    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    assert_eq!(state.focused_form_field(), Some(2));
+    press(&mut session, &mut state, KeyCode::Tab);
     assert_eq!(state.focused_form_field(), Some(0));
 }
 
@@ -298,7 +361,13 @@ fn test_add_source_arrows_walk_path_template_name() {
         assert_eq!(session.focused(), Some(&ADD_PATH));
     }
     assert!(matches!(
-        session.handle_event(left_click(browse.area.x, browse.area.y), &state, &geometry),
+        add_click(
+            &mut session,
+            &state,
+            &geometry,
+            browse.area.x,
+            browse.area.y,
+        ),
         Some(AddScreenEvent::OpenPathPicker(_))
     ));
     assert_eq!(session.focused(), Some(&ADD_PATH));
@@ -317,7 +386,7 @@ fn test_add_source_arrows_walk_path_template_name() {
     let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_PATH));
 
-    // The forward footer hit ignores pointer motion/release and fires only on a real left down.
+    // The forward footer hit ignores pointer motion and a bare release. A primary click moves on.
     let next = geometry
         .hits
         .iter()
@@ -332,7 +401,7 @@ fn test_add_source_arrows_walk_path_template_name() {
         assert_eq!(session.focused(), Some(&ADD_PATH));
     }
     assert_eq!(
-        session.handle_event(left_click(next.area.x, next.area.y), &state, &geometry),
+        add_click(&mut session, &state, &geometry, next.area.x, next.area.y,),
         Some(AddScreenEvent::Changed)
     );
     let (buffer, geometry) = draw_add(&mut session, &state);
@@ -357,10 +426,12 @@ fn test_add_source_arrows_walk_path_template_name() {
         assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
     }
     assert_eq!(
-        session.handle_event(
-            left_click(previous.area.x, previous.area.y),
+        add_click(
+            &mut session,
             &state,
             &geometry,
+            previous.area.x,
+            previous.area.y,
         ),
         Some(AddScreenEvent::Changed)
     );
@@ -445,7 +516,7 @@ fn test_add_review_boots_on_name_and_arrows_move() {
     let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_NAME));
 
-    // The rendered forward hit ignores pointer motion/release and fires only on a real left down.
+    // The rendered forward hit ignores pointer motion and a bare release. A click moves on.
     let next = geometry
         .hits
         .iter()
@@ -460,7 +531,7 @@ fn test_add_review_boots_on_name_and_arrows_move() {
         assert_eq!(session.focused(), Some(&RV_NAME));
     }
     assert_eq!(
-        session.handle_event(left_click(next.area.x, next.area.y), &state, &geometry),
+        add_click(&mut session, &state, &geometry, next.area.x, next.area.y,),
         Some(AddScreenEvent::Changed)
     );
     let (buffer, geometry) = draw_add(&mut session, &state);
@@ -485,10 +556,12 @@ fn test_add_review_boots_on_name_and_arrows_move() {
         assert_eq!(session.focused(), Some(&RV_DESC));
     }
     assert_eq!(
-        session.handle_event(
-            left_click(previous.area.x, previous.area.y),
+        add_click(
+            &mut session,
             &state,
             &geometry,
+            previous.area.x,
+            previous.area.y,
         ),
         Some(AddScreenEvent::Changed)
     );
@@ -559,10 +632,12 @@ fn add_kind_and_open_select_keep_their_arrow_ownership() {
         .find(|hit| hit.target == AddControlId::Storage)
         .expect("the non-fresh review renders its storage select");
     assert_eq!(
-        select_session.handle_event(
-            left_click(storage.area.x, storage.area.y),
+        add_click(
+            &mut select_session,
             &review,
             &geometry,
+            storage.area.x,
+            storage.area.y,
         ),
         Some(AddScreenEvent::Changed)
     );
@@ -625,13 +700,14 @@ fn test_prefs_boots_on_language_and_arrows_move() {
     let mut session = TuiSession::default();
     let (screen, geometry) = draw(&mut session, &state);
     assert_eq!(prefs_focus(&state), PreferencesControlId::Language); // the language dropdown
+    assert!(screen.contains("Tab"), "missing Tab navigation:\n{screen}");
     assert!(
-        screen.contains("Tab/↓"),
-        "missing forward navigation chip:\n{screen}"
+        screen.contains("Shift+Tab"),
+        "missing Shift+Tab navigation:\n{screen}"
     );
     assert!(
-        screen.contains("Shift+Tab/↑"),
-        "missing backward navigation chip:\n{screen}"
+        !screen.contains("Tab/↓") && !screen.contains("Shift+Tab/↑"),
+        "the focused picker must own arrow keys:\n{screen}"
     );
     for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
         assert_eq!(
@@ -675,7 +751,7 @@ fn test_prefs_boots_on_language_and_arrows_move() {
     );
     assert_eq!(prefs_focus(&state), radio); // still the same widget…
 
-    // …and only a real left down on the typed footer hit moves to the next section.
+    // …and only a primary press and matching release moves to the next section.
     let (_, geometry) = draw(&mut session, &state);
     let next = geometry
         .hits
@@ -696,13 +772,10 @@ fn test_prefs_boots_on_language_and_arrows_move() {
         assert_eq!(prefs_focus(&state), radio);
     }
     assert_eq!(
-        drive(
-            &mut session,
-            &mut state,
-            &geometry,
-            left_click(next.x, next.y),
-        ),
-        EventHandling::Action(Action::FocusNext)
+        drive_click(&mut session, &mut state, &geometry, next.x, next.y,),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::AfterRun,
+        )))
     );
     assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
 
@@ -727,13 +800,8 @@ fn test_prefs_boots_on_language_and_arrows_move() {
         assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
     }
     assert_eq!(
-        drive(
-            &mut session,
-            &mut state,
-            &geometry,
-            left_click(previous.x, previous.y),
-        ),
-        EventHandling::Action(Action::FocusPrevious)
+        drive_click(&mut session, &mut state, &geometry, previous.x, previous.y,),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(radio)))
     );
     assert_eq!(prefs_focus(&state), radio);
 
@@ -863,7 +931,7 @@ fn test_settings_boots_on_name_and_arrows_move() {
         _ => unreachable!(),
     }
 
-    // The chips are the same actions. Hover and release are inert; Left Down activates each one.
+    // The chips are the same actions. Hover and a bare release are inert; a primary click acts.
     let (footer, geometry) = draw(&mut session, &state);
     assert!(footer.contains("Tab/↓"), "{footer}");
     assert!(footer.contains("Shift+Tab/↑"), "{footer}");
@@ -886,13 +954,8 @@ fn test_settings_boots_on_name_and_arrows_move() {
         assert_eq!(settings_focus(&state), "name");
     }
     assert_eq!(
-        drive(
-            &mut session,
-            &mut state,
-            &geometry,
-            left_click(next.x, next.y),
-        ),
-        EventHandling::Action(Action::FocusNext)
+        drive_click(&mut session, &mut state, &geometry, next.x, next.y,),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusNext))
     );
     assert_eq!(settings_focus(&state), second);
 
@@ -916,13 +979,8 @@ fn test_settings_boots_on_name_and_arrows_move() {
         assert_eq!(settings_focus(&state), second);
     }
     assert_eq!(
-        drive(
-            &mut session,
-            &mut state,
-            &geometry,
-            left_click(previous.x, previous.y),
-        ),
-        EventHandling::Action(Action::FocusPrevious)
+        drive_click(&mut session, &mut state, &geometry, previous.x, previous.y,),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusPrevious))
     );
     assert_eq!(settings_focus(&state), "name");
 

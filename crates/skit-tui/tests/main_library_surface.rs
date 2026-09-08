@@ -114,6 +114,21 @@ fn library_uses_main_kind_badges_localized_columns_and_reference_marker() {
             "Shell entry",
             Some("/tmp/linked.sh"),
         ),
+        entry("fish", "Fish entry", "fish", StorageMode::Copy, "", None),
+        entry("js", "JS entry", "js", StorageMode::Copy, "", None),
+        entry("ts", "TS entry", "ts", StorageMode::Copy, "", None),
+        entry(
+            "powershell",
+            "PowerShell entry",
+            "powershell",
+            StorageMode::Copy,
+            "",
+            None,
+        ),
+        entry("ruby", "Ruby entry", "ruby", StorageMode::Copy, "", None),
+        entry("perl", "Perl entry", "perl", StorageMode::Copy, "", None),
+        entry("lua", "Lua entry", "lua", StorageMode::Copy, "", None),
+        entry("r", "R entry", "r", StorageMode::Copy, "", None),
         entry(
             "command",
             "Command entry",
@@ -128,6 +143,14 @@ fn library_uses_main_kind_badges_localized_columns_and_reference_marker() {
             "exe",
             StorageMode::Copy,
             "Program entry",
+            None,
+        ),
+        entry(
+            "prompt",
+            "Prompt entry",
+            "prompt",
+            StorageMode::Copy,
+            "Prompt entry",
             None,
         ),
         entry(
@@ -146,9 +169,18 @@ fn library_uses_main_kind_badges_localized_columns_and_reference_marker() {
     assert!(text.contains("Kind"), "{text}");
     assert!(text.contains("⬡ Python"), "{text}");
     assert!(text.contains("# Shell ↗"), "{text}");
+    assert!(text.contains("∿ fish"), "{text}");
+    assert!(text.contains("✦ JavaScript"), "{text}");
+    assert!(text.contains("✧ TypeScript"), "{text}");
+    assert!(text.contains("» PowerShell"), "{text}");
+    assert!(text.contains("◆ Ruby"), "{text}");
+    assert!(text.contains("◈ Perl"), "{text}");
+    assert!(text.contains("○ Lua"), "{text}");
+    assert!(text.contains("◇ R"), "{text}");
     assert!(text.contains("$ Command"), "{text}");
     assert!(!text.contains("$ Command ↗"), "{text}");
     assert!(text.contains("▶ Program"), "{text}");
+    assert!(text.contains("✎ Prompt"), "{text}");
     assert!(text.contains("? future-kind"), "{text}");
     assert!(!text.contains("? future-kind ↗"), "{text}");
 
@@ -531,15 +563,38 @@ fn library_detail_uses_mature_keyboard_and_mouse_scrolling_after_pointer_focus()
     );
     assert_eq!(
         session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 75,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "the detail pane must take focus only after a matching release"
+    );
+    assert_eq!(
+        session.handle_event(
             Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
             &view,
             &geometry,
         ),
         EventHandling::Consumed
     );
-    let (at_bottom, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    let (at_bottom, _geometry) = draw_with_session(&view, &mut session, 100, 18);
     let at_bottom_text = lines(at_bottom.backend().buffer()).join("\n");
     assert!(at_bottom_text.contains("Not run yet"), "{at_bottom_text}");
+
+    let (_, hidden) = draw_with_session(&view, &mut session, 1, 12);
+    assert!(!hidden.detail_pane_visible);
+    let (restored, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    let restored_text = lines(restored.backend().buffer()).join("\n");
+    assert!(
+        restored_text.contains("Not run yet"),
+        "a zero-width detail pane reset its preserved scroll position: {restored_text}"
+    );
 
     assert_eq!(
         session.handle_event(
@@ -586,10 +641,23 @@ fn library_detail_uses_mature_keyboard_and_mouse_scrolling_after_pointer_focus()
             EventHandling::Ignored
         );
     }
-    assert!(matches!(
+    assert_eq!(
         session.handle_event(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert!(matches!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
                 column: 2,
                 row: 7,
                 modifiers: KeyModifiers::NONE,
@@ -612,6 +680,334 @@ fn library_detail_uses_mature_keyboard_and_mouse_scrolling_after_pointer_focus()
         ),
         EventHandling::Action(Action::Next)
     ));
+    assert_eq!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 2,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Previous)
+    );
+}
+
+#[test]
+fn selecting_another_entry_resets_the_detail_viewport_to_its_top() {
+    let alpha = entry(
+        "alpha",
+        "Alpha",
+        "python",
+        StorageMode::Copy,
+        &format!("ALPHA_TOP {}", "alpha words ".repeat(80)),
+        None,
+    );
+    let beta = entry(
+        "beta",
+        "Beta",
+        "python",
+        StorageMode::Copy,
+        &format!("BETA_TOP {}", "beta words ".repeat(80)),
+        None,
+    );
+    let mut view = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![alpha.clone(), beta.clone()],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::from([
+            (alpha.slug, LibraryEntryDetail::default()),
+            (beta.slug, LibraryEntryDetail::default()),
+        ]),
+    );
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: 75,
+                    row: 7,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+    }
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (bottom, _) = draw_with_session(&view, &mut session, 100, 18);
+    assert!(
+        lines(bottom.backend().buffer())
+            .join("\n")
+            .contains("Not run yet")
+    );
+
+    view.update(Action::Next);
+    assert_eq!(
+        view.selected().map(|entry| entry.name.as_str()),
+        Some("Beta")
+    );
+    let (selected, _) = draw_with_session(&view, &mut session, 100, 18);
+    let selected_text = lines(selected.backend().buffer()).join("\n");
+    assert!(
+        selected_text.contains("BETA_TOP"),
+        "a new detail kept the previous entry's bottom offset: {selected_text}"
+    );
+    assert!(
+        !selected_text.contains("Not run yet"),
+        "a new detail did not return to its first viewport: {selected_text}"
+    );
+}
+
+#[test]
+fn library_detail_focus_requires_a_matching_primary_release() {
+    let view = state(vec![
+        entry(
+            "alpha",
+            "Alpha",
+            "python",
+            StorageMode::Copy,
+            "Alpha detail",
+            None,
+        ),
+        entry(
+            "beta",
+            "Beta",
+            "python",
+            StorageMode::Copy,
+            "Beta detail",
+            None,
+        ),
+    ]);
+    let detail = (75, 7);
+
+    for (release, label) in [
+        ((2, 7), "the Library list"),
+        ((0, 0), "outside the Library body"),
+    ] {
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+        assert!(geometry.detail_pane_visible);
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: detail.0,
+                    row: detail.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: release.0,
+                    row: release.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "release over {label} activated detail focus"
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Action(Action::Next),
+            "a cancelled detail click stole Library-list keyboard focus"
+        );
+    }
+
+    for button in [MouseButton::Right, MouseButton::Middle] {
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: detail.0,
+                    row: detail.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(button),
+                    column: detail.0,
+                    row: detail.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: detail.0,
+                    row: detail.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "{button:?} did not cancel the armed detail focus"
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Action(Action::Next)
+        );
+    }
+
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    assert_eq!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: detail.0,
+                row: detail.1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: detail.0,
+                row: detail.1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Action(Action::OpenRun),
+        "the focused detail viewport must leave Enter for Library activation"
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "an unrelated key must pass through the focused detail viewport"
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "a same-target detail click did not transfer keyboard focus"
+    );
+}
+
+#[test]
+fn hidden_library_detail_releases_keyboard_focus_after_resize() {
+    let mut view = state(vec![
+        entry("alpha", "Alpha", "python", StorageMode::Copy, "Alpha", None),
+        entry("beta", "Beta", "python", StorageMode::Copy, "Beta", None),
+    ]);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    assert!(geometry.detail_pane_visible);
+    assert_eq!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 75,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 75,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "the fixture must focus the visible detail before it hides"
+    );
+
+    let (_, hidden) = draw_with_session(&view, &mut session, 46, 12);
+    assert!(!hidden.detail_pane_visible);
+    let handling = session.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        &view,
+        &hidden,
+    );
+    assert_eq!(
+        handling,
+        EventHandling::Action(Action::Next),
+        "a hidden detail pane must not consume Library navigation"
+    );
+    if let EventHandling::Action(action) = handling {
+        view.update(action);
+    }
+    assert_eq!(
+        view.selected().map(|entry| entry.name.as_str()),
+        Some("Beta")
+    );
 }
 
 #[test]
@@ -659,6 +1055,34 @@ fn library_detail_renders_overflow_parameters_and_every_last_run_age_and_exit_sh
     assert!(
         rendered.contains("Last run  3 h ago · ✗ failed (code None)"),
         "{rendered}"
+    );
+
+    let exact_parameters = (0..6)
+        .map(|index| LibraryParameterDetail {
+            key: format!("p{index}"),
+            value: index.to_string(),
+            secret: false,
+        })
+        .collect();
+    let exact = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![item.clone()],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::from([(
+            item.slug.clone(),
+            LibraryEntryDetail {
+                parameters: exact_parameters,
+                ..LibraryEntryDetail::default()
+            },
+        )]),
+    );
+    let exact_lines = lines(draw(&exact, 220, 40, Locale::En).backend().buffer());
+    let (_, parameter_line) = line_with(&exact_lines, "Parameters");
+    assert!(parameter_line.contains("p5=5"), "{parameter_line}");
+    assert!(
+        !parameter_line.contains('…'),
+        "exactly six parameters advertised hidden content: {parameter_line}"
     );
 
     for (age, expected) in [

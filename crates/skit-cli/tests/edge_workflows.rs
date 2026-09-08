@@ -35,6 +35,9 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en")
             .env("HOME", self.home.path())
+            .env("USERPROFILE", self.home.path())
+            .env_remove("HOMEDRIVE")
+            .env_remove("HOMEPATH")
             .env_remove("PSModulePath")
             .current_dir(self.home.path());
         command

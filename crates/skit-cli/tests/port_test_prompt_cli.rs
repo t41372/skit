@@ -3552,3 +3552,44 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
         "{combined}"
     );
 }
+
+#[test]
+fn test_params_while_insertion_is_off_keeps_the_managed_schema() {
+    // The oracle writes no parameters while a prompt's insertion is off
+    // (`src/skit/tui_settings.py:952-954`, `src/skit/cli.py:4229-4246`), so an unrelated params
+    // op cannot erase the managed list. Turning insertion on again shows the same fields.
+    for later in [
+        ["params", "p", "--workdir", "store"],
+        ["params", "p", "--runner", ""],
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.added("Do {{a}}\n", "p");
+        sandbox.ok(&["params", "p", "--prompt", "a=Ask a"]);
+        let declared = sandbox.meta("p");
+        assert!(declared.contains("params = [\"a\"]"), "{declared}");
+        assert!(declared.contains("[[parameters]]"), "{declared}");
+
+        sandbox.ok(&["params", "p", "--no-interpolate"]);
+        let off = sandbox.meta("p");
+        assert!(off.contains("params = [\"a\"]"), "{off}");
+        assert!(off.contains("[[parameters]]"), "{off}");
+
+        sandbox.ok(&later);
+        let unrelated = sandbox.meta("p");
+        assert!(unrelated.contains("params = [\"a\"]"), "{unrelated}");
+        assert!(unrelated.contains("[[parameters]]"), "{unrelated}");
+
+        sandbox.ok(&["params", "p", "--interpolate"]);
+        let on = sandbox.meta("p");
+        assert!(on.contains("params = [\"a\"]"), "{on}");
+        assert!(on.contains("[[parameters]]"), "{on}");
+        assert_eq!(
+            sandbox.json(&["show", "p", "--json"])["fields"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "{on}"
+        );
+    }
+}

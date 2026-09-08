@@ -78,7 +78,7 @@ impl Localize for ShellSyntaxError {
 ///
 /// A missing interpreter is owned by launch preflight. Spawn, capture, wait, and timeout failures
 /// are non-fatal because the mandatory parser-backed gate has already accepted the rewritten text.
-pub fn check_shell_syntax<R: InjectedCommandRunner>(
+pub fn check_shell_syntax<R: InjectedCommandRunner + ?Sized>(
     interpreter: Option<&ResolvedShellInterpreter>,
     source: &Path,
     runner: &R,
@@ -106,7 +106,7 @@ pub fn check_shell_syntax<R: InjectedCommandRunner>(
 }
 
 /// Keep an owned staged shell source only when the optional interpreter gate accepts it.
-pub fn retain_shell_source_if_valid<T, R: InjectedCommandRunner>(
+pub fn retain_shell_source_if_valid<T, R: InjectedCommandRunner + ?Sized>(
     source: T,
     interpreter: Option<&ResolvedShellInterpreter>,
     path: &Path,

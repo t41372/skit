@@ -164,6 +164,29 @@ pub(crate) fn atomic_write_bytes_with<E>(
     )
 }
 
+pub(crate) fn atomic_write_bytes_with_before_replace<E>(
+    path: &Path,
+    bytes: &[u8],
+    map_error: impl Fn(&'static str, &Path, io::Error) -> E,
+    sync_file: impl FnOnce(&File) -> io::Result<()>,
+    mut before_replace: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<(), E> {
+    atomic_write_bytes_with_ops(
+        path,
+        bytes,
+        map_error,
+        |path| fs::metadata(path).map(|metadata| metadata.permissions()),
+        File::set_permissions,
+        sync_file,
+        |source, destination| {
+            before_replace(destination)?;
+            atomicwrites::replace_atomic(source, destination)
+        },
+        std::thread::sleep,
+        sync_directory,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn atomic_write_bytes_with_ops<E>(
     path: &Path,

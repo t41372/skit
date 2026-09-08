@@ -1224,6 +1224,8 @@ pub enum DraftKind {
 pub enum AddAction {
     /// Replace the source path field.
     SetSourcePath(String),
+    /// Replace the source path with a value accepted by a file picker.
+    PickedSourcePath(String),
     /// Replace the command template field.
     SetCommandTemplate(String),
     /// Replace the command name field.
@@ -1487,7 +1489,7 @@ impl AddWorkflowState {
     pub fn reduce(&mut self, action: AddAction) -> Vec<AddEffect> {
         self.notice = None;
         match action {
-            AddAction::SetSourcePath(value) => {
+            AddAction::SetSourcePath(value) | AddAction::PickedSourcePath(value) => {
                 self.source.path = value;
                 self.pending_inspection = None;
                 self.problem = None;
@@ -1930,6 +1932,42 @@ mod tests {
             request,
             result: Ok(snapshot),
         });
+    }
+
+    #[test]
+    fn picked_and_manual_source_paths_share_reducer_state_but_keep_distinct_wire_tags() {
+        let mut pending = AddWorkflowState::new(Vec::new());
+        let _ = pending.reduce(AddAction::SetSourcePath("before.py".to_owned()));
+        let inspect = pending.reduce(AddAction::Continue);
+        let request = inspect_effect(&inspect[0]).unwrap().0;
+        let mut failed = pending.clone();
+        let _ = failed.reduce(AddAction::SourceInspected {
+            request,
+            result: Err("read failed".to_owned()),
+        });
+        assert!(pending.pending_inspection.is_some());
+        assert!(failed.problem().is_some());
+
+        for initial in [pending, failed] {
+            let mut manual = initial.clone();
+            let mut picked = initial;
+            let manual_effects = manual.reduce(AddAction::SetSourcePath("picked.py".to_owned()));
+            let picked_effects = picked.reduce(AddAction::PickedSourcePath("picked.py".to_owned()));
+
+            assert_eq!(picked_effects, manual_effects);
+            assert_eq!(picked, manual);
+            assert!(picked.pending_inspection.is_none());
+            assert!(picked.problem().is_none());
+        }
+
+        assert_eq!(
+            serde_json::to_vec(&AddAction::SetSourcePath("picked.py".to_owned())).unwrap(),
+            br#"{"set_source_path":"picked.py"}"#
+        );
+        assert_eq!(
+            serde_json::to_vec(&AddAction::PickedSourcePath("picked.py".to_owned())).unwrap(),
+            br#"{"picked_source_path":"picked.py"}"#
+        );
     }
 
     #[test]

@@ -260,17 +260,74 @@ pub fn managed_uv_path(data_dir: &Path) -> PathBuf {
         .join(if cfg!(windows) { "uv.exe" } else { "uv" })
 }
 
+/// Fetch one selected uv release archive.
+pub trait UvArchiveFetcher: std::fmt::Debug {
+    /// Return at most `limit` bytes from one URL.
+    fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, UvArchiveFetchError>;
+}
+
+/// Report one raw archive transport failure.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("{reason}")]
+pub struct UvArchiveFetchError {
+    reason: String,
+}
+
+impl UvArchiveFetchError {
+    /// Create a transport error from adapter detail.
+    #[must_use]
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Fetch uv archives from the configured release URL.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemUvArchiveFetcher;
+
+impl UvArchiveFetcher for SystemUvArchiveFetcher {
+    fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, UvArchiveFetchError> {
+        download_archive_from_url(url, limit)
+    }
+}
+
 /// Download and install uv below the skit data directory.
 pub fn ensure_managed_uv(
     data_dir: &Path,
     mirror_base: Option<&str>,
+) -> Result<PathBuf, UvBootstrapError> {
+    ensure_managed_uv_with_fetcher(data_dir, mirror_base, &SystemUvArchiveFetcher)
+}
+
+/// Install uv with an explicit low-level archive fetcher.
+pub fn ensure_managed_uv_with_fetcher(
+    data_dir: &Path,
+    mirror_base: Option<&str>,
+    fetcher: &(impl UvArchiveFetcher + ?Sized),
 ) -> Result<PathBuf, UvBootstrapError> {
     let destination = managed_uv_path(data_dir);
     if destination.is_file() {
         return Ok(destination);
     }
     let asset = uv_asset(&UvTarget::current()?, mirror_base)?;
-    ensure_managed_uv_from_asset(data_dir, &asset, download_archive)
+    ensure_managed_uv_from_asset_with_fetcher(data_dir, &asset, fetcher)
+}
+
+fn ensure_managed_uv_from_asset_with_fetcher(
+    data_dir: &Path,
+    asset: &UvAsset,
+    fetcher: &(impl UvArchiveFetcher + ?Sized),
+) -> Result<PathBuf, UvBootstrapError> {
+    ensure_managed_uv_from_asset(data_dir, asset, |asset| {
+        fetcher
+            .fetch(&asset.url, MAX_ARCHIVE_BYTES)
+            .map_err(|error| UvBootstrapError::Download {
+                url: asset.url.clone(),
+                reason: error.to_string(),
+            })
+    })
 }
 
 fn ensure_managed_uv_from_asset<F>(
@@ -316,32 +373,21 @@ where
     install_verified_uv_archive_with_operations(&archive, asset, bin, operations)
 }
 
-fn download_archive(asset: &UvAsset) -> Result<Vec<u8>, UvBootstrapError> {
-    download_archive_with_limit(asset, MAX_ARCHIVE_BYTES)
-}
-
-fn download_archive_with_limit(asset: &UvAsset, limit: u64) -> Result<Vec<u8>, UvBootstrapError> {
+fn download_archive_from_url(url: &str, limit: u64) -> Result<Vec<u8>, UvArchiveFetchError> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .build();
     let agent: ureq::Agent = config.into();
-    let mut response =
-        agent
-            .get(&asset.url)
-            .call()
-            .map_err(|error| UvBootstrapError::Download {
-                url: asset.url.clone(),
-                reason: error.to_string(),
-            })?;
+    let mut response = agent
+        .get(url)
+        .call()
+        .map_err(|error| UvArchiveFetchError::new(error.to_string()))?;
     let archive = response
         .body_mut()
         .with_config()
         .limit(limit)
         .read_to_vec()
-        .map_err(|error| UvBootstrapError::Download {
-            url: asset.url.clone(),
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| UvArchiveFetchError::new(error.to_string()))?;
     Ok(archive)
 }
 
@@ -547,6 +593,8 @@ const fn host_uses_musl() -> bool {
 
 #[cfg(test)]
 mod private_tests {
+    use std::cell::RefCell;
+
     use super::*;
     use flate2::{Compression, write::GzEncoder};
     use std::{net::TcpListener, thread};
@@ -673,6 +721,89 @@ mod private_tests {
         ));
         assert!(!destination.path().join(&asset.executable_name).exists());
         assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[derive(Debug, Default)]
+    struct RejectingArchiveFetcher(RefCell<Vec<(String, u64)>>);
+
+    impl UvArchiveFetcher for RejectingArchiveFetcher {
+        fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, UvArchiveFetchError> {
+            self.0.borrow_mut().push((url.to_owned(), limit));
+            Err(UvArchiveFetchError::new("network disabled by host"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct BytesArchiveFetcher(Vec<u8>);
+
+    impl UvArchiveFetcher for BytesArchiveFetcher {
+        fn fetch(&self, _url: &str, _limit: u64) -> Result<Vec<u8>, UvArchiveFetchError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Read the location and reason of one download failure. Another error returns nothing.
+    fn download_failure(error: UvBootstrapError) -> Option<(String, String)> {
+        match error {
+            UvBootstrapError::Download { url, reason } => Some((url, reason)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn injected_uv_fetcher_returns_a_typed_failure_without_a_partial_install() {
+        let root = TempDir::new().unwrap();
+        let fetcher = RejectingArchiveFetcher::default();
+
+        let error = ensure_managed_uv_with_fetcher(root.path(), None, &fetcher).unwrap_err();
+
+        let (url, reason) =
+            download_failure(error).expect("the core must classify the raw transport error");
+        assert!(
+            download_failure(UvBootstrapError::UnsupportedPlatform {
+                platform: "linux/ppc64".to_owned()
+            })
+            .is_none()
+        );
+        assert_eq!(reason, "network disabled by host");
+        assert_eq!(fetcher.0.borrow().len(), 1);
+        assert_eq!(url, fetcher.0.borrow()[0].0);
+        assert!(url.starts_with("https://"));
+        assert_eq!(fetcher.0.borrow()[0].1, MAX_ARCHIVE_BYTES);
+        assert!(!managed_uv_path(root.path()).exists());
+    }
+
+    #[test]
+    fn fetched_bytes_still_use_core_checksum_archive_and_cleanup_rules() {
+        let checksum_root = TempDir::new().unwrap();
+        let error = ensure_managed_uv_with_fetcher(
+            checksum_root.path(),
+            None,
+            &BytesArchiveFetcher(b"invalid release bytes".to_vec()),
+        )
+        .unwrap_err();
+        assert!(matches!(error, UvBootstrapError::Checksum { .. }));
+        assert!(!managed_uv_path(checksum_root.path()).exists());
+        assert_no_staged_file(
+            managed_uv_path(checksum_root.path()).parent().unwrap(),
+            host_executable_name(),
+        );
+
+        let archive_root = TempDir::new().unwrap();
+        let bytes = b"not a release archive".to_vec();
+        let asset = test_asset("https://example.invalid/uv.tar.gz".to_owned(), &bytes);
+        let error = ensure_managed_uv_from_asset_with_fetcher(
+            archive_root.path(),
+            &asset,
+            &BytesArchiveFetcher(bytes),
+        )
+        .unwrap_err();
+        assert!(matches!(error, UvBootstrapError::Archive { .. }));
+        assert!(!managed_uv_path(archive_root.path()).exists());
+        assert_no_staged_file(
+            managed_uv_path(archive_root.path()).parent().unwrap(),
+            host_executable_name(),
+        );
     }
 
     #[test]
@@ -1019,25 +1150,27 @@ mod private_tests {
     #[test]
     fn downloader_handles_success_size_limits_and_connection_failures() {
         let (url, server) = one_response(b"archive".to_vec());
-        let asset = test_asset(url, b"archive");
-        assert_eq!(download_archive(&asset).unwrap(), b"archive");
+        assert_eq!(
+            SystemUvArchiveFetcher
+                .fetch(&url, MAX_ARCHIVE_BYTES)
+                .unwrap(),
+            b"archive"
+        );
         server.join().unwrap();
 
         let (url, server) = one_response(vec![b'x'; 64]);
-        let asset = test_asset(url, &[b'x'; 64]);
         assert!(matches!(
-            download_archive_with_limit(&asset, 8),
-            Err(UvBootstrapError::Download { .. })
+            SystemUvArchiveFetcher.fetch(&url, 8),
+            Err(UvArchiveFetchError { .. })
         ));
         server.join().unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let asset = test_asset(format!("http://{address}/archive"), b"");
         assert!(matches!(
-            download_archive_with_limit(&asset, 8),
-            Err(UvBootstrapError::Download { .. })
+            SystemUvArchiveFetcher.fetch(&format!("http://{address}/archive"), 8),
+            Err(UvArchiveFetchError { .. })
         ));
     }
 

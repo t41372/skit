@@ -2,17 +2,22 @@
 
 #![forbid(unsafe_code)]
 
+mod agent_review;
 mod footer;
 mod layout;
+mod local_action;
+mod pointer;
 mod rowclip;
+mod screen_target;
 mod screens;
 mod session;
 mod terminal;
 mod theme;
+mod viewport;
 
 use ratatui_core::{layout::Rect, terminal::Frame};
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
@@ -20,6 +25,21 @@ use skit_ui::{
     UiBinding, UiCommand, UiKey, UiModifiers, command_specs,
 };
 
+#[doc(hidden)]
+pub use agent_review::{
+    AGENT_REVIEW_SNAPSHOT_VERSION, AgentReviewSnapshot, AgentReviewSnapshotError,
+    RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION,
+};
+use layout::{RootLayoutPlan, ViewportProfile};
+pub use local_action::{
+    LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
+    LocalKeyBinding,
+};
+use pointer::contains;
+#[doc(hidden)]
+pub use screen_target::{
+    ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit, ScreenTargetInventory,
+};
 pub use screens::add::{
     AddControlId, AddHitRegion, AddScreenEvent, AddScreenGeometry, AddScreenSession, AddTextField,
     render_add,
@@ -51,11 +71,31 @@ pub enum HitTarget {
     RunFieldCommand {
         /// Field index in the active typed launch form.
         field: usize,
-        /// Shared command identity rendered by the chip.
-        command: UiCommand,
+        /// Field-local command rendered by the chip.
+        command: RunFieldCommand,
     },
     /// Focus one form row.
     FocusField(usize),
+    /// Toggle one run-form checkbox.
+    ToggleField(usize),
+    /// Select one run-form radio option by its stable index.
+    SelectFieldOption {
+        /// Field index in the active typed launch form.
+        field: usize,
+        /// Option index in the field's rendered choice list.
+        option: usize,
+    },
+}
+
+/// One command that retains the active launch-field identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunFieldCommand {
+    /// Open the filesystem picker for the field.
+    BrowsePath,
+    /// Open the insertion menu for the field.
+    InsertValue,
+    /// Restore the field's declared default.
+    ResetDefault,
 }
 
 /// One clickable rectangular target.
@@ -101,21 +141,33 @@ pub fn render_with_session(
     locale: Locale,
     session: &mut TuiSession,
 ) -> ViewGeometry {
-    session.begin_render(state);
-    let header_height = header_height(state, frame.area().height);
-    let footer_height = footer::required_height(
-        frame.area().width,
-        frame.area().height,
-        header_height,
+    session.begin_screen_target_render();
+    session.begin_render(state, locale);
+    let profile = ViewportProfile::new(frame.area());
+    let footer_ownership = session.footer_input_ownership(state);
+    let footer_suppressed = session.shared_footer_suppressed(state);
+    let header = header_kind(state);
+    let minimum_body_height = minimum_body_height(state);
+    let body_floor = monotonic_body_floor(
+        frame.area(),
         state,
         locale,
+        profile,
+        minimum_body_height,
+        footer_ownership,
+        footer_suppressed,
     );
-    let areas = layout::split_with_header(frame.area(), footer_height, header_height);
+    let plan = root_layout_plan(
+        frame.area(),
+        state,
+        locale,
+        body_floor,
+        footer_ownership,
+        footer_suppressed,
+    );
+    let areas = plan.areas;
 
-    let header = header_kind(state);
-    if areas.header.height > 0
-        && let Some(kind) = header
-    {
+    if let Some(kind) = header {
         session.render_header(frame, areas.header, kind, locale);
     }
     let mut geometry = match state.modal() {
@@ -135,91 +187,161 @@ pub fn render_with_session(
             | ModalState::RunFilePicker { .. }),
         ) => session.render_run_modal(frame, areas.body, modal, locale),
         Some(ModalState::RunnerEditor { view, .. }) => {
-            let geometry = render_screen(frame, areas.body, state, locale, session);
+            let _ = render_screen(frame, areas.body, state, locale, session);
             session.render_runner_editor(frame, areas.body, view, locale);
-            geometry
+            // The modal owns input. Do not publish blocked hits from the screen below it.
+            ViewGeometry::default()
         }
         None => render_screen(frame, areas.body, state, locale, session),
     };
-    if areas.footer.height > 0 {
-        geometry
-            .hits
-            .extend(session.render_footer(frame, areas.footer, state, locale));
+    if areas.footer.height > 0 && !footer_suppressed {
+        geometry.hits.extend(session.render_footer(
+            frame,
+            areas.footer,
+            state,
+            locale,
+            plan.footer_decorated,
+        ));
     }
+    session.capture_local_actions(state);
     session.register_geometry(&geometry);
+    session.complete_screen_target_render(state);
     session.render_quit_toast(frame, locale);
     geometry
 }
 
 fn header_kind(state: &LibraryState) -> Option<HeaderKind<'_>> {
-    match state.modal() {
-        Some(ModalState::Help) => Some(HeaderKind::Help),
-        Some(ModalState::ConfirmRemove { .. }) => Some(HeaderKind::ConfirmRemove),
-        Some(ModalState::ConfirmDiscardChanges) => Some(HeaderKind::ConfirmDiscardChanges),
-        Some(ModalState::RunPresetName { .. }) => Some(HeaderKind::RunPresetName),
-        Some(ModalState::RunTokenMenu { .. }) => Some(HeaderKind::RunTokenMenu),
-        Some(ModalState::RunEnvironmentPicker { .. }) => Some(HeaderKind::RunEnvironmentPicker),
-        Some(ModalState::RunFilePicker { .. }) => Some(HeaderKind::RunFilePicker),
-        Some(ModalState::RunnerEditor { view, .. }) => Some(HeaderKind::RunnerEditor(view.mode())),
-        None => match state.screen() {
-            Screen::Library => Some(HeaderKind::Library {
-                query: state.query(),
-                search: state.input_mode() == InputMode::Search,
-            }),
-            Screen::Preferences(_) => Some(HeaderKind::Preferences),
-            Screen::Add(_) => Some(HeaderKind::Add),
-            Screen::Health(_) => Some(HeaderKind::Health),
-            Screen::Runners(_) => Some(HeaderKind::Runners),
-            Screen::Report(report) => Some(HeaderKind::Report(&report.title)),
-            Screen::Run(_) | Screen::Form(_) | Screen::Settings(_) => None,
-        },
+    if state.modal().is_some() {
+        return None;
+    }
+    match state.screen() {
+        Screen::Library => Some(HeaderKind::Library {
+            query: state.query(),
+            search: state.input_mode() == InputMode::Search,
+        }),
+        Screen::Report(report) => Some(HeaderKind::Report(&report.title)),
+        Screen::Preferences(_)
+        | Screen::Add(_)
+        | Screen::Health(_)
+        | Screen::Runners(_)
+        | Screen::Run(_)
+        | Screen::Form(_)
+        | Screen::Settings(_) => None,
     }
 }
 
-/// Return the rows the shared header takes on one screen.
-///
-/// A screen that titles its own panel gets the whole body (`src/skit/tui_form.py:606-611`,
-/// `src/skit/tui_settings.py:869-871`). Drawing the header above it prints the same title twice and
-/// spends three rows saying so — on entry settings that was three of the rows the parameter section
-/// needed to be on screen at all. Most modals keep the header. The compact environment picker owns
-/// its title and uses those rows for its input.
-fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
-    // The environment picker owns a titled panel. On short and tiny terminals,
-    // omit the duplicate global title so its bordered input and the global
-    // Cancel chip both fit. This matches the short-tier modal chrome budget.
-    if terminal_height < 16
-        && matches!(state.modal(), Some(ModalState::RunEnvironmentPicker { .. }))
-    {
-        return 0;
+fn preferred_header_height(header: Option<&HeaderKind<'_>>, profile: ViewportProfile) -> u16 {
+    match header {
+        Some(HeaderKind::Library { .. }) if profile.height() <= 16 => 1,
+        Some(_) => 3,
+        None => 0,
     }
-    if terminal_height <= 6
-        && matches!(
-            state.modal(),
-            Some(
-                ModalState::RunPresetName { .. }
-                    | ModalState::RunTokenMenu { .. }
-                    | ModalState::RunFilePicker { .. }
-            )
-        )
-    {
-        return 0;
+}
+
+fn minimum_body_height(state: &LibraryState) -> u16 {
+    if state.modal().is_some() {
+        return 3;
     }
-    if state.modal().is_none()
-        && matches!(
-            state.screen(),
-            Screen::Run(_) | Screen::Form(_) | Screen::Settings(_)
-        )
-    {
+    match state.screen() {
+        // The Library panel needs its border, column headings, and up to three primary rows.
+        Screen::Library => u16::try_from(state.visible_entry_count())
+            .unwrap_or(u16::MAX)
+            .clamp(1, 3)
+            .saturating_add(3),
+        // Keep the first three-row Preferences control inside its titled panel.
+        Screen::Preferences(_) => 5,
+        Screen::Run(_)
+        | Screen::Form(_)
+        | Screen::Settings(_)
+        | Screen::Add(_)
+        | Screen::Health(_)
+        | Screen::Runners(_)
+        | Screen::Report(_) => 3,
+    }
+}
+
+fn root_layout_plan(
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+    body_floor: u16,
+    footer_ownership: footer::FooterInputOwnership,
+    footer_suppressed: bool,
+) -> RootLayoutPlan {
+    let profile = ViewportProfile::new(area);
+    let header = header_kind(state);
+    let preferred_header = preferred_header_height(header.as_ref(), profile);
+    let preferred_footer = if footer_suppressed {
         0
-    } else if state.modal().is_none()
-        && matches!(state.screen(), Screen::Library)
-        && state.input_mode() == InputMode::Search
-        && layout::is_short(terminal_height)
-    {
+    } else {
+        footer::required_height(profile, state, locale, footer_ownership)
+    };
+    let minimum_footer = if footer_suppressed {
+        0
+    } else {
+        footer::minimum_height(profile, state, locale, footer_ownership)
+    };
+    let chrome_capacity = area.height.saturating_sub(body_floor.min(area.height));
+    let header_height = allocated_header_height(
+        preferred_header,
+        chrome_capacity,
+        minimum_footer.min(chrome_capacity),
+    );
+    RootLayoutPlan::new(
+        area,
+        header_height,
+        preferred_footer,
+        body_floor,
+        if footer_suppressed {
+            0
+        } else {
+            footer::decorated_minimum_height(profile, state, locale, footer_ownership)
+        },
+    )
+}
+
+const fn allocated_header_height(preferred: u16, chrome_capacity: u16, minimum_footer: u16) -> u16 {
+    if preferred == 0 {
+        return 0;
+    }
+    if preferred <= 1 {
+        if chrome_capacity >= preferred.saturating_add(minimum_footer) {
+            return preferred;
+        }
+        return 0;
+    }
+    let preferred_budget = preferred.saturating_add(minimum_footer);
+    if chrome_capacity >= preferred_budget {
+        preferred
+    } else if chrome_capacity >= 1_u16.saturating_add(minimum_footer) {
         1
     } else {
-        3
+        0
     }
+}
+
+fn monotonic_body_floor(
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+    profile: ViewportProfile,
+    minimum: u16,
+    footer_ownership: footer::FooterInputOwnership,
+    footer_suppressed: bool,
+) -> u16 {
+    let Some(previous_height) = profile.previous_tier_max_height() else {
+        return minimum;
+    };
+    let previous_area = Rect::new(area.x, area.y, area.width, previous_height);
+    let previous_plan = root_layout_plan(
+        previous_area,
+        state,
+        locale,
+        minimum,
+        footer_ownership,
+        footer_suppressed,
+    );
+    minimum.max(previous_plan.areas.body.height)
 }
 
 fn render_screen(
@@ -238,7 +360,7 @@ fn render_screen(
         Screen::Health(view) => session.render_health(frame, area, view, locale),
         Screen::Runners(view) => session.render_runners(frame, area, view, locale),
         Screen::Form(form) => session.render_form(frame, area, form, locale),
-        Screen::Report(report) => screens::report::render(frame, area, report, locale),
+        Screen::Report(report) => session.render_report(frame, area, report, locale),
     }
 }
 
@@ -312,7 +434,7 @@ fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Opti
         ) {
             return None;
         }
-        return Some(command_action(spec.command, geometry));
+        return Some(command_action(spec.command, context, geometry));
     }
     None
 }
@@ -365,33 +487,17 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
         CommandContext::LibraryBrowse | CommandContext::LibrarySearch
     );
     match mouse.kind {
-        MouseEventKind::ScrollUp if library_context => Some(Action::Previous),
-        MouseEventKind::ScrollDown if library_context => Some(Action::Next),
-        MouseEventKind::Down(MouseButton::Left) => {
-            if let Some(hit) = geometry
-                .hits
-                .iter()
-                .find(|hit| contains(hit.rect, mouse.column, mouse.row))
-            {
-                return Some(match hit.action {
-                    HitTarget::Command(command) => command_action(command, geometry),
-                    HitTarget::RunFieldCommand { field, command } => {
-                        run_field_command_action(field, command)
-                    }
-                    HitTarget::FocusField(index) => Action::FocusField(index),
-                });
-            }
-            library_context
-                .then_some(())
-                .filter(|()| contains(geometry.rows, mouse.column, mouse.row))
-                .map(|()| {
-                    Action::SelectVisible(
-                        geometry.first_visible + usize::from(mouse.row - geometry.rows.y),
-                    )
-                })
+        MouseEventKind::ScrollUp
+            if library_context && contains(geometry.rows, mouse.column, mouse.row) =>
+        {
+            Some(Action::Previous)
         }
-        MouseEventKind::Down(MouseButton::Right)
-        | MouseEventKind::Down(MouseButton::Middle)
+        MouseEventKind::ScrollDown
+            if library_context && contains(geometry.rows, mouse.column, mouse.row) =>
+        {
+            Some(Action::Next)
+        }
+        MouseEventKind::Down(_)
         | MouseEventKind::Up(_)
         | MouseEventKind::Drag(_)
         | MouseEventKind::Moved
@@ -402,36 +508,88 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
     }
 }
 
-pub(crate) fn command_action(command: UiCommand, geometry: &ViewGeometry) -> Action {
-    if matches!(command, UiCommand::ToggleDetail) {
-        Action::ToggleDetail {
-            currently_visible: geometry.detail_pane_visible,
+pub(crate) fn command_action(
+    command: UiCommand,
+    context: CommandContext,
+    geometry: &ViewGeometry,
+) -> Action {
+    match (context, command) {
+        (CommandContext::Settings, UiCommand::NewRunner) => {
+            Action::Settings(skit_ui::SettingsAction::NewRunner)
         }
-    } else {
-        command
-            .direct_action()
-            .expect("only detail commands need rendered state")
-    }
-}
-
-fn run_field_command_action(field: usize, command: UiCommand) -> Action {
-    match command {
-        UiCommand::BrowsePath => Action::OpenRunFilePicker(field),
-        UiCommand::InsertValue => Action::OpenRunTokenMenuFor(field),
-        UiCommand::ResetDefault => Action::ResetRunField(field),
+        (_, UiCommand::ToggleDetail) => Action::ToggleDetail {
+            currently_visible: geometry.detail_pane_visible,
+        },
         _ => command
             .direct_action()
-            .expect("detail commands are not run-field commands"),
+            .expect("only detail commands need rendered state"),
     }
 }
 
-fn contains(rect: Rect, column: u16, row: u16) -> bool {
-    column >= rect.x
-        && column < rect_right(rect)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
+const fn run_field_command_action(field: usize, command: RunFieldCommand) -> Action {
+    match command {
+        RunFieldCommand::BrowsePath => Action::OpenRunFilePicker(field),
+        RunFieldCommand::InsertValue => Action::OpenRunTokenMenuFor(field),
+        RunFieldCommand::ResetDefault => Action::ResetRunField(field),
+    }
 }
 
-const fn rect_right(rect: Rect) -> u16 {
-    rect.x.saturating_add(rect.width)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_allocation_keeps_only_complete_header_forms() {
+        assert_eq!(allocated_header_height(1, 2, 0), 1);
+        assert_eq!(allocated_header_height(1, 0, 0), 0);
+        assert_eq!(allocated_header_height(3, 1, 1), 0);
+        assert_eq!(allocated_header_height(3, 3, 2), 1);
+    }
+
+    #[test]
+    fn minimum_body_height_preserves_screen_and_modal_content() {
+        use skit_application::preferences::{
+            AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+            PreferencesDraft, PreferencesSnapshot,
+        };
+        use skit_ui::{FormPurpose, PreferencesView};
+
+        let library = LibraryState::default();
+        assert_eq!(minimum_body_height(&library), 4);
+
+        let mut modal = LibraryState::default();
+        modal.update(Action::OpenHelp);
+        assert_eq!(minimum_body_height(&modal), 3);
+
+        let preferences =
+            PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+                language: String::new(),
+                available_languages: vec!["en".into(), "zh-CN".into(), "zh-TW".into()],
+                effective_language: "en".into(),
+                editor: String::new(),
+                editor_fallback: Some("vi".into()),
+                form: InteractiveFormChoice::Tui,
+                after_run: AfterRunChoice::Exit,
+                javascript: JavascriptChoice::Automatic,
+                bash_path: None,
+                runner_names: Vec::new(),
+                mirror: MirrorConfiguration::default(),
+            }));
+        let mut preferences_state = LibraryState::default();
+        preferences_state.update(Action::Present(Screen::Preferences(Box::new(preferences))));
+        assert_eq!(minimum_body_height(&preferences_state), 5);
+
+        let mut form_state = LibraryState::default();
+        form_state.update(Action::Present(Screen::Form(FormView {
+            purpose: FormPurpose::Rename,
+            title: "Rename".into(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: Some("entry".into()),
+            fields: vec![FormField::text_raw("name", "Name", "Entry")],
+            focused: 0,
+            submit_label: "Save".into(),
+        })));
+        assert_eq!(minimum_body_height(&form_state), 3);
+    }
 }

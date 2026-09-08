@@ -131,7 +131,7 @@ fn python_can_use_a_verified_private_uv_path() {
         &Assembly::default(),
         None,
         None,
-        &probe,
+        &probe as &dyn ProgramProbe,
     )
     .unwrap();
 
@@ -151,7 +151,7 @@ fn python_preview_uses_the_configured_program_name_without_path_lookup() {
         None,
         None,
         None,
-        &probe,
+        &probe as &dyn ProgramProbe,
     )
     .unwrap();
 

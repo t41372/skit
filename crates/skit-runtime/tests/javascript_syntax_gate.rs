@@ -421,7 +421,7 @@ fn test_gate2_failure_removes_the_temp_copy() {
         staged,
         Some(&runtime(JavaScriptRuntimeKind::Node)),
         &path,
-        &gate,
+        &gate as &dyn JavaScriptSyntaxGateRunner,
     )
     .unwrap_err();
 

@@ -78,11 +78,38 @@ pub struct DependencyCommand {
 
 /// Start one package-manager command.
 pub trait DependencyCommandRunner: std::fmt::Debug {
-    /// Report that one installer process is about to start.
-    fn installation_started(&self, _installer: &str) {}
-
     /// Return the child's status and captured diagnostic stream.
     fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput>;
+}
+
+/// Low-level process adapter and one caller-owned progress callback.
+pub struct DependencyInstallServices<'a> {
+    runner: &'a dyn DependencyCommandRunner,
+    installation_started: &'a dyn Fn(&str),
+}
+
+impl std::fmt::Debug for DependencyInstallServices<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DependencyInstallServices")
+            .field("runner", &self.runner)
+            .field("installation_started", &"<callback>")
+            .finish()
+    }
+}
+
+impl<'a> DependencyInstallServices<'a> {
+    /// Combine a process adapter with a progress callback.
+    #[must_use]
+    pub const fn new(
+        runner: &'a dyn DependencyCommandRunner,
+        installation_started: &'a dyn Fn(&str),
+    ) -> Self {
+        Self {
+            runner,
+            installation_started,
+        }
+    }
 }
 
 /// Captured result of one package-manager process.
@@ -380,7 +407,7 @@ pub fn ensure_javascript_dependencies<P, R>(
     runner: &R,
 ) -> Result<(), DependencyError>
 where
-    P: ProgramProbe,
+    P: ProgramProbe + ?Sized,
     R: DependencyCommandRunner,
 {
     ensure_javascript_dependencies_with_environment(
@@ -403,7 +430,7 @@ pub fn ensure_javascript_dependencies_with_environment<P, R>(
     runner: &R,
 ) -> Result<(), DependencyError>
 where
-    P: ProgramProbe,
+    P: ProgramProbe + ?Sized,
     R: DependencyCommandRunner,
 {
     ensure_javascript_dependencies_for_module(
@@ -439,7 +466,7 @@ pub fn javascript_dependencies_need_install_for_module(
 }
 
 /// Check only the local package-manager requirement for a pending dependency install.
-pub fn preflight_javascript_dependencies<P: ProgramProbe>(
+pub fn preflight_javascript_dependencies<P: ProgramProbe + ?Sized>(
     entry_dir: &Path,
     runtime: &str,
     dependencies: &[String],
@@ -449,7 +476,7 @@ pub fn preflight_javascript_dependencies<P: ProgramProbe>(
 }
 
 /// Check a pending install while preserving an explicit source module type.
-pub fn preflight_javascript_dependencies_for_module<P: ProgramProbe>(
+pub fn preflight_javascript_dependencies_for_module<P: ProgramProbe + ?Sized>(
     entry_dir: &Path,
     runtime: &str,
     dependencies: &[String],
@@ -478,8 +505,32 @@ pub fn ensure_javascript_dependencies_for_module<P, R>(
     runner: &R,
 ) -> Result<(), DependencyError>
 where
-    P: ProgramProbe,
+    P: ProgramProbe + ?Sized,
     R: DependencyCommandRunner,
+{
+    ensure_javascript_dependencies_for_module_with_services(
+        entry_dir,
+        runtime,
+        dependencies,
+        module_type,
+        environment,
+        probe,
+        DependencyInstallServices::new(runner, &|_| {}),
+    )
+}
+
+/// Make a private dependency tree and report process progress to the caller.
+pub fn ensure_javascript_dependencies_for_module_with_services<P>(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+    environment: &BTreeMap<String, String>,
+    probe: &P,
+    services: DependencyInstallServices<'_>,
+) -> Result<(), DependencyError>
+where
+    P: ProgramProbe + ?Sized,
 {
     let _lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
@@ -502,14 +553,13 @@ where
     begin_dependency_backup(entry_dir)?;
     let install = (|| {
         atomic_write(&entry_dir.join("package.json"), state.manifest.as_bytes())?;
-        runner.installation_started(state.installer);
-        let output =
-            runner
-                .run(&command)
-                .map_err(|error| DependencyError::InstallerStartFailed {
-                    installer: state.installer.to_owned(),
-                    reason: error.to_string(),
-                })?;
+        (services.installation_started)(state.installer);
+        let output = services.runner.run(&command).map_err(|error| {
+            DependencyError::InstallerStartFailed {
+                installer: state.installer.to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
         if !output.success {
             return Err(DependencyError::InstallFailed {
                 installer: state.installer.to_owned(),
@@ -578,11 +628,19 @@ pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyE
 pub fn prepare_javascript_dependency_cleanup(
     entry_dir: &Path,
 ) -> Result<PreparedJavaScriptDependencyCleanup, DependencyError> {
+    prepare_javascript_dependency_cleanup_at(entry_dir, SystemTime::now())
+}
+
+/// Quarantine dependency artifacts and use an explicit instant for stale-source cleanup.
+pub fn prepare_javascript_dependency_cleanup_at(
+    entry_dir: &Path,
+    now: SystemTime,
+) -> Result<PreparedJavaScriptDependencyCleanup, DependencyError> {
     let lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
     recover_dependency_backup(entry_dir)?;
     remove_staging_leftovers(entry_dir)?;
-    sweep_stale_injected_sources(entry_dir);
+    sweep_stale_injected_sources_at(entry_dir, now);
     validate_dependency_item_shapes(entry_dir)?;
     let backup_started = dependency_items().any(|name| path_exists(&entry_dir.join(name)));
     if backup_started {
@@ -632,10 +690,11 @@ where
 ///
 /// This hygiene operation is best-effort. It never blocks a launch or dependency cleanup.
 pub fn sweep_stale_injected_sources(entry_dir: &Path) {
-    sweep_stale_injected_at(entry_dir, SystemTime::now());
+    sweep_stale_injected_sources_at(entry_dir, SystemTime::now());
 }
 
-fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
+/// Remove stale injected source copies relative to an explicit instant.
+pub fn sweep_stale_injected_sources_at(entry_dir: &Path, now: SystemTime) {
     sweep_stale_injected_before(entry_dir, now.checked_sub(STALE_INJECTED_AGE));
 }
 
@@ -723,7 +782,7 @@ fn dependency_lock(entry_dir: &Path) -> Result<DependencyLock, DependencyError> 
     Ok(DependencyLock { _file: file })
 }
 
-fn dependency_command<P: ProgramProbe>(
+fn dependency_command<P: ProgramProbe + ?Sized>(
     entry_dir: &Path,
     runtime: &str,
     environment: &BTreeMap<String, String>,
@@ -740,7 +799,7 @@ fn dependency_command<P: ProgramProbe>(
 }
 
 /// Resolve the package manager implied by a JavaScript runtime.
-pub fn resolve_javascript_dependency_installer<P: ProgramProbe>(
+pub fn resolve_javascript_dependency_installer<P: ProgramProbe + ?Sized>(
     runtime: &str,
     probe: &P,
 ) -> Result<PathBuf, DependencyError> {
@@ -2123,7 +2182,7 @@ mod transaction_tests {
         let fresh = write_at(".injected-fresh.js", now);
         let unrelated = write_at("keep.txt", old);
 
-        sweep_stale_injected_at(root.path(), now);
+        sweep_stale_injected_sources_at(root.path(), now);
 
         assert!(!stale.exists());
         assert!(edge.exists());
@@ -2147,7 +2206,7 @@ mod transaction_tests {
             .set_times(fs::FileTimes::new().set_modified(cutoff))
             .unwrap();
 
-        sweep_stale_injected_at(root.path(), now);
+        sweep_stale_injected_sources_at(root.path(), now);
 
         assert!(edge.exists());
     }
@@ -2196,12 +2255,12 @@ mod transaction_tests {
     fn injected_sweep_is_inert_before_the_cutoff_exists_and_when_the_directory_is_gone() {
         let missing = TempDir::new().unwrap().path().join("gone");
         sweep_stale_injected_before(&missing, None);
-        sweep_stale_injected_at(&missing, SystemTime::UNIX_EPOCH);
+        sweep_stale_injected_sources_at(&missing, SystemTime::UNIX_EPOCH);
 
         let root = TempDir::new().unwrap();
         let candidate = root.path().join(".injected-young.js");
         fs::write(&candidate, b"keep\n").unwrap();
-        sweep_stale_injected_at(root.path(), SystemTime::UNIX_EPOCH);
+        sweep_stale_injected_sources_at(root.path(), SystemTime::UNIX_EPOCH);
         assert_eq!(fs::read(candidate).unwrap(), b"keep\n");
     }
 
@@ -2499,5 +2558,37 @@ mod transaction_tests {
                 ..
             }
         ));
+    }
+
+    #[derive(Debug)]
+    struct RefusingRunner;
+
+    impl DependencyCommandRunner for RefusingRunner {
+        fn run(&self, _command: &DependencyCommand) -> io::Result<DependencyCommandOutput> {
+            Err(io::Error::other("this contract must not run a command"))
+        }
+    }
+
+    #[test]
+    fn the_install_services_name_the_runner_and_hide_the_progress_callback() {
+        let runner = RefusingRunner;
+        let started = |_: &str| {};
+        let services = DependencyInstallServices::new(&runner, &started);
+
+        assert!(
+            runner
+                .run(&DependencyCommand {
+                    program: PathBuf::from("/runtime/never"),
+                    args: Vec::new(),
+                    cwd: PathBuf::from("/"),
+                    environment: BTreeMap::new(),
+                })
+                .is_err()
+        );
+        assert_eq!(
+            format!("{services:?}"),
+            "DependencyInstallServices { runner: RefusingRunner, \
+             installation_started: \"<callback>\" }"
+        );
     }
 }

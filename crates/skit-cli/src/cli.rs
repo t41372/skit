@@ -5,9 +5,8 @@ use std::{
     fs::{self, File, Metadata},
     io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
     sync::Arc,
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::{
@@ -22,7 +21,6 @@ use skit_application::{
     FinalizeExternalCopyEditError, ForcedAddKind, LibraryScan, LibraryService,
     PreparedEntryUpdateError, RepositoryError, RepositoryOperation, SourceIdentity,
     SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
-    form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
@@ -38,6 +36,7 @@ use skit_application::{
     prompt_selection::PromptSelectionService,
     runner_management::{EditableArgvDialect, split_editable_argv},
     source_is_executable, supports_storage_modes,
+    tokens::TokenContext,
     value_preparation::validate_form_value,
 };
 use skit_domain::{
@@ -72,28 +71,30 @@ use skit_runtime::{
     DependencyError, InterpreterPlatform, LaunchError, LaunchPaths, NetworkProbe,
     PreparedJavaScriptDependencyCleanup, ProgramProbe, SystemNetworkProbe, SystemProbe,
     managed_uv_path, network_looks_blocked, preflight_javascript_dependencies_for_module,
-    prepare_javascript_dependency_cleanup, project_launch_workdir, resolve_interpreter,
+    prepare_javascript_dependency_cleanup_at, project_launch_workdir, resolve_interpreter,
     resolve_javascript_runtime,
 };
 use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
-    FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
-    FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
-    SystemDirectoryReader, expand_user_path, override_directory, platform_config_dir,
-    platform_data_dir, platform_state_dir,
+    FileConfigStore, FileFormStateStore, FilePromptSelectionStore, FileRunnerManagementStore,
+    PromptRunner, RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader,
+    expand_user_path, override_directory, platform_config_dir, platform_data_dir,
+    platform_state_dir,
 };
 use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor,
     DraftDeleteOutcome, DraftKind, DraftSummary, Effect as UiEffect, FieldValue, FormField,
-    FormPurpose, FormView, HealthAction, HealthView, HostRequest, KnownEntryKind, LibraryState,
-    PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
-    PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext,
-    RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView,
-    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
-    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
+    FormPurpose, FormView, HealthView, HostRequest, KnownEntryKind, PRESET_PREFIX,
+    PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction,
+    PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions,
+    RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest,
+    RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
+    SettingsInputs, SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot,
+    SubmittedValues, TypedValue,
 };
+#[cfg(test)]
+use skit_ui::{HealthAction, LibraryState};
 use thiserror::Error;
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -133,6 +134,42 @@ macro_rules! humanerrln {
 
 #[cfg(test)]
 mod tests;
+mod tui_host;
+
+use self::tui_host::{
+    EditorLauncher, PreferenceFiles, PrivateDirectoryPurpose, SYSTEM_EDITOR,
+    SYSTEM_PREFERENCE_FILES, SYSTEM_TERMINAL, TempLocation, TemporaryFilePurpose,
+    TerminalCapability, TuiHost,
+};
+pub(crate) use self::tui_host::{
+    FileAllocator, HostOutput, SYSTEM_FILE_ALLOCATOR, SYSTEM_OUTPUT,
+    TempLocation as RunTempLocation, TemporaryFilePurpose as RunTemporaryFilePurpose,
+};
+
+#[derive(Clone, Copy, Debug)]
+struct BorrowedProgramProbe<'a>(&'a dyn ProgramProbe);
+
+impl ProgramProbe for BorrowedProgramProbe<'_> {
+    fn find_program(&self, name: &str) -> Option<PathBuf> {
+        self.0.find_program(name)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.0.is_file(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.0.is_dir(path)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.0.exists(path)
+    }
+
+    fn is_executable(&self, path: &Path) -> bool {
+        self.0.is_executable(path)
+    }
+}
 
 /// Run the command-line entry point and return its process status.
 #[must_use]
@@ -1424,23 +1461,12 @@ fn hosted_add(
     opening: Vec<UiAction>,
 ) -> Result<(), CliError> {
     let state_dir = resolve_state_dir()?;
+    let host = TuiHost::system(service, &state_dir, config_dir);
+    let locale = host.locale();
     let workflow = tui_add_workflow(service.repository(), &state_dir, config_dir)?
         .with_review_defaults(add_review_defaults(config_dir, &state_dir, options)?);
-    let slug = skit_tui::run_add_workflow(
-        workflow,
-        opening,
-        |effect| {
-            tui_effect(
-                service,
-                service.repository(),
-                &state_dir,
-                config_dir,
-                effect,
-            )
-        },
-        active_locale(),
-    )?
-    .ok_or(CliError::AddCancelled)?;
+    let slug = skit_tui::run_add_workflow(workflow, opening, |effect| host.serve(effect), locale)?
+        .ok_or(CliError::AddCancelled)?;
     let entry = service.show(slug.as_str())?;
     print_add_summary(service.repository(), &entry)?;
     Ok(())
@@ -2147,9 +2173,36 @@ fn completion_path(shell: Shell) -> Result<PathBuf, CliError> {
 }
 
 fn user_home() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    user_home_from_environment(
+        InterpreterPlatform::current(),
+        env::var_os("HOME"),
+        env::var_os("USERPROFILE"),
+        env::var_os("HOMEDRIVE"),
+        env::var_os("HOMEPATH"),
+        None,
+    )
+}
+
+fn user_home_from_environment(
+    platform: InterpreterPlatform,
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+    home_drive: Option<std::ffi::OsString>,
+    home_path: Option<std::ffi::OsString>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let named = |value: Option<std::ffi::OsString>| value.filter(|value| !value.is_empty());
+    match platform {
+        InterpreterPlatform::Other => named(home).map(PathBuf::from).or(fallback),
+        InterpreterPlatform::Windows => named(user_profile)
+            .map(PathBuf::from)
+            .or_else(|| {
+                let mut combined = named(home_drive)?;
+                combined.push(named(home_path)?);
+                Some(PathBuf::from(combined))
+            })
+            .or(fallback),
+    }
 }
 
 fn run_entry(
@@ -2185,10 +2238,12 @@ fn run_entry(
         // advertised chips (Ctrl+S saves a preset) work there too.
         let state_dir = resolve_state_dir()?;
         let config_dir = resolve_config_dir()?;
+        let host = TuiHost::system(service, &state_dir, &config_dir);
+        let locale = host.locale();
         skit_tui::collect_run_form_with_path_completion(
             forms.enhanced,
-            |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
-            active_locale(),
+            |effect| host.serve(effect),
+            locale,
             path_completion_provider(),
         )?
         .ok_or(CliError::Aborted)?
@@ -2724,8 +2779,21 @@ fn colour_is_welcome_for(
 /// A stream that is not a terminal keeps the plain text, which is why every recorded output in
 /// this repository is unchanged: those runs are redirected.
 fn paint_for_output(text: &str, style: HumanStyle, width: Option<usize>) -> String {
+    paint_for_output_with_colour(text, style, width, colour_is_welcome())
+}
+
+/// The same formatter for a caller that already knows if colour is available.
+///
+/// Keeping this input explicit lets tests own the terminal capability without changing the
+/// process environment that concurrent tests share.
+fn paint_for_output_with_colour(
+    text: &str,
+    style: HumanStyle,
+    width: Option<usize>,
+    colour_is_welcome: bool,
+) -> String {
     let folded = fold_for_output(text, width);
-    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome() {
+    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome {
         return folded;
     }
     format!("{}{folded}\x1b[0m", style.prefix())
@@ -4445,10 +4513,24 @@ fn describe(
 }
 
 fn rename(service: &LibraryService<FileStore>, selector: &str, name: &str) -> Result<(), CliError> {
+    rename_with_output(service, selector, name, &SYSTEM_OUTPUT, active_locale())
+}
+
+fn rename_with_output(
+    service: &LibraryService<FileStore>,
+    selector: &str,
+    name: &str,
+    output: &(impl HostOutput + ?Sized),
+    locale: Locale,
+) -> Result<(), CliError> {
     let held = service.show(selector)?;
     let claimed = service.claim_identity(&held)?;
     let entry = service.rename(&claimed, name)?;
-    humanln!("Renamed: {} ({})", entry.meta.name, entry.slug);
+    output.plain(&format_text(
+        locale,
+        "Renamed: {} ({})",
+        &[&entry.meta.name, &entry.slug],
+    ));
     Ok(())
 }
 
@@ -4490,12 +4572,21 @@ fn remove(
             return Err(CliError::Aborted);
         }
     }
-    let claimed = service.claim_identity(&held)?;
-    let slug = claimed.slug.clone();
-    let name = service.remove(&claimed)?;
-    FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).forget(&slug)?;
+    let name = remove_with_state_dir(service, &held, &resolve_state_dir()?)?;
     humanln!(Green: "Removed: {}", name);
     Ok(())
+}
+
+fn remove_with_state_dir(
+    service: &LibraryService<FileStore>,
+    held: &Entry,
+    state_dir: &Path,
+) -> Result<String, CliError> {
+    let claimed = service.claim_identity(held)?;
+    let slug = claimed.slug.clone();
+    let name = service.remove(&claimed)?;
+    FormStateService::new(FileFormStateStore::new(state_dir)).forget(&slug)?;
+    Ok(name)
 }
 
 fn edit(
@@ -4516,12 +4607,29 @@ fn edit(
 /// chance. An unbalanced-quote value is unusable as a parsed command, so the whole
 /// text becomes the program name rather than an error (editor.py:34-60).
 fn resolve_editor_argv(config_dir: &Path) -> Vec<String> {
+    resolve_editor_argv_with(
+        config_dir,
+        env::var("VISUAL").ok().as_deref(),
+        env::var("EDITOR").ok().as_deref(),
+    )
+}
+
+fn resolve_editor_argv_with(
+    config_dir: &Path,
+    visual: Option<&str>,
+    editor: Option<&str>,
+) -> Vec<String> {
     let configured = FileConfigStore::new(config_dir)
         .get("editor")
         .unwrap_or_default();
-    let visual = env::var("VISUAL").unwrap_or_default();
-    let editor = env::var("EDITOR").unwrap_or_default();
-    let raw = select_editor_candidate([&configured, &visual, &editor], platform_default_editor());
+    let raw = select_editor_candidate(
+        [
+            configured.as_str(),
+            visual.unwrap_or_default(),
+            editor.unwrap_or_default(),
+        ],
+        platform_default_editor(),
+    );
     editor_argv_from_candidate(&raw, EditableArgvDialect::host(), platform_default_editor())
 }
 
@@ -4560,23 +4668,31 @@ const fn platform_default_editor() -> &'static str {
 /// Only a launch failure is an error (cli.py:2727-2730); the editor's own exit
 /// status is returned unchecked, because some editors exit non-zero on an
 /// unmodified close (editor.py:63-67).
-fn launch_editor(argv: &[String], path: &Path) -> Result<std::process::ExitStatus, CliError> {
-    ProcessCommand::new(&argv[0])
-        .args(&argv[1..])
-        .arg(path)
-        .status()
-        .map_err(|error| {
-            CliError::Failure(
-                Message::new(
-                    "Could not launch the editor ({}): {}. Set one with: skit config editor <cmd>",
-                )
-                .with(argv.join(" "))
-                .with(error),
+fn launch_editor_with(
+    launcher: &(impl EditorLauncher + ?Sized),
+    argv: &[String],
+    path: &Path,
+) -> Result<(), CliError> {
+    launcher.launch(argv, path).map_err(|error| {
+        CliError::Failure(
+            Message::new(
+                "Could not launch the editor ({}): {}. Set one with: skit config editor <cmd>",
             )
-        })
+            .with(argv.join(" "))
+            .with(error),
+        )
+    })
 }
 
 fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
+    report_unmanaged_prompt_candidates_with_output(unmanaged, &SYSTEM_OUTPUT, active_locale());
+}
+
+fn report_unmanaged_prompt_candidates_with_output(
+    unmanaged: &[String],
+    output: &(impl HostOutput + ?Sized),
+    locale: Locale,
+) {
     let visible = unmanaged
         .iter()
         .take(PROMPT_LIST_PREVIEW_LIMIT)
@@ -4585,22 +4701,23 @@ fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
         .join(", ");
     let remaining = unmanaged.len().saturating_sub(PROMPT_LIST_PREVIEW_LIMIT);
     if remaining == 0 && !visible.is_empty() {
-        humanln!(
+        output.plain(&format_text(
+            locale,
             "Detected but not yet managed: {} (use --add to manage them)",
-            visible
-        );
+            &[&visible],
+        ));
     } else if remaining == 1 {
-        humanln!(
+        output.plain(&format_text(
+            locale,
             "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
-            visible,
-            remaining
-        );
+            &[&visible, &remaining],
+        ));
     } else if remaining > 1 {
-        humanln!(
+        output.plain(&format_text(
+            locale,
             "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
-            visible,
-            remaining
-        );
+            &[&visible, &remaining],
+        ));
     }
 }
 
@@ -4608,18 +4725,25 @@ fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
 ///
 /// A prompt entry reconciles its placeholders instead of printing the generic
 /// drift hint.
-fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
-    humanln!(Green: "Saved {}.", entry.meta.name);
+fn report_saved_edit_with_output(
+    entry: &Entry,
+    edited: Option<&[u8]>,
+    output: &(impl HostOutput + ?Sized),
+    terminal: &(impl TerminalCapability + ?Sized),
+    locale: Locale,
+) {
+    output.success(&format_text(locale, "Saved {}.", &[&entry.meta.name]));
     if entry.meta.kind.as_str() != "prompt" {
-        humanln!(
-            Dim: "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
-            entry.meta.name
-        );
+        output.detail(&format_text(
+            locale,
+            "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
+            &[&entry.meta.name],
+        ));
         return;
     }
     let settings = EntrySettings::from_meta(&entry.meta);
     if settings.interpolate
-        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && (!terminal.stdin_is_terminal() || !terminal.stdout_is_terminal())
         && let Some(edited) = edited
     {
         let text = std::str::from_utf8(edited).expect("prompt bytes were validated before report");
@@ -4633,7 +4757,34 @@ fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
             .map(|item| item.name)
             .filter(|name| !managed.contains(name.as_str()))
             .collect::<Vec<_>>();
-        report_unmanaged_prompt_candidates(&unmanaged);
+        report_unmanaged_prompt_candidates_with_output(&unmanaged, output, locale);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EditRuntime<'a> {
+    argv: &'a [String],
+    editor: &'a dyn EditorLauncher,
+    output: &'a dyn HostOutput,
+    terminal: &'a dyn TerminalCapability,
+    locale: Locale,
+}
+
+impl<'a> EditRuntime<'a> {
+    const fn new(
+        argv: &'a [String],
+        editor: &'a dyn EditorLauncher,
+        output: &'a dyn HostOutput,
+        terminal: &'a dyn TerminalCapability,
+        locale: Locale,
+    ) -> Self {
+        Self {
+            argv,
+            editor,
+            output,
+            terminal,
+            locale,
+        }
     }
 }
 
@@ -4644,15 +4795,64 @@ fn edit_with_config(
     selector: &str,
     no_input: bool,
 ) -> Result<(), CliError> {
-    edit_with_config_with_claim_hook(service, store, config_dir, selector, no_input, || {})
+    let argv = resolve_editor_argv(config_dir);
+    edit_with_runtime(
+        service,
+        store,
+        selector,
+        no_input,
+        EditRuntime::new(
+            &argv,
+            &SYSTEM_EDITOR,
+            &SYSTEM_OUTPUT,
+            &SYSTEM_TERMINAL,
+            active_locale(),
+        ),
+    )
 }
 
+fn edit_with_runtime(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    selector: &str,
+    no_input: bool,
+    runtime: EditRuntime<'_>,
+) -> Result<(), CliError> {
+    edit_with_claim_hook_and_runtime(service, store, selector, no_input, runtime, || {})
+}
+
+#[cfg(test)]
 fn edit_with_config_with_claim_hook(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     config_dir: &Path,
     selector: &str,
     no_input: bool,
+    after_reference_claim: impl FnOnce(),
+) -> Result<(), CliError> {
+    let argv = resolve_editor_argv(config_dir);
+    edit_with_claim_hook_and_runtime(
+        service,
+        store,
+        selector,
+        no_input,
+        EditRuntime::new(
+            &argv,
+            &SYSTEM_EDITOR,
+            &SYSTEM_OUTPUT,
+            &SYSTEM_TERMINAL,
+            active_locale(),
+        ),
+        after_reference_claim,
+    )
+}
+
+fn edit_with_claim_hook_and_runtime(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    selector: &str,
+    no_input: bool,
+    runtime: EditRuntime<'_>,
     after_reference_claim: impl FnOnce(),
 ) -> Result<(), CliError> {
     let held = match service.show(selector) {
@@ -4664,7 +4864,7 @@ fn edit_with_config_with_claim_hook(
                 ));
             }
             let question = format_text(
-                active_locale(),
+                runtime.locale,
                 "No editable entry is named \"{}\". Create a script now? [Y/n]: ",
                 &[&selector],
             );
@@ -4716,8 +4916,6 @@ fn edit_with_config_with_claim_hook(
                 .with(&held.meta.name),
         ));
     }
-    let argv = resolve_editor_argv(config_dir);
-
     if held.meta.mode == StorageMode::Reference {
         // Reference mode edits the user's original in place; a gone original is
         // refused BEFORE any editor launches (cli.py:2709-2720).
@@ -4739,11 +4937,12 @@ fn edit_with_config_with_claim_hook(
                     .with(source.display()),
             ));
         }
-        humanln!(
-            Dim: "Editing the original file (reference mode): {}",
-            source.display()
-        );
-        launch_editor(&argv, &source)?;
+        runtime.output.detail(&format_text(
+            runtime.locale,
+            "Editing the original file (reference mode): {}",
+            &[&source.display()],
+        ));
+        launch_editor_with(runtime.editor, runtime.argv, &source)?;
         let edited = if held.meta.kind.as_str() == "prompt" {
             // Keep the editor's bytes in place when validation fails. The next edit is the
             // recovery path.
@@ -4753,7 +4952,13 @@ fn edit_with_config_with_claim_hook(
         } else {
             None
         };
-        report_saved_edit(&held, edited.as_deref());
+        report_saved_edit_with_output(
+            &held,
+            edited.as_deref(),
+            runtime.output,
+            runtime.terminal,
+            runtime.locale,
+        );
         return Ok(());
     }
 
@@ -4767,7 +4972,7 @@ fn edit_with_config_with_claim_hook(
     }
     let edit = service.prepare_external_copy_edit(&held)?;
     let target = edit.path();
-    launch_editor(&argv, target)?;
+    launch_editor_with(runtime.editor, runtime.argv, target)?;
     // The finalize lock's read is the sole authoritative post-editor snapshot. Metadata hash,
     // validation, and the success report must all use these same bytes.
     let finalized = service
@@ -4778,7 +4983,13 @@ fn edit_with_config_with_claim_hook(
     if held.meta.kind.as_str() == "prompt" {
         validate_prompt_utf8(edited, &target.display().to_string())?;
     }
-    report_saved_edit(held, Some(edited));
+    report_saved_edit_with_output(
+        held,
+        Some(edited),
+        runtime.output,
+        runtime.terminal,
+        runtime.locale,
+    );
     Ok(())
 }
 
@@ -4788,7 +4999,7 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
 
 fn open_editor_in(config_dir: &Path, target: &Path) -> Result<(), CliError> {
     let argv = resolve_editor_argv(config_dir);
-    launch_editor(&argv, target).map(|_| ())
+    launch_editor_with(&SYSTEM_EDITOR, &argv, target)
 }
 
 fn deps(
@@ -5023,6 +5234,7 @@ fn prepare_entry_javascript_cleanup(
     entry: &Entry,
     update: &UpdateEntry,
     clear_javascript: bool,
+    cleanup_now: SystemTime,
 ) -> Result<PreparedEntryJavaScriptCleanup, CliError> {
     match service.prepare_entry_update(entry, update, |claimed| {
         let before_source = if update.source.is_some() {
@@ -5032,7 +5244,12 @@ fn prepare_entry_javascript_cleanup(
             None
         };
         let cleanup = clear_javascript
-            .then(|| prepare_javascript_dependency_cleanup(&store.entry_dir_path(&claimed.slug)))
+            .then(|| {
+                prepare_javascript_dependency_cleanup_at(
+                    &store.entry_dir_path(&claimed.slug),
+                    cleanup_now,
+                )
+            })
             .transpose()?;
         Ok::<_, CliError>((before_source, cleanup))
     }) {
@@ -5042,6 +5259,7 @@ fn prepare_entry_javascript_cleanup(
     }
 }
 
+#[cfg(test)]
 fn commit_entry_with_javascript_cleanup(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -5049,16 +5267,36 @@ fn commit_entry_with_javascript_cleanup(
     update: UpdateEntry,
     clear_javascript: bool,
 ) -> Result<CommittedEntryUpdate, CliError> {
-    commit_entry_with_javascript_cleanup_with_hook(
+    commit_entry_with_javascript_cleanup_at(
         service,
         store,
         entry,
         update,
         clear_javascript,
+        SystemTime::now(),
+    )
+}
+
+fn commit_entry_with_javascript_cleanup_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+    cleanup_now: SystemTime,
+) -> Result<CommittedEntryUpdate, CliError> {
+    commit_entry_with_javascript_cleanup_with_hook_at(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        cleanup_now,
         |_| {},
     )
 }
 
+#[cfg(test)]
 fn commit_entry_with_javascript_cleanup_with_hook(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -5067,8 +5305,34 @@ fn commit_entry_with_javascript_cleanup_with_hook(
     clear_javascript: bool,
     after_prepare: impl FnOnce(&Entry),
 ) -> Result<CommittedEntryUpdate, CliError> {
-    let (claimed, before_source, mut cleanup) =
-        prepare_entry_javascript_cleanup(service, store, entry, &update, clear_javascript)?;
+    commit_entry_with_javascript_cleanup_with_hook_at(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        SystemTime::now(),
+        after_prepare,
+    )
+}
+
+fn commit_entry_with_javascript_cleanup_with_hook_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+    cleanup_now: SystemTime,
+    after_prepare: impl FnOnce(&Entry),
+) -> Result<CommittedEntryUpdate, CliError> {
+    let (claimed, before_source, mut cleanup) = prepare_entry_javascript_cleanup(
+        service,
+        store,
+        entry,
+        &update,
+        clear_javascript,
+        cleanup_now,
+    )?;
     after_prepare(&claimed);
     match service.update_entry(&claimed, update) {
         Ok(updated) => Ok(CommittedEntryUpdate {
@@ -5157,8 +5421,32 @@ fn update_entry_with_javascript_cleanup(
     update: UpdateEntry,
     clear_javascript: bool,
 ) -> Result<Entry, CliError> {
-    let committed =
-        commit_entry_with_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    update_entry_with_javascript_cleanup_at(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        SystemTime::now(),
+    )
+}
+
+fn update_entry_with_javascript_cleanup_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+    cleanup_now: SystemTime,
+) -> Result<Entry, CliError> {
+    let committed = commit_entry_with_javascript_cleanup_at(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        cleanup_now,
+    )?;
     finalize_committed_entry_update(service, committed)
 }
 
@@ -5170,8 +5458,32 @@ fn prepare_javascript_cleanup(
     update: &UpdateEntry,
     clear_javascript: bool,
 ) -> Result<Entry, CliError> {
-    let (claimed, _, cleanup) =
-        prepare_entry_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    prepare_javascript_cleanup_at(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        SystemTime::now(),
+    )
+}
+
+fn prepare_javascript_cleanup_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: &UpdateEntry,
+    clear_javascript: bool,
+    cleanup_now: SystemTime,
+) -> Result<Entry, CliError> {
+    let (claimed, _, cleanup) = prepare_entry_javascript_cleanup(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        cleanup_now,
+    )?;
     if let Some(mut cleanup) = cleanup {
         cleanup.finalize()?;
     }
@@ -5525,7 +5837,6 @@ fn params(
         )));
     }
     let mut settings = EntrySettings::from_meta(&held.meta);
-    let prompt_schema_was_hidden = kind == "prompt" && !settings.interpolate;
     if kind == "prompt" && !settings.interpolate && has_metadata_schema_operation {
         return Err(CliError::Failure(
             Message::new(
@@ -5636,7 +5947,17 @@ fn params(
                 false,
             )
         } else {
-            let plan = form_plan(held.meta.kind.as_str(), &source, &settings);
+            // Seed from the stored schema, not from the effective plan. A prompt with insertion
+            // off has an empty effective plan and still owns every declaration it stored
+            // (`src/skit/tui_settings.py:344`).
+            let plan = form_plan(
+                held.meta.kind.as_str(),
+                &source,
+                &EntrySettings {
+                    interpolate: true,
+                    ..settings.clone()
+                },
+            );
             (
                 plan.declarations(),
                 plan.uses_self_location,
@@ -5738,16 +6059,17 @@ fn params(
             held = commit_source_management_copy_edit(service, &held, source.as_bytes())?;
         }
     } else if changed {
-        if !(prompt_schema_was_hidden && has_interpolation_policy) {
+        // A prompt keeps its stored schema while insertion is off. No params op writes parameters
+        // in that state (`src/skit/cli.py:4229-4246`).
+        let prompt_schema_hidden = prompt && !settings.interpolate;
+        if !prompt_schema_hidden {
             settings.parameters = declarations
                 .iter()
                 .filter(|item| explicit_names.contains(&item.name))
                 .cloned()
                 .collect();
         }
-        if matches!(held.meta.kind.as_str(), "command" | "prompt")
-            && !(prompt_schema_was_hidden && has_interpolation_policy)
-        {
+        if matches!(held.meta.kind.as_str(), "command" | "prompt") && !prompt_schema_hidden {
             let current_order = if held.meta.kind.as_str() == "command" {
                 placeholder_params("command", &settings.template)
                     .into_iter()
@@ -7385,7 +7707,13 @@ fn doctor(
     let state_location = resolve_state_dir()?;
     let config_location = resolve_config_dir()?;
     let config = FileConfigStore::new(&config_location);
-    let health = HealthService::new(CliHealthInspector::new(service, store, &config_location));
+    let health = HealthService::new(CliHealthInspector::new(
+        service,
+        store,
+        &config_location,
+        active_locale(),
+        &SystemProbe,
+    ));
     let (snapshot, rebuilt_entries, rebuild_diagnostics) = if rebuild {
         let rebuilt = health.rebuild()?;
         (
@@ -8083,18 +8411,15 @@ fn known_entry_kind(kind: &str) -> bool {
 }
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
-    let store = service.repository();
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
-    let surface = crate::library_surface(store, &state_dir, &config_dir)?;
-    let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
-    let mut state = LibraryState::from_library_surface(surface);
-    let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
+    let host = TuiHost::system(service, &state_dir, &config_dir);
+    let locale = host.locale();
     skit_tui::run_preflighted_with_path_completion(
-        state,
-        |effect| tui_preflight_effect(service, store, effect),
-        |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
-        active_locale(),
+        host.initial_state()?,
+        |effect| host.preflight(effect),
+        |effect| host.serve(effect),
+        locale,
         path_completion_provider(),
     )
     .map_err(CliError::from)
@@ -8104,20 +8429,13 @@ fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
     Arc::new(PathCompletionService::new(SystemDirectoryReader))
 }
 
-fn tui_preflight_effect(
+fn tui_preflight_effect_with_probe(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     effect: &UiEffect,
+    probe: &dyn ProgramProbe,
 ) -> Result<(), CliError> {
-    tui_preflight_effect_with_probe(service, store, effect, &SystemProbe)
-}
-
-fn tui_preflight_effect_with_probe<P: ProgramProbe>(
-    service: &LibraryService<FileStore>,
-    store: &FileStore,
-    effect: &UiEffect,
-    probe: &P,
-) -> Result<(), CliError> {
+    let probe = BorrowedProgramProbe(probe);
     let selector = match effect {
         UiEffect::Open {
             request: HostRequest::Run,
@@ -8134,18 +8452,19 @@ fn tui_preflight_effect_with_probe<P: ProgramProbe>(
     {
         return Ok(());
     }
-    let runtime = resolve_javascript_runtime(&settings, probe).map_err(RunError::from)?;
+    let runtime = resolve_javascript_runtime(&settings, &probe).map_err(RunError::from)?;
     preflight_javascript_dependencies_for_module(
         &store.entry_dir_path(&entry.slug),
         &runtime,
         &settings.dependencies,
         skit_runtime::javascript_module_type(&entry.meta.source),
-        probe,
+        &probe,
     )
     .map_err(RunError::from)?;
     Ok(())
 }
 
+#[cfg(test)]
 fn tui_effect(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -8153,114 +8472,11 @@ fn tui_effect(
     config_dir: &Path,
     effect: UiEffect,
 ) -> Result<UiAction, CliError> {
-    match effect {
-        UiEffect::None | UiEffect::Quit => Ok(UiAction::ClearStatus),
-        UiEffect::Reload => {
-            // The reload must carry the same complete projection the first load carried. A
-            // scan-only reload would drop every detail fact and put the list back in slug order.
-            let surface = crate::library_surface(store, state_dir, config_dir)?;
-            let rerunnable = tui_rerunnable(&surface.scan, state_dir);
-            Ok(UiAction::ReplaceSurface {
-                surface,
-                rerunnable,
-            })
-        }
-        UiEffect::Rerun { selector } => tui_rerun(
-            service,
-            store,
-            state_dir,
-            config_dir,
-            &selector,
-            active_locale(),
-        ),
-        UiEffect::Open { request, selector } => {
-            let screen = tui_open(service, store, state_dir, config_dir, request, selector)?;
-            Ok(match screen {
-                Screen::Run(form)
-                    if form
-                        .context()
-                        .is_some_and(|context| context.entry_kind == "prompt")
-                        && !form.has_runner_picker() =>
-                {
-                    UiAction::PromptRunnerRequired {
-                        form,
-                        cancel_status: text(
-                            active_locale(),
-                            "A prompt needs a configured agent to run with.",
-                        )
-                        .into_owned(),
-                    }
-                }
-                screen => UiAction::Present(screen),
-            })
-        }
-        UiEffect::Preferences(effect) => tui_preferences_effect(service, config_dir, effect),
-        UiEffect::CountRunGlob {
-            field,
-            value,
-            request,
-            ..
-        } => {
-            let count = FileGlobExpander::new(&request.cwd).count_matches(&request);
-            Ok(UiAction::SetRunGlobCount {
-                field,
-                value,
-                count,
-            })
-        }
-        UiEffect::SaveRunPreset {
-            selector,
-            name,
-            mut values,
-            secret_names,
-        } => {
-            let entry = service.show(&selector)?;
-            let declarations = entry_parameters(store, &entry);
-            refuse_empty_preset_schema(&declarations)?;
-            values.retain(|key, _| !secret_names.contains(key));
-            let state = FormStateService::new(FileFormStateStore::new(state_dir));
-            state.save_preset(&entry.slug, &name, &declarations, &values)?;
-            let presets = state.load(&entry.slug).presets;
-            Ok(UiAction::RunPresetSaved {
-                message: format_text(active_locale(), "Preset \"{}\" saved.", &[&name]),
-                name,
-                presets,
-            })
-        }
-        UiEffect::HealthRebuild => {
-            let rebuilt = HealthService::new(CliHealthInspector::new(service, store, config_dir))
-                .rebuild()?;
-            Ok(UiAction::Health(HealthAction::Rebuilt {
-                snapshot: Box::new(rebuilt.snapshot),
-                outcome: rebuilt.outcome,
-            }))
-        }
-        UiEffect::SaveRunner { request, owner } => {
-            tui_save_runner(service, config_dir, request, owner)
-        }
-        UiEffect::RemoveRunner(request) => tui_remove_runner(service, config_dir, request),
-        UiEffect::RefreshPreferencesAfterRunners => Ok(UiAction::RunnerManagerClosed {
-            preferences: Box::new(tui_preferences_view(config_dir)?),
-        }),
-        UiEffect::Add(effects) => tui_add_effect(service, store, state_dir, config_dir, effects),
-        UiEffect::Edit { selector } => {
-            edit_with_config(service, store, config_dir, &selector, true)?;
-            Ok(tui_complete(service, state_dir, "Source saved")?)
-        }
-        UiEffect::Remove { selector } => {
-            remove(service, &selector, true, true)?;
-            Ok(tui_complete(service, state_dir, "Entry removed")?)
-        }
-        UiEffect::Submit {
-            purpose,
-            selector,
-            values,
-        } => tui_submit(
-            service, store, state_dir, config_dir, purpose, selector, &values,
-        ),
-    }
+    debug_assert_eq!(store.data_dir(), service.repository().data_dir());
+    TuiHost::system(service, state_dir, config_dir).serve(effect)
 }
 
+#[cfg(test)]
 fn tui_add_effect(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -8268,12 +8484,61 @@ fn tui_add_effect(
     config_dir: &Path,
     effects: Vec<AddEffect>,
 ) -> Result<UiAction, CliError> {
-    let locale = active_locale();
+    let editor_argv = resolve_editor_argv(config_dir);
+    let home = user_home();
+    let pathext = env::var_os("PATHEXT");
+    tui_add_effect_at(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        effects,
+        active_locale(),
+        time::OffsetDateTime::now_utc(),
+        &SYSTEM_EDITOR,
+        &editor_argv,
+        AddHostContext {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AddHostContext<'a> {
+    home: Option<&'a Path>,
+    platform: InterpreterPlatform,
+    windows_pathext: Option<&'a std::ffi::OsStr>,
+    allocator: &'a dyn FileAllocator,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreferenceHost<'a> {
+    home: Option<&'a Path>,
+    platform: InterpreterPlatform,
+    files: &'a dyn PreferenceFiles,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tui_add_effect_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    effects: Vec<AddEffect>,
+    locale: Locale,
+    now: time::OffsetDateTime,
+    editor: &(impl EditorLauncher + ?Sized),
+    editor_argv: &[String],
+    host: AddHostContext<'_>,
+) -> Result<UiAction, CliError> {
     let mut warnings = Vec::new();
     for effect in effects {
         match effect {
             AddEffect::InspectSource { request, path } => {
-                let result = tui_add_source(store.data_dir(), &path)
+                let result = tui_add_source_with_context(store.data_dir(), &path, host)
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::SourceInspected {
                     request,
@@ -8281,28 +8546,35 @@ fn tui_add_effect(
                 }));
             }
             AddEffect::AuthorDraft { request, kind } => {
-                let result = tui_author_draft(store.data_dir(), config_dir, kind)
-                    .map_err(|error| error.message().localize(locale));
+                let result = tui_author_draft_with_context_and_editor(
+                    store.data_dir(),
+                    kind,
+                    editor,
+                    editor_argv,
+                    host,
+                )
+                .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftEdited { request, result }));
             }
             AddEffect::DeleteDraft { request, draft } => {
-                let result = consume_draft_summary(store.data_dir(), &draft)
-                    .and_then(|outcome| match outcome {
-                        DraftConsumeOutcome::Removed => Ok(DraftDeleteOutcome::Removed),
-                        DraftConsumeOutcome::AlreadyMissing => {
-                            Ok(DraftDeleteOutcome::AlreadyMissing)
-                        }
-                        DraftConsumeOutcome::Changed => {
-                            refreshed_draft(store.data_dir(), &draft.path)
-                                .map(DraftDeleteOutcome::Changed)
-                        }
-                    })
-                    .map_err(|error| error.message().localize(locale));
+                let result =
+                    consume_draft_summary_with_allocator(store.data_dir(), &draft, host.allocator)
+                        .and_then(|outcome| match outcome {
+                            DraftConsumeOutcome::Removed => Ok(DraftDeleteOutcome::Removed),
+                            DraftConsumeOutcome::AlreadyMissing => {
+                                Ok(DraftDeleteOutcome::AlreadyMissing)
+                            }
+                            DraftConsumeOutcome::Changed => {
+                                refreshed_draft(store.data_dir(), &draft.path)
+                                    .map(DraftDeleteOutcome::Changed)
+                            }
+                        })
+                        .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftDeleted { request, result }));
             }
             AddEffect::EditSource { request, path } => {
-                let result = open_editor_in(config_dir, &path)
-                    .and_then(|()| tui_add_source(store.data_dir(), &path))
+                let result = launch_editor_with(editor, editor_argv, &path)
+                    .and_then(|()| tui_add_source_with_context(store.data_dir(), &path, host))
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::SourceEdited { request, result }));
             }
@@ -8314,7 +8586,7 @@ fn tui_add_effect(
                 let result = source
                     .as_ref()
                     .map_or(Ok(()), |expected| {
-                        verify_tui_add_source(store.data_dir(), expected)
+                        verify_tui_add_source_with_context(store.data_dir(), expected, host)
                     })
                     .and_then(|()| service.add(*entry).map_err(CliError::from))
                     .map(|created| created.slug.as_str().to_owned())
@@ -8322,7 +8594,8 @@ fn tui_add_effect(
                 return Ok(UiAction::Add(AddAction::CommitFinished { request, result }));
             }
             AddEffect::ConsumeDraft(source) => {
-                match consume_owned_draft(store.data_dir(), &source) {
+                match consume_owned_draft_with_allocator(store.data_dir(), &source, host.allocator)
+                {
                     Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
                     Ok(DraftConsumeOutcome::Changed) => warnings.push(
                         Message::new("The kept draft changed before cleanup. skit kept it at {}.")
@@ -8349,7 +8622,9 @@ fn tui_add_effect(
                     &raw_slug,
                     locale,
                     &warnings,
-                    crate::library_surface,
+                    |store, state_dir, config_dir| {
+                        crate::library::library_surface_at(store, state_dir, config_dir, now)
+                    },
                 );
             }
             AddEffect::Cancel => return Ok(UiAction::AddCancelled),
@@ -8412,7 +8687,26 @@ fn complete_add_effect_with(
 }
 
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
-    let expanded = expand_user_path(input);
+    let home = user_home();
+    let pathext = env::var_os("PATHEXT");
+    tui_add_source_with_context(
+        data_dir,
+        input,
+        AddHostContext {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+    )
+}
+
+fn tui_add_source_with_context(
+    data_dir: &Path,
+    input: &Path,
+    host: AddHostContext<'_>,
+) -> Result<AddSourceSnapshot, CliError> {
+    let expanded = expand_user_path_with_home(input, host.home, host.platform);
     let resolved = resolve_add_source(&expanded)?;
     // skit's own kept drafts keep skit's own spelling: skit made the path from the data directory
     // and told the user about it. Every other source resolves to where the file really is.
@@ -8442,7 +8736,7 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
             source_identity_at(&path, &metadata),
         )
     };
-    let executable = source_is_host_executable(&path, is_regular, permissions);
+    let executable = source_is_executable_with_context(&path, is_regular, permissions, host);
     Ok(AddSourceSnapshot {
         source_record: resolved.display().to_string(),
         path,
@@ -8456,15 +8750,58 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
     })
 }
 
-fn source_is_host_executable(path: &Path, is_file: bool, permissions: SourcePermissions) -> bool {
-    #[cfg(windows)]
-    let pathext = env::var("PATHEXT").ok();
-    #[cfg(windows)]
-    let dialect = ExecutableDialect::Windows {
-        pathext: pathext.as_deref(),
+fn expand_user_path_with_home(
+    path: &Path,
+    home: Option<&Path>,
+    platform: InterpreterPlatform,
+) -> PathBuf {
+    let Some(value) = path.to_str() else {
+        return path.to_path_buf();
     };
-    #[cfg(not(windows))]
-    let dialect = ExecutableDialect::Posix;
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+    if value == "~" {
+        return home.to_path_buf();
+    }
+    let relative = value.strip_prefix("~/").or_else(|| {
+        (platform == InterpreterPlatform::Windows)
+            .then(|| value.strip_prefix("~\\"))
+            .flatten()
+    });
+    if let Some(relative) = relative {
+        return home.join(relative);
+    }
+    path.to_path_buf()
+}
+
+fn source_is_host_executable(path: &Path, is_file: bool, permissions: SourcePermissions) -> bool {
+    let pathext = env::var_os("PATHEXT");
+    source_is_executable_with_context(
+        path,
+        is_file,
+        permissions,
+        AddHostContext {
+            home: None,
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+    )
+}
+
+fn source_is_executable_with_context(
+    path: &Path,
+    is_file: bool,
+    permissions: SourcePermissions,
+    host: AddHostContext<'_>,
+) -> bool {
+    let dialect = match host.platform {
+        InterpreterPlatform::Windows => ExecutableDialect::Windows {
+            pathext: host.windows_pathext.and_then(std::ffi::OsStr::to_str),
+        },
+        InterpreterPlatform::Other => ExecutableDialect::Posix,
+    };
 
     source_is_executable(ExecutableSourceFacts {
         path,
@@ -8475,7 +8812,26 @@ fn source_is_host_executable(path: &Path, is_file: bool, permissions: SourcePerm
 }
 
 fn verify_tui_add_source(data_dir: &Path, expected: &AddSourceSnapshot) -> Result<(), CliError> {
-    let current = tui_add_source(data_dir, &expected.path)?;
+    let home = user_home();
+    let pathext = env::var_os("PATHEXT");
+    verify_tui_add_source_with_context(
+        data_dir,
+        expected,
+        AddHostContext {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+    )
+}
+
+fn verify_tui_add_source_with_context(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    host: AddHostContext<'_>,
+) -> Result<(), CliError> {
+    let current = tui_add_source_with_context(data_dir, &expected.path, host)?;
     if &current == expected {
         Ok(())
     } else {
@@ -8490,13 +8846,73 @@ fn tui_author_draft(
     config_dir: &Path,
     kind: DraftKind,
 ) -> Result<Option<AddSourceSnapshot>, CliError> {
-    tui_author_draft_with_failure_hook(data_dir, config_dir, kind, |_| {})
+    let editor_argv = resolve_editor_argv(config_dir);
+    tui_author_draft_with_editor(data_dir, kind, &SYSTEM_EDITOR, &editor_argv)
 }
 
+fn tui_author_draft_with_editor(
+    data_dir: &Path,
+    kind: DraftKind,
+    editor: &(impl EditorLauncher + ?Sized),
+    editor_argv: &[String],
+) -> Result<Option<AddSourceSnapshot>, CliError> {
+    let home = user_home();
+    let pathext = env::var_os("PATHEXT");
+    tui_author_draft_with_context_and_editor(
+        data_dir,
+        kind,
+        editor,
+        editor_argv,
+        AddHostContext {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+    )
+}
+
+fn tui_author_draft_with_context_and_editor(
+    data_dir: &Path,
+    kind: DraftKind,
+    editor: &(impl EditorLauncher + ?Sized),
+    editor_argv: &[String],
+    host: AddHostContext<'_>,
+) -> Result<Option<AddSourceSnapshot>, CliError> {
+    tui_author_draft_with_failure_hook_and_editor(data_dir, kind, editor, editor_argv, host, |_| {})
+}
+
+#[cfg(test)]
 fn tui_author_draft_with_failure_hook(
     data_dir: &Path,
     config_dir: &Path,
     kind: DraftKind,
+    on_editor_failure: impl FnOnce(&AddSourceSnapshot),
+) -> Result<Option<AddSourceSnapshot>, CliError> {
+    let editor_argv = resolve_editor_argv(config_dir);
+    let home = user_home();
+    let pathext = env::var_os("PATHEXT");
+    tui_author_draft_with_failure_hook_and_editor(
+        data_dir,
+        kind,
+        &SYSTEM_EDITOR,
+        &editor_argv,
+        AddHostContext {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            windows_pathext: pathext.as_deref(),
+            allocator: &SYSTEM_FILE_ALLOCATOR,
+        },
+        on_editor_failure,
+    )
+}
+
+fn tui_author_draft_with_failure_hook_and_editor(
+    data_dir: &Path,
+    kind: DraftKind,
+    editor: &(impl EditorLauncher + ?Sized),
+    editor_argv: &[String],
+    host: AddHostContext<'_>,
     on_editor_failure: impl FnOnce(&AddSourceSnapshot),
 ) -> Result<Option<AddSourceSnapshot>, CliError> {
     let drafts_dir = create_owned_drafts_dir(data_dir)?;
@@ -8504,10 +8920,13 @@ fn tui_author_draft_with_failure_hook(
         DraftKind::Script => (".py", b"#!/usr/bin/env python3\n".to_vec()),
         DraftKind::Prompt => (".prompt.md", localized_prompt_starter()),
     };
-    let mut staged = tempfile::Builder::new()
-        .prefix("skit-new-")
-        .suffix(suffix)
-        .tempfile_in(&drafts_dir)
+    let mut staged = host
+        .allocator
+        .temporary_file(
+            TemporaryFilePurpose::AuthoredDraft,
+            TempLocation::Directory(&drafts_dir),
+            suffix,
+        )
         .map_err(|error| source_error("create", &drafts_dir, error))?;
     staged
         .write_all(&starter)
@@ -8519,11 +8938,11 @@ fn tui_author_draft_with_failure_hook(
         .keep()
         .map_err(|error| source_error("keep", &drafts_dir, error.error))?
         .1;
-    let initial = tui_add_source(data_dir, &path)?;
+    let initial = tui_add_source_with_context(data_dir, &path, host)?;
 
-    if let Err(error) = open_editor_in(config_dir, &path) {
+    if let Err(error) = launch_editor_with(editor, editor_argv, &path) {
         on_editor_failure(&initial);
-        return match discard_authored_draft(data_dir, &initial) {
+        return match discard_authored_draft_with_allocator(data_dir, &initial, host.allocator) {
             Ok(()) => Err(error),
             Err(cleanup) => Err(CliError::Failure(
                 Message::new("{}; warning: {}")
@@ -8532,20 +8951,24 @@ fn tui_author_draft_with_failure_hook(
             )),
         };
     }
-    let current = tui_add_source(data_dir, &path)?;
+    let current = tui_add_source_with_context(data_dir, &path, host)?;
     let unchanged = std::str::from_utf8(&current.bytes).is_ok_and(|text| {
         let text = text.trim();
         text.is_empty() || std::str::from_utf8(&starter).is_ok_and(|starter| text == starter.trim())
     });
     if unchanged {
-        discard_authored_draft(data_dir, &current)?;
+        discard_authored_draft_with_allocator(data_dir, &current, host.allocator)?;
         return Ok(None);
     }
     Ok(Some(current))
 }
 
-fn discard_authored_draft(data_dir: &Path, expected: &AddSourceSnapshot) -> Result<(), CliError> {
-    match consume_owned_draft(data_dir, expected)? {
+fn discard_authored_draft_with_allocator(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    allocator: &dyn FileAllocator,
+) -> Result<(), CliError> {
+    match consume_owned_draft_with_allocator(data_dir, expected, allocator)? {
         DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing => Ok(()),
         DraftConsumeOutcome::Changed => Err(CliError::Failure(
             Message::new("The kept draft changed before cleanup. skit kept it at {}.")
@@ -8648,7 +9071,15 @@ fn consume_owned_draft(
     data_dir: &Path,
     expected: &AddSourceSnapshot,
 ) -> Result<DraftConsumeOutcome, CliError> {
-    consume_owned_draft_with(data_dir, expected, |_, _| {})
+    consume_owned_draft_with_allocator(data_dir, expected, &SYSTEM_FILE_ALLOCATOR)
+}
+
+fn consume_owned_draft_with_allocator(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    allocator: &dyn FileAllocator,
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_with(data_dir, expected, allocator, |_, _| {})
 }
 
 #[cfg(test)]
@@ -8657,12 +9088,13 @@ fn consume_owned_draft_with_test_hook(
     expected: &AddSourceSnapshot,
     hook: impl FnMut(DraftConsumeTestPoint, &Path),
 ) -> Result<DraftConsumeOutcome, CliError> {
-    consume_owned_draft_with(data_dir, expected, hook)
+    consume_owned_draft_with(data_dir, expected, &SYSTEM_FILE_ALLOCATOR, hook)
 }
 
 fn consume_owned_draft_with(
     data_dir: &Path,
     expected: &AddSourceSnapshot,
+    allocator: &dyn FileAllocator,
     hook: impl FnMut(DraftConsumeTestPoint, &Path),
 ) -> Result<DraftConsumeOutcome, CliError> {
     consume_owned_draft_claim(
@@ -8677,13 +9109,15 @@ fn consume_owned_draft_with(
             content_hash: None,
             source: Some(expected),
         },
+        allocator,
         hook,
     )
 }
 
-fn consume_draft_summary(
+fn consume_draft_summary_with_allocator(
     data_dir: &Path,
     expected: &DraftSummary,
+    allocator: &dyn FileAllocator,
 ) -> Result<DraftConsumeOutcome, CliError> {
     consume_owned_draft_claim(
         data_dir,
@@ -8696,6 +9130,7 @@ fn consume_draft_summary(
             content_hash: expected.content_hash.as_deref(),
             source: None,
         },
+        allocator,
         |_, _| {},
     )
 }
@@ -8714,6 +9149,7 @@ struct DraftConsumeClaim<'a> {
 fn consume_owned_draft_claim(
     data_dir: &Path,
     claim: DraftConsumeClaim<'_>,
+    allocator: &dyn FileAllocator,
     mut hook: impl FnMut(DraftConsumeTestPoint, &Path),
 ) -> Result<DraftConsumeOutcome, CliError> {
     let DraftConsumeClaim {
@@ -8785,11 +9221,9 @@ fn consume_owned_draft_claim(
                 .is_some_and(|file| source_file_matches(file, source).unwrap_or(false))
         });
 
-    let quarantine_dir = tempfile::Builder::new()
-        .prefix(".skit-quarantine-")
-        .tempdir_in(&drafts_dir)
-        .map_err(|error| source_error("create", &drafts_dir, error))?
-        .keep();
+    let quarantine_dir = allocator
+        .private_directory(PrivateDirectoryPurpose::DraftQuarantine, &drafts_dir)
+        .map_err(|error| source_error("create", &drafts_dir, error))?;
     let quarantine = quarantine_dir.join("draft");
     hook(DraftConsumeTestPoint::BeforeQuarantine, &quarantine);
     if let Err(error) = fs::rename(path, &quarantine) {
@@ -8899,10 +9333,39 @@ fn source_file_matches(file: &mut File, expected: &AddSourceSnapshot) -> Result<
     Ok(bytes == expected.bytes)
 }
 
+#[cfg(test)]
 fn tui_preferences_effect(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
     effect: PreferencesEffect,
+) -> Result<UiAction, CliError> {
+    let home = user_home();
+    tui_preferences_effect_at(
+        service,
+        config_dir,
+        effect,
+        active_locale(),
+        active_locale(),
+        AgentRoots {
+            home: home.clone(),
+            cwd: env::current_dir().map_err(CliError::Io)?,
+        },
+        PreferenceHost {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            files: &SYSTEM_PREFERENCE_FILES,
+        },
+    )
+}
+
+fn tui_preferences_effect_at(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    effect: PreferencesEffect,
+    current_locale: Locale,
+    automatic_locale: Locale,
+    agent_roots: AgentRoots,
+    host: PreferenceHost<'_>,
 ) -> Result<UiAction, CliError> {
     match effect {
         PreferencesEffect::None | PreferencesEffect::Close | PreferencesEffect::ConfirmDiscard => {
@@ -8910,59 +9373,57 @@ fn tui_preferences_effect(
         }
         PreferencesEffect::Save(change) => {
             let requested_language = change.settings.get("lang").cloned();
-            if let Err(error) = change.validate_files(expanded_preference_path_is_file) {
+            if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
                 return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
                     error,
                 )));
             }
             if let Err(error) = FileConfigStore::new(config_dir).set_many(&change.settings) {
                 return Ok(UiAction::SetStatus(format_text(
-                    active_locale(),
+                    current_locale,
                     "Error: {}",
-                    &[&error.message().localize(active_locale())],
+                    &[&error.message().localize(current_locale)],
                 )));
             }
             let locale = requested_language
                 .as_deref()
                 .filter(|language| !language.is_empty() && *language != "auto")
-                .map_or_else(active_locale, |language| detect_locale(Some(language)));
+                .map_or(automatic_locale, |language| detect_locale(Some(language)));
             Ok(UiAction::PreferencesSaved {
                 locale: locale.tag().to_owned(),
-                message: "Preferences saved".to_owned(),
+                message: text(locale, "Preferences saved").into_owned(),
             })
         }
-        PreferencesEffect::ManageAgents => {
-            Ok(UiAction::Present(tui_runners_screen(service, config_dir)?))
-        }
-        PreferencesEffect::DiscoverAgentSkillTargets => {
-            let roots = AgentRoots {
-                home: user_home(),
-                cwd: env::current_dir().map_err(CliError::Io)?,
-            };
-            Ok(UiAction::Preferences(
-                PreferencesAction::PresentAgentSkillTargets(detect_agent_targets(
-                    &roots,
-                    Path::is_dir,
-                )),
-            ))
-        }
+        PreferencesEffect::ManageAgents => Ok(UiAction::Present(tui_runners_screen_at(
+            service,
+            config_dir,
+            current_locale,
+        )?)),
+        PreferencesEffect::DiscoverAgentSkillTargets => Ok(UiAction::Preferences(
+            PreferencesAction::PresentAgentSkillTargets(detect_agent_targets(
+                &agent_roots,
+                |path| host.files.is_dir(path),
+            )),
+        )),
         PreferencesEffect::InstallAgentSkill { skills_dir } => {
-            match FileAgentSkillStore
-                .install(&skills_dir, include_bytes!("../../../skills/skit/SKILL.md"))
-            {
+            match FileAgentSkillStore.install_with_checkpoint(
+                &skills_dir,
+                include_bytes!("../../../skills/skit/SKILL.md"),
+                |point, path| host.files.agent_skill_checkpoint(point, path),
+            ) {
                 Ok(path) => Ok(UiAction::Preferences(
                     PreferencesAction::AgentSkillInstalled {
                         message: format_text(
-                            active_locale(),
+                            current_locale,
                             "Installed the skit Agent Skill: {}",
                             &[&path.display()],
                         ),
                     },
                 )),
                 Err(error) => Ok(UiAction::SetStatus(format_text(
-                    active_locale(),
+                    current_locale,
                     "Error: {}",
-                    &[&error.message().localize(active_locale())],
+                    &[&error.message().localize(current_locale)],
                 ))),
             }
         }
@@ -8970,7 +9431,20 @@ fn tui_preferences_effect(
 }
 
 fn expanded_preference_path_is_file(path: &Path) -> bool {
-    expand_user_path(path).is_file()
+    let home = user_home();
+    preference_path_is_file(
+        path,
+        PreferenceHost {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            files: &SYSTEM_PREFERENCE_FILES,
+        },
+    )
+}
+
+fn preference_path_is_file(path: &Path, host: PreferenceHost<'_>) -> bool {
+    host.files
+        .is_file(&expand_user_path_with_home(path, host.home, host.platform))
 }
 
 fn validate_preference_files(settings: &BTreeMap<String, String>) -> Result<(), CliError> {
@@ -8993,6 +9467,7 @@ fn tui_rerunnable(scan: &LibraryScan, state_dir: &Path) -> Vec<Slug> {
         .collect()
 }
 
+#[cfg(test)]
 fn tui_rerun(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -9000,6 +9475,35 @@ fn tui_rerun(
     config_dir: &Path,
     selector: &str,
     locale: Locale,
+) -> Result<UiAction, CliError> {
+    let run_services = crate::run::RunServices::system();
+    tui_rerun_with_services(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        selector,
+        locale,
+        crate::run::token_context(),
+        env::var("VISUAL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| env::var("EDITOR").ok().filter(|value| !value.is_empty())),
+        &run_services,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tui_rerun_with_services(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    selector: &str,
+    locale: Locale,
+    tokens: TokenContext,
+    editor_fallback: Option<String>,
+    run_services: &crate::run::RunServices<'_>,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -9016,17 +9520,21 @@ fn tui_rerun(
     if entry.meta.kind.as_str() == "prompt"
         && EntrySettings::from_meta(&entry.meta).runner.is_empty()
     {
-        return Ok(UiAction::Present(tui_open(
+        return Ok(UiAction::Present(tui_open_with_context(
             service,
             store,
             state_dir,
             config_dir,
             HostRequest::Run,
             Some(selector.to_owned()),
+            locale,
+            tokens,
+            editor_fallback,
+            run_services.probe(),
         )?));
     }
 
-    let result = crate::run::run_with_roots(
+    let result = crate::run::run_with_services(
         service,
         store,
         state_dir,
@@ -9045,22 +9553,29 @@ fn tui_rerun(
             forget_args: false,
             extra_args: Vec::new(),
         },
+        run_services,
     );
     match result {
         Ok(_) if FileConfigStore::new(config_dir).get("after_run")? == "exit" => Ok(UiAction::Quit),
-        Ok(exit) => tui_complete(
+        Ok(exit) => tui_complete_at(
             service,
             state_dir,
+            config_dir,
+            run_services.now_utc(),
             &format_text(locale, "Run finished with exit status {}", &[&exit]),
         ),
         Err(RunError::Inputs(skit_application::run_inputs::RunInputError::Preparation(_))) => {
-            Ok(UiAction::Present(tui_open(
+            Ok(UiAction::Present(tui_open_with_context(
                 service,
                 store,
                 state_dir,
                 config_dir,
                 HostRequest::Run,
                 Some(selector.to_owned()),
+                locale,
+                tokens,
+                editor_fallback,
+                run_services.probe(),
             )?))
         }
         Err(error) => Ok(UiAction::SetStatus(format_text(
@@ -9071,6 +9586,7 @@ fn tui_rerun(
     }
 }
 
+#[cfg(test)]
 fn tui_open(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -9079,13 +9595,43 @@ fn tui_open(
     request: HostRequest,
     selector: Option<String>,
 ) -> Result<Screen, CliError> {
+    tui_open_with_context(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        request,
+        selector,
+        active_locale(),
+        crate::run::token_context(),
+        env::var("VISUAL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| env::var("EDITOR").ok().filter(|value| !value.is_empty())),
+        &SystemProbe,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tui_open_with_context(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    request: HostRequest,
+    selector: Option<String>,
+    locale: Locale,
+    tokens: TokenContext,
+    editor_fallback: Option<String>,
+    probe: &dyn ProgramProbe,
+) -> Result<Screen, CliError> {
     match request {
         HostRequest::Run => {
             let entry = service.show(tui_selector(&selector)?)?;
             let settings = EntrySettings::from_meta(&entry.meta);
             let source = crate::run::source_text(store, &entry, &settings)?;
             let plan = form_plan(entry.meta.kind.as_str(), &source, &settings);
-            let context = tui_run_context(store, &entry)?;
+            let context = tui_run_context_with_tokens(store, &entry, tokens, probe)?;
             let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
             let runners = if entry.meta.kind.as_str() == "prompt" {
                 FileConfigStore::new(config_dir)
@@ -9105,7 +9651,7 @@ fn tui_open(
                 &saved.presets,
                 &join_editable_arguments(&saved.extra_args),
                 context,
-                active_locale(),
+                locale,
             ))
         }
         HostRequest::Add => tui_add_screen(store, state_dir, config_dir),
@@ -9113,9 +9659,11 @@ fn tui_open(
             let entry = service.show(tui_selector(&selector)?)?;
             tui_settings_screen(service, store, config_dir, state_dir, &entry, None)
         }
-        HostRequest::Preferences => tui_preferences_screen(config_dir),
-        HostRequest::Health => tui_health_screen(service, store, config_dir),
-        HostRequest::Runners => tui_runners_screen(service, config_dir),
+        HostRequest::Preferences => Ok(Screen::Preferences(Box::new(
+            tui_preferences_view_with_context(config_dir, locale, editor_fallback)?,
+        ))),
+        HostRequest::Health => tui_health_screen(service, store, config_dir, locale, probe),
+        HostRequest::Runners => tui_runners_screen_at(service, config_dir, locale),
         // Version 0.4 has no presets screen: `s` opens entry settings deep-linked to that section
         // (`src/skit/tui.py:991-992`). One screen means one place a preset is managed.
         HostRequest::Presets => {
@@ -9181,7 +9729,16 @@ fn tui_run_form(
 }
 
 fn tui_run_context(store: &FileStore, entry: &Entry) -> Result<RunFormContext, CliError> {
-    let tokens = crate::run::token_context();
+    tui_run_context_with_tokens(store, entry, crate::run::token_context(), &SystemProbe)
+}
+
+fn tui_run_context_with_tokens(
+    store: &FileStore,
+    entry: &Entry,
+    tokens: TokenContext,
+    probe: &dyn ProgramProbe,
+) -> Result<RunFormContext, CliError> {
+    let probe = BorrowedProgramProbe(probe);
     let invoke_cwd = PathBuf::from(&tokens.cwd);
     let script = if entry.meta.kind.as_str() == "command" {
         PathBuf::new()
@@ -9193,7 +9750,7 @@ fn tui_run_context(store: &FileStore, entry: &Entry) -> Result<RunFormContext, C
         entry_dir: store.entry_dir_path(&entry.slug),
         invoke_cwd: invoke_cwd.clone(),
     };
-    let workdir = project_launch_workdir(entry, &paths, &SystemProbe)
+    let workdir = project_launch_workdir(entry, &paths, &probe)
         .map_err(RunError::from)?
         .display()
         .to_string();
@@ -9377,13 +9934,11 @@ fn refreshed_draft(data_dir: &Path, path: &Path) -> Result<DraftSummary, CliErro
         })
 }
 
-fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
-    Ok(Screen::Preferences(Box::new(tui_preferences_view(
-        config_dir,
-    )?)))
-}
-
-fn tui_preferences_view(config_dir: &Path) -> Result<PreferencesView, CliError> {
+fn tui_preferences_view_with_context(
+    config_dir: &Path,
+    locale: Locale,
+    editor_fallback: Option<String>,
+) -> Result<PreferencesView, CliError> {
     let config = FileConfigStore::new(config_dir);
     let settings = config.settings()?;
     let setting = |key: &str| settings.get(key).cloned().unwrap_or_default();
@@ -9394,12 +9949,9 @@ fn tui_preferences_view(config_dir: &Path) -> Result<PreferencesView, CliError> 
             .iter()
             .map(|tag| (*tag).to_owned())
             .collect(),
-        effective_language: active_locale().tag().to_owned(),
+        effective_language: locale.tag().to_owned(),
         editor: setting("editor"),
-        editor_fallback: env::var("VISUAL")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .or_else(|| env::var("EDITOR").ok().filter(|value| !value.is_empty())),
+        editor_fallback,
         form: match setting("form").as_str() {
             "plain" => InteractiveFormChoice::Plain,
             _ => InteractiveFormChoice::Tui,
@@ -9437,9 +9989,13 @@ fn tui_health_screen(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     config_dir: &Path,
+    locale: Locale,
+    probe: &dyn ProgramProbe,
 ) -> Result<Screen, CliError> {
-    let snapshot =
-        HealthService::new(CliHealthInspector::new(service, store, config_dir)).inspect()?;
+    let snapshot = HealthService::new(CliHealthInspector::new(
+        service, store, config_dir, locale, probe,
+    ))
+    .inspect()?;
     Ok(Screen::Health(Box::new(HealthView::new(snapshot))))
 }
 
@@ -9447,6 +10003,8 @@ struct CliHealthInspector<'a> {
     service: &'a LibraryService<FileStore>,
     store: &'a FileStore,
     config_dir: &'a Path,
+    locale: Locale,
+    probe: &'a dyn ProgramProbe,
 }
 
 impl std::fmt::Debug for CliHealthInspector<'_> {
@@ -9464,15 +10022,20 @@ impl<'a> CliHealthInspector<'a> {
         service: &'a LibraryService<FileStore>,
         store: &'a FileStore,
         config_dir: &'a Path,
+        locale: Locale,
+        probe: &'a dyn ProgramProbe,
     ) -> Self {
         Self {
             service,
             store,
             config_dir,
+            locale,
+            probe,
         }
     }
 
     fn collect(&self) -> Result<HealthSnapshot, CliError> {
+        let probe = BorrowedProgramProbe(self.probe);
         let scan = self.service.list()?;
         let mut entries = Vec::with_capacity(scan.entries.len());
         for summary in &scan.entries {
@@ -9480,7 +10043,6 @@ impl<'a> CliHealthInspector<'a> {
                 entries.push(entry);
             }
         }
-        let probe = SystemProbe;
         let private_uv = managed_uv_path(self.store.data_dir());
         let uv_path = probe
             .find_program("uv")
@@ -9537,7 +10099,7 @@ impl<'a> CliHealthInspector<'a> {
                     slug: entry.slug.as_str().to_owned(),
                     name: entry.meta.name.clone(),
                     kind: HealthIssueKind::LaunchBlocked {
-                        reason: reason.localize(active_locale()),
+                        reason: reason.localize(self.locale),
                     },
                 });
             }
@@ -9552,7 +10114,7 @@ impl<'a> CliHealthInspector<'a> {
             .runner_rows()?
             .into_iter()
             .filter(|row| row.reason.is_some())
-            .map(|row| row.localized_descriptor(active_locale()))
+            .map(|row| row.localized_descriptor(self.locale))
             .collect();
         let mirrors = config.mirror()?;
         let mirror_settings = config.settings()?;
@@ -9580,7 +10142,7 @@ impl<'a> CliHealthInspector<'a> {
             diagnostics: scan
                 .diagnostics
                 .into_iter()
-                .map(|diagnostic| diagnostic.localize(active_locale()))
+                .map(|diagnostic| diagnostic.localize(self.locale))
                 .collect(),
         })
     }
@@ -9599,7 +10161,7 @@ impl HealthInspection for CliHealthInspector<'_> {
             .list()?
             .diagnostics
             .into_iter()
-            .map(|diagnostic| diagnostic.localize(active_locale()))
+            .map(|diagnostic| diagnostic.localize(self.locale))
             .collect::<Vec<_>>();
         let entry_count = self.store.rebuild_registry()?;
         Ok(HealthRebuild {
@@ -9626,18 +10188,28 @@ fn health_size_text(size: u64) -> String {
     format!("{value:.1} GB")
 }
 
-fn tui_runners_screen(
+fn tui_runners_screen_at(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
+    locale: Locale,
 ) -> Result<Screen, CliError> {
     Ok(Screen::Runners(Box::new(RunnerManagerView::new(
-        tui_runner_rows(service, config_dir)?,
+        tui_runner_rows_at(service, config_dir, locale)?,
     ))))
 }
 
+#[cfg(test)]
 fn tui_runner_rows(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
+) -> Result<Vec<RunnerRow>, CliError> {
+    tui_runner_rows_at(service, config_dir, active_locale())
+}
+
+fn tui_runner_rows_at(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    locale: Locale,
 ) -> Result<Vec<RunnerRow>, CliError> {
     let config = FileConfigStore::new(config_dir);
     config.ensure_runners_seeded()?;
@@ -9683,7 +10255,7 @@ fn tui_runner_rows(
                 name: name.clone(),
                 argv: row.argv.clone(),
                 reason: row.reason.clone(),
-                descriptor: row.localized_descriptor(active_locale()),
+                descriptor: row.localized_descriptor(locale),
                 key_identities,
                 pinned_count: row
                     .name
@@ -9697,11 +10269,22 @@ fn tui_runner_rows(
         .collect())
 }
 
+#[cfg(test)]
 fn tui_save_runner(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
     request: RunnerSaveRequest,
     owner: RunnerSaveOwner,
+) -> Result<UiAction, CliError> {
+    tui_save_runner_at(service, config_dir, request, owner, active_locale())
+}
+
+fn tui_save_runner_at(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    request: RunnerSaveRequest,
+    owner: RunnerSaveOwner,
+    locale: Locale,
 ) -> Result<UiAction, CliError> {
     let config = FileConfigStore::new(config_dir);
     let runner = PromptRunner {
@@ -9717,7 +10300,7 @@ fn tui_save_runner(
                 return Ok(tui_runner_save_failure(
                     owner,
                     text(
-                        active_locale(),
+                        locale,
                         "The runner row changed before it could be saved; inspect again.",
                     )
                     .into_owned(),
@@ -9731,7 +10314,7 @@ fn tui_save_runner(
                 return Ok(tui_runner_save_failure(
                     owner,
                     text(
-                        active_locale(),
+                        locale,
                         "The runner row changed before it could be saved; inspect again.",
                     )
                     .into_owned(),
@@ -9740,7 +10323,7 @@ fn tui_save_runner(
             config.replace_runner_row_if_unchanged(runner, expected)
         }
     };
-    if let Some(failure) = project_runner_save_result(result, owner.clone(), active_locale()) {
+    if let Some(failure) = project_runner_save_result(result, owner.clone(), locale) {
         return Ok(failure);
     }
     let template = if updated {
@@ -9749,13 +10332,13 @@ fn tui_save_runner(
         "Runner {} added: {}"
     };
     let message = format_text(
-        active_locale(),
+        locale,
         template,
         &[&request.name, &runner_command_text(&request.argv)],
     );
     Ok(match owner {
         RunnerSaveOwner::Manager => UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            rows: tui_runner_rows(service, config_dir)?,
+            rows: tui_runner_rows_at(service, config_dir, locale)?,
             selected_name: Some(request.name),
             message,
         }),
@@ -9838,10 +10421,11 @@ fn project_raw_runner_removal(
     )))
 }
 
-fn tui_remove_runner(
+fn tui_remove_runner_at(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
     request: RunnerRemoveRequest,
+    locale: Locale,
 ) -> Result<UiAction, CliError> {
     let config = FileConfigStore::new(config_dir);
     let current = config.runner_rows()?;
@@ -9854,7 +10438,7 @@ fn tui_remove_runner(
             let Some(expected) = resolve_runner_rows(&current, expected) else {
                 return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
                     text(
-                        active_locale(),
+                        locale,
                         "The runner row changed before it could be removed; inspect again.",
                     )
                     .into_owned(),
@@ -9864,46 +10448,34 @@ fn tui_remove_runner(
                 FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
             let result =
                 management.remove_named_if_unchanged(name, &expected, *expected_pinned_count);
-            if let Some(failure) = project_named_runner_removal(result, active_locale()) {
+            if let Some(failure) = project_named_runner_removal(result, locale) {
                 return Ok(failure);
             }
             Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                rows: tui_runner_rows(service, config_dir)?,
+                rows: tui_runner_rows_at(service, config_dir, locale)?,
                 selected_name: None,
-                message: format_text(active_locale(), "Runner {} removed.", &[name]),
+                message: format_text(locale, "Runner {} removed.", &[name]),
             }))
         }
         RunnerRemoveRequest::RawRow { expected } => {
             let Some(row) = resolve_runner_row(&current, expected) else {
                 return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
                     text(
-                        active_locale(),
+                        locale,
                         "The runner row changed before it could be removed; inspect again.",
                     )
                     .into_owned(),
                 )));
             };
             let message = row.index.map_or_else(
-                || {
-                    text(
-                        active_locale(),
-                        "Malformed prompt runner container removed.",
-                    )
-                    .into_owned()
-                },
-                |index| {
-                    format_text(
-                        active_locale(),
-                        "Malformed runner row {} removed.",
-                        &[&index],
-                    )
-                },
+                || text(locale, "Malformed prompt runner container removed.").into_owned(),
+                |index| format_text(locale, "Malformed runner row {} removed.", &[&index]),
             );
             let result = config.remove_runner_row_if_unchanged(row);
-            project_raw_runner_removal(result, active_locale()).map_or_else(
+            project_raw_runner_removal(result, locale).map_or_else(
                 || {
                     Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                        rows: tui_runner_rows(service, config_dir)?,
+                        rows: tui_runner_rows_at(service, config_dir, locale)?,
                         selected_name: None,
                         message,
                     }))
@@ -10092,6 +10664,7 @@ fn tui_parameter_row(
     Ok(Some(declaration))
 }
 
+#[cfg(test)]
 fn tui_submit(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -10101,14 +10674,53 @@ fn tui_submit(
     selector: Option<String>,
     values: &SubmittedValues,
 ) -> Result<UiAction, CliError> {
+    let run_services = (purpose == FormPurpose::Run).then(crate::run::RunServices::system);
+    let home = user_home();
+    tui_submit_at(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        purpose,
+        selector,
+        values,
+        active_locale(),
+        time::OffsetDateTime::now_utc(),
+        &SYSTEM_OUTPUT,
+        run_services.as_ref(),
+        PreferenceHost {
+            home: home.as_deref(),
+            platform: InterpreterPlatform::current(),
+            files: &SYSTEM_PREFERENCE_FILES,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tui_submit_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    purpose: FormPurpose,
+    selector: Option<String>,
+    values: &SubmittedValues,
+    locale: Locale,
+    now: time::OffsetDateTime,
+    output: &(impl HostOutput + ?Sized),
+    run_services: Option<&crate::run::RunServices<'_>>,
+    preference_host: PreferenceHost<'_>,
+) -> Result<UiAction, CliError> {
     match purpose {
-        FormPurpose::Run => tui_submit_run(
+        FormPurpose::Run => tui_submit_run_with_services(
             service,
             store,
             state_dir,
             config_dir,
             tui_selector(&selector)?,
             values,
+            locale,
+            run_services.expect("a run submit has run services"),
         ),
         FormPurpose::Add => {
             let source = tui_value(values, "source");
@@ -10134,26 +10746,38 @@ fn tui_submit(
                     no_input: false,
                 },
             )?;
-            tui_complete(service, state_dir, "Entry added")
+            tui_complete_at(service, state_dir, config_dir, now, "Entry added")
         }
         FormPurpose::Settings => {
-            let outcome =
-                tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
-            tui_complete(
+            let outcome = tui_submit_settings_at(
+                service,
+                store,
+                state_dir,
+                tui_selector(&selector)?,
+                values,
+                crate::run::system_time_from_utc(now),
+            )?;
+            tui_complete_at(
                 service,
                 state_dir,
-                &settings_saved_message(&outcome, active_locale()),
+                config_dir,
+                now,
+                &settings_saved_message(&outcome, locale),
             )
         }
         FormPurpose::Preferences => {
             let config = FileConfigStore::new(config_dir);
-            let settings = values
+            let settings: BTreeMap<String, String> = values
                 .iter()
                 .map(|(key, value)| (key.clone(), value.as_text()))
                 .collect();
-            validate_preference_files(&settings)?;
+            PreferencesChangeSet {
+                settings: settings.clone(),
+            }
+            .validate_files(|path| preference_path_is_file(path, preference_host))
+            .map_err(|error| CliError::Usage(error.message()))?;
             config.set_many(&settings)?;
-            tui_complete(service, state_dir, "Preferences saved")
+            tui_complete_at(service, state_dir, config_dir, now, "Preferences saved")
         }
         FormPurpose::Runners => {
             let config = FileConfigStore::new(config_dir);
@@ -10176,15 +10800,17 @@ fn tui_submit(
                     true,
                 )?;
             }
-            tui_complete(service, state_dir, "Prompt runners saved")
+            tui_complete_at(service, state_dir, config_dir, now, "Prompt runners saved")
         }
         FormPurpose::Rename => {
-            rename(
+            rename_with_output(
                 service,
                 tui_selector(&selector)?,
                 &tui_required(values, "name")?,
+                output,
+                locale,
             )?;
-            tui_complete(service, state_dir, "Entry renamed")
+            tui_complete_at(service, state_dir, config_dir, now, "Entry renamed")
         }
     }
 }
@@ -10199,6 +10825,7 @@ fn refuse_empty_preset_schema(declarations: &[ParamDecl]) -> Result<(), CliError
     }
 }
 
+#[cfg(test)]
 fn tui_submit_run(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -10207,13 +10834,37 @@ fn tui_submit_run(
     selector: &str,
     values: &SubmittedValues,
 ) -> Result<UiAction, CliError> {
+    let run_services = crate::run::RunServices::system();
+    tui_submit_run_with_services(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        selector,
+        values,
+        active_locale(),
+        &run_services,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tui_submit_run_with_services(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    selector: &str,
+    values: &SubmittedValues,
+    locale: Locale,
+    run_services: &crate::run::RunServices<'_>,
+) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
     let run_values = changed_form_values(values, &saved.values);
     let extra_args = split_editable_arguments(&tui_value(values, "_skit_args"))?;
     let runner = tui_nonempty_owned(values, "_skit_runner");
     let runner_was_picked = tui_flag(values, "_skit_runner_picked")?;
-    let result = crate::run::run_with_roots(
+    let result = crate::run::run_with_services(
         service,
         store,
         state_dir,
@@ -10232,17 +10883,21 @@ fn tui_submit_run(
             forget_args: false,
             extra_args,
         },
+        run_services,
     );
     let exit = match result {
         Ok(exit) => exit,
         Err(error) => {
-            if let Some(message) = selected_prompt_runner_preflight_message(
-                &entry,
-                runner.as_deref(),
-                &error,
-                active_locale(),
-            ) {
-                return tui_complete(service, state_dir, &message);
+            if let Some(message) =
+                selected_prompt_runner_preflight_message(&entry, runner.as_deref(), &error, locale)
+            {
+                return tui_complete_at(
+                    service,
+                    state_dir,
+                    config_dir,
+                    run_services.now_utc(),
+                    &message,
+                );
             }
             return Err(error.into());
         }
@@ -10250,9 +10905,11 @@ fn tui_submit_run(
     if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
         Ok(UiAction::Quit)
     } else {
-        tui_complete(
+        tui_complete_at(
             service,
             state_dir,
+            config_dir,
+            run_services.now_utc(),
             &format!("Run finished with exit status {exit}"),
         )
     }
@@ -10281,12 +10938,31 @@ struct SettingsSaveOutcome {
     purged_secrets: BTreeSet<String>,
 }
 
+#[cfg(test)]
 fn tui_submit_settings(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     state_dir: &Path,
     selector: &str,
     values: &SubmittedValues,
+) -> Result<SettingsSaveOutcome, CliError> {
+    tui_submit_settings_at(
+        service,
+        store,
+        state_dir,
+        selector,
+        values,
+        SystemTime::now(),
+    )
+}
+
+fn tui_submit_settings_at(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    selector: &str,
+    values: &SubmittedValues,
+    cleanup_now: SystemTime,
 ) -> Result<SettingsSaveOutcome, CliError> {
     let entry = service.show(selector)?;
     // Only an axis a person moved travels. Every read below therefore asks whether the key is
@@ -10412,8 +11088,18 @@ fn tui_submit_settings(
         .iter()
         .map(|item| item.name.clone())
         .collect::<BTreeSet<_>>();
+    // Seed from the stored schema, not from the effective plan. A prompt with insertion off has
+    // an empty effective plan and still owns every declaration it stored
+    // (`src/skit/tui_settings.py:344`).
     let mut declarations = if placeholder_kind {
-        entry_parameters(store, &entry)
+        form_params(
+            entry.meta.kind.as_str(),
+            &source_text,
+            &EntrySettings {
+                interpolate: true,
+                ..stored_settings.clone()
+            },
+        )
     } else {
         stored_settings.parameters.clone()
     };
@@ -10459,20 +11145,26 @@ fn tui_submit_settings(
     if entry.meta.kind.as_str() == "command" && settings.template != previous_template {
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
+    // A prompt with insertion off shows no parameter rows, so its save carries none and writes
+    // none. The stored schema waits for insertion to come back on
+    // (`src/skit/tui_settings.py:952-954`, `:1090-1095`).
+    let prompt_schema_hidden = entry.meta.kind.as_str() == "prompt" && !settings.interpolate;
     // No submit-time filter. A source-owned row is never offered as an editable declaration, so
     // there is nothing here to take back out — and with it go both races the filter carried: a
     // concurrent source edit changing which rows survive, and an unreadable source silently
     // widening the set that does.
-    settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
-        Vec::new()
-    } else {
-        declarations
-            .iter()
-            .filter(|item| explicit_names.contains(&item.name))
-            .cloned()
-            .collect()
-    };
-    if placeholder_kind {
+    if !prompt_schema_hidden {
+        settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
+            Vec::new()
+        } else {
+            declarations
+                .iter()
+                .filter(|item| explicit_names.contains(&item.name))
+                .cloned()
+                .collect()
+        };
+    }
+    if placeholder_kind && !prompt_schema_hidden {
         let placeholder_names = declarations
             .iter()
             .filter(|parameter| parameter.delivery == ParameterDelivery::Placeholder)
@@ -10632,12 +11324,13 @@ fn tui_submit_settings(
             .update_after_external_commit_and_finalize(
                 &entry.slug,
                 || {
-                    commit_entry_with_javascript_cleanup(
+                    commit_entry_with_javascript_cleanup_at(
                         service,
                         store,
                         &entry,
                         update,
                         clear_javascript,
+                        cleanup_now,
                     )
                 },
                 |state| scrub_secrets(purge_declarations, state),
@@ -10648,7 +11341,14 @@ fn tui_submit_settings(
         (committed.entry, purged_secrets)
     } else {
         let entry = if entry_changed {
-            update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
+            update_entry_with_javascript_cleanup_at(
+                service,
+                store,
+                &entry,
+                update,
+                clear_javascript,
+                cleanup_now,
+            )?
         } else {
             entry
         };
@@ -10699,16 +11399,33 @@ fn settings_saved_message(outcome: &SettingsSaveOutcome, locale: Locale) -> Stri
     lines.join(" — ")
 }
 
+#[cfg(test)]
 fn tui_complete(
     service: &LibraryService<FileStore>,
     state_dir: &Path,
     message: &str,
 ) -> Result<UiAction, CliError> {
+    tui_complete_at(
+        service,
+        state_dir,
+        &resolve_config_dir()?,
+        time::OffsetDateTime::now_utc(),
+        message,
+    )
+}
+
+fn tui_complete_at(
+    service: &LibraryService<FileStore>,
+    state_dir: &Path,
+    config_dir: &Path,
+    now: time::OffsetDateTime,
+    message: &str,
+) -> Result<UiAction, CliError> {
     // The same projection the screen opened with. Handing back the entry list alone leaves the
     // detail pane with no facts for anything a mutation touched — a freshly added entry showed its
     // name, kind and description and nothing else.
-    let config_dir = resolve_config_dir()?;
-    let surface = crate::library_surface(service.repository(), state_dir, &config_dir)?;
+    let surface =
+        crate::library::library_surface_at(service.repository(), state_dir, config_dir, now)?;
     let rerunnable = tui_rerunnable(&surface.scan, state_dir);
     Ok(UiAction::Complete {
         surface: Some(surface),

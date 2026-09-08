@@ -277,7 +277,7 @@ fn each_runtime_uses_its_own_installer_and_disables_lifecycle_scripts() {
             root.path(),
             runtime,
             &["chalk@5".to_owned()],
-            &probe,
+            &probe as &dyn ProgramProbe,
             &runner,
         )
         .unwrap();

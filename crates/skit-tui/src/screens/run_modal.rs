@@ -8,7 +8,7 @@ use ratatui_core::{
     terminal::Frame,
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::{
     components::{ListPicker, ListPickerState, ListPickerStyle},
@@ -30,7 +30,15 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 
 use crate::{
     EventHandling, ViewGeometry,
-    screens::picker::{FilePickerEvent, FilePickerGeometry, FilePickerSession, render_file_picker},
+    agent_review::{
+        AgentReviewNode, AgentReviewSnapshotError, list_picker as snapshot_list_picker,
+        node as snapshot_node, rect as snapshot_rect, value as snapshot_value,
+    },
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry},
+    screens::picker::{
+        FilePickerEvent, FilePickerGeometry, FilePickerSession, MemoryFilePickerSource,
+        render_file_picker,
+    },
     session::render_line_input,
 };
 
@@ -47,7 +55,7 @@ pub(crate) enum RunModalEvent {
     OpenFile { field: usize },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 enum ModalSignature {
     Preset,
     Token {
@@ -66,7 +74,7 @@ enum ModalSignature {
     Other,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 enum ModalHit {
     PresetInput,
     TokenOption(usize),
@@ -75,22 +83,143 @@ enum ModalHit {
 }
 
 /// Ephemeral cursor and selection state for typed launch modals.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RunModalSession {
     signature: Option<ModalSignature>,
     preset: LineInput,
     token: ListPickerState,
     token_view_height: usize,
+    token_area: Rect,
     environment: LineInput,
+    preset_editable: Option<EditableGeometry>,
+    environment_editable: Option<EditableGeometry>,
     environment_list: ListPickerState,
     environment_view_height: usize,
+    environment_area: Rect,
+    environment_click_values: Vec<String>,
     file: Option<FilePickerSession>,
     file_geometry: FilePickerGeometry,
     file_missing_root: bool,
     clicks: ClickRegionRegistry<ModalHit>,
+    click: ClickTracker<ModalHit>,
+    file_picker_source: Option<MemoryFilePickerSource>,
 }
 
 impl RunModalSession {
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+        if let Some(file) = self.file.as_mut() {
+            file.cancel_click();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn perturb_agent_review_state(&mut self) {
+        self.token_view_height = self.token_view_height.saturating_add(1);
+    }
+
+    pub(crate) fn agent_review_snapshot(
+        &self,
+    ) -> Result<AgentReviewNode, AgentReviewSnapshotError> {
+        let Self {
+            signature,
+            preset,
+            token,
+            token_view_height,
+            token_area,
+            environment,
+            preset_editable,
+            environment_editable,
+            environment_list,
+            environment_view_height,
+            environment_area,
+            environment_click_values,
+            file,
+            file_geometry,
+            file_missing_root,
+            clicks,
+            click,
+            file_picker_source,
+        } = self;
+        let file = file
+            .as_ref()
+            .map(FilePickerSession::agent_review_snapshot)
+            .transpose()?
+            .map(|snapshot| snapshot_value("run_modal.file", &snapshot))
+            .transpose()?
+            .unwrap_or(serde_json::Value::Null);
+        let file_geometry = file_geometry.agent_review_snapshot();
+        let file_geometry = snapshot_value("run_modal.file_geometry", &file_geometry)?;
+        Ok(snapshot_node(
+            "run_modal",
+            [
+                (
+                    "signature",
+                    signature
+                        .as_ref()
+                        .map(modal_signature_snapshot)
+                        .transpose()?
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                ("preset", snapshot_value("run_modal.preset", preset)?),
+                ("token", snapshot_list_picker(token)),
+                ("token_view_height", serde_json::json!(token_view_height)),
+                ("token_area", snapshot_rect(*token_area)),
+                (
+                    "environment",
+                    snapshot_value("run_modal.environment", environment)?,
+                ),
+                (
+                    "preset_editable",
+                    preset_editable
+                        .map(editable_geometry_snapshot)
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                (
+                    "environment_editable",
+                    environment_editable
+                        .map(editable_geometry_snapshot)
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                ("environment_list", snapshot_list_picker(environment_list)),
+                (
+                    "environment_view_height",
+                    serde_json::json!(environment_view_height),
+                ),
+                ("environment_area", snapshot_rect(*environment_area)),
+                (
+                    "environment_click_values",
+                    serde_json::json!(environment_click_values),
+                ),
+                ("file", file),
+                ("file_geometry", file_geometry),
+                ("file_missing_root", serde_json::json!(file_missing_root)),
+                ("clicks", modal_clicks_snapshot(clicks)),
+                (
+                    "click",
+                    click
+                        .pressed()
+                        .map(modal_hit_snapshot)
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                (
+                    "file_picker_source",
+                    file_picker_source
+                        .as_ref()
+                        .map(MemoryFilePickerSource::agent_review_snapshot)
+                        .map(|snapshot| snapshot_value("run_modal.file_picker_source", &snapshot))
+                        .transpose()?
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+            ],
+        ))
+    }
+
+    pub(crate) fn set_file_picker_source(&mut self, source: MemoryFilePickerSource) {
+        self.file_picker_source = Some(source);
+        self.signature = None;
+    }
+
     /// Keep widget state aligned with the serializable modal contract.
     pub(crate) fn sync(&mut self, modal: &ModalState) {
         let signature = match modal {
@@ -118,6 +247,7 @@ impl RunModalSession {
             | ModalState::RunnerEditor { .. } => ModalSignature::Other,
         };
         if self.signature.as_ref() != Some(&signature) {
+            self.click.cancel();
             match &signature {
                 ModalSignature::Preset => self.preset = LineInput::default(),
                 ModalSignature::Token { options, .. } => {
@@ -128,8 +258,12 @@ impl RunModalSession {
                     self.environment_list = ListPickerState::default();
                 }
                 ModalSignature::File { context, .. } => {
-                    let (contract, missing_root) = file_picker_contract(context);
-                    self.file = Some(FilePickerSession::new(contract));
+                    let (contract, missing_root) =
+                        file_picker_contract(context, self.file_picker_source.as_ref());
+                    self.file = Some(match self.file_picker_source.clone() {
+                        Some(source) => FilePickerSession::with_memory_source(contract, source),
+                        None => FilePickerSession::new(contract),
+                    });
                     self.file_geometry = FilePickerGeometry::default();
                     self.file_missing_root = missing_root;
                 }
@@ -143,10 +277,16 @@ impl RunModalSession {
             self.preset = LineInput::new(value.clone());
         }
         if let ModalState::RunEnvironmentPicker { query, visible, .. } = modal {
+            if self.environment_click_values != *visible {
+                self.click.cancel();
+                self.environment_click_values.clone_from(visible);
+            }
             if self.environment.value() != query {
                 self.environment = LineInput::new(query.clone());
             }
             self.environment_list.set_total(visible.len());
+        } else {
+            self.environment_click_values.clear();
         }
     }
 
@@ -259,7 +399,7 @@ impl RunModalSession {
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
         let input = Rect::new(inner.x, inner.y, inner.width, inner.height.min(3));
-        render_line_input(
+        self.preset_editable = render_line_input(
             frame,
             input,
             &self.preset,
@@ -296,6 +436,7 @@ impl RunModalSession {
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
         self.token_view_height = usize::from(inner.height);
+        self.token_area = inner;
         self.token.ensure_visible(self.token_view_height);
         let labels = options
             .iter()
@@ -339,7 +480,7 @@ impl RunModalSession {
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
         let input = Rect::new(inner.x, inner.y, inner.width, inner.height.min(3));
-        render_line_input(
+        self.environment_editable = render_line_input(
             frame,
             input,
             &self.environment,
@@ -355,6 +496,7 @@ impl RunModalSession {
             inner.height.saturating_sub(input.height),
         );
         self.environment_view_height = usize::from(list.height);
+        self.environment_area = list;
         self.environment_list
             .ensure_visible(self.environment_view_height);
         frame.render_widget(
@@ -408,22 +550,29 @@ impl RunModalSession {
                 }
                 action(Action::SetModalInput(self.preset.value().to_owned()))
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                match self.clicks.handle_click(mouse.column, mouse.row) {
-                    Some(ModalHit::PresetInput) => consumed(),
-                    Some(
+            Event::Mouse(mouse) => {
+                let target = self.clicks.handle_click(mouse.column, mouse.row);
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                    && matches!(target, Some(ModalHit::PresetInput))
+                    && let Some(editable) = self.preset_editable
+                {
+                    let _ = editable.place_cursor(&mut self.preset, mouse.column, mouse.row);
+                }
+                match self.click.update(&mouse, target) {
+                    ClickOutcome::Armed | ClickOutcome::Activated(ModalHit::PresetInput) => {
+                        consumed()
+                    }
+                    ClickOutcome::Activated(
                         ModalHit::TokenOption(_)
                         | ModalHit::EnvironmentInput
                         | ModalHit::EnvironmentOption(_),
                     )
-                    | None => ignored(),
+                    | ClickOutcome::Ignored => ignored(),
                 }
             }
-            Event::FocusGained
-            | Event::FocusLost
-            | Event::Mouse(_)
-            | Event::Key(_)
-            | Event::Resize(_, _) => ignored(),
+            Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
+                ignored()
+            }
         }
     }
 
@@ -478,20 +627,43 @@ impl RunModalSession {
                     self.environment.value().to_owned(),
                 ))
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                match self.clicks.handle_click(mouse.column, mouse.row) {
-                    Some(ModalHit::EnvironmentOption(index)) => visible
-                        .get(*index)
+            Event::Mouse(mouse) => {
+                if self
+                    .environment_area
+                    .contains((mouse.column, mouse.row).into())
+                    && matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    )
+                {
+                    self.click.cancel();
+                    return move_list(
+                        &mut self.environment_list,
+                        self.environment_view_height,
+                        u8::from(mouse.kind == MouseEventKind::ScrollDown),
+                    );
+                }
+                let target = self.clicks.handle_click(mouse.column, mouse.row);
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                    && matches!(target, Some(ModalHit::EnvironmentInput))
+                    && let Some(editable) = self.environment_editable
+                {
+                    let _ = editable.place_cursor(&mut self.environment, mouse.column, mouse.row);
+                }
+                match self.click.update(&mouse, target) {
+                    ClickOutcome::Activated(ModalHit::EnvironmentOption(index)) => visible
+                        .get(index)
                         .map_or_else(consumed, |name| insert_environment(field, name)),
-                    Some(ModalHit::EnvironmentInput) => consumed(),
-                    Some(ModalHit::PresetInput | ModalHit::TokenOption(_)) | None => ignored(),
+                    ClickOutcome::Armed | ClickOutcome::Activated(ModalHit::EnvironmentInput) => {
+                        consumed()
+                    }
+                    ClickOutcome::Activated(ModalHit::PresetInput | ModalHit::TokenOption(_))
+                    | ClickOutcome::Ignored => ignored(),
                 }
             }
-            Event::FocusGained
-            | Event::FocusLost
-            | Event::Mouse(_)
-            | Event::Key(_)
-            | Event::Resize(_, _) => ignored(),
+            Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
+                ignored()
+            }
         }
     }
 
@@ -532,20 +704,34 @@ impl RunModalSession {
                 KeyCode::Enter => Some(self.token.selected_index),
                 _ => return ignored(),
             },
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                match self.clicks.handle_click(mouse.column, mouse.row) {
-                    Some(ModalHit::TokenOption(index)) => Some(*index),
-                    Some(
+            Event::Mouse(mouse) => {
+                if self.token_area.contains((mouse.column, mouse.row).into())
+                    && matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    )
+                {
+                    self.click.cancel();
+                    return move_list(
+                        &mut self.token,
+                        self.token_view_height,
+                        u8::from(mouse.kind == MouseEventKind::ScrollDown),
+                    );
+                }
+                let target = self.clicks.handle_click(mouse.column, mouse.row);
+                match self.click.update(&mouse, target) {
+                    ClickOutcome::Activated(ModalHit::TokenOption(index)) => Some(index),
+                    ClickOutcome::Armed => return consumed(),
+                    ClickOutcome::Activated(
                         ModalHit::PresetInput
                         | ModalHit::EnvironmentInput
                         | ModalHit::EnvironmentOption(_),
                     )
-                    | None => return ignored(),
+                    | ClickOutcome::Ignored => return ignored(),
                 }
             }
             Event::FocusGained
             | Event::FocusLost
-            | Event::Mouse(_)
             | Event::Paste(_)
             | Event::Key(_)
             | Event::Resize(_, _) => return ignored(),
@@ -561,6 +747,171 @@ impl RunModalSession {
                 text: option.insertion().unwrap_or_default().to_owned(),
             },
         }
+    }
+}
+
+fn modal_signature_snapshot(
+    signature: &ModalSignature,
+) -> Result<serde_json::Value, AgentReviewSnapshotError> {
+    Ok(match signature {
+        ModalSignature::Preset => serde_json::json!("preset"),
+        ModalSignature::Token { field, options } => serde_json::json!({
+            "token": {
+                "field": field,
+                "options": snapshot_value("run_modal.signature.options", options)?,
+            }
+        }),
+        ModalSignature::Environment { field, names } => {
+            serde_json::json!({"environment": {"field": field, "names": names}})
+        }
+        ModalSignature::File {
+            field,
+            context,
+            mode,
+        } => serde_json::json!({
+            "file": {
+                "field": field,
+                "context": snapshot_value("run_modal.signature.context", context)?,
+                "mode": snapshot_value("run_modal.signature.mode", mode)?,
+            }
+        }),
+        ModalSignature::Other => serde_json::json!("other"),
+    })
+}
+
+fn editable_geometry_snapshot(geometry: EditableGeometry) -> serde_json::Value {
+    serde_json::json!({
+        "content": snapshot_rect(geometry.content()),
+        "visual_scroll": geometry.visual_scroll(),
+        "secret": geometry.secret(),
+    })
+}
+
+fn modal_hit_snapshot(hit: &ModalHit) -> serde_json::Value {
+    match hit {
+        ModalHit::PresetInput => serde_json::json!("preset_input"),
+        ModalHit::TokenOption(index) => serde_json::json!({"token_option": index}),
+        ModalHit::EnvironmentInput => serde_json::json!("environment_input"),
+        ModalHit::EnvironmentOption(index) => {
+            serde_json::json!({"environment_option": index})
+        }
+    }
+}
+
+fn modal_clicks_snapshot(clicks: &ClickRegionRegistry<ModalHit>) -> serde_json::Value {
+    serde_json::Value::Array(
+        clicks
+            .regions()
+            .iter()
+            .map(|region| {
+                let target = modal_hit_snapshot(&region.data);
+                serde_json::json!({
+                    "area": crate::agent_review::rect(region.area),
+                    "target": target,
+                })
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod agent_review_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn run_modal_snapshot_covers_every_signature_hit_and_nested_file_shape() {
+        let context = RunPathContext {
+            workdir: "/memory".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        };
+        let signatures = [
+            ModalSignature::Preset,
+            ModalSignature::Token {
+                field: 1,
+                options: vec![RunTokenOption::RuntimeDirectory],
+            },
+            ModalSignature::Environment {
+                field: 2,
+                names: vec!["HOME".to_owned()],
+            },
+            ModalSignature::File {
+                field: 3,
+                context: context.clone(),
+                mode: RunPathInsertMode::Replace,
+            },
+            ModalSignature::Other,
+        ];
+        for signature in &signatures {
+            assert!(!modal_signature_snapshot(signature).unwrap().is_null());
+        }
+
+        let mut clicks = ClickRegionRegistry::new();
+        for (index, hit) in [
+            ModalHit::PresetInput,
+            ModalHit::TokenOption(0),
+            ModalHit::EnvironmentInput,
+            ModalHit::EnvironmentOption(0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            clicks.register(Rect::new(index as u16, 0, 1, 1), hit);
+        }
+        assert_eq!(modal_clicks_snapshot(&clicks).as_array().unwrap().len(), 4);
+
+        let root = PathBuf::from("/memory");
+        let source = MemoryFilePickerSource::new(
+            root.clone(),
+            BTreeSet::from([root.clone()]),
+            BTreeSet::new(),
+        );
+        let contract = PathPickerState::new(
+            PickerPurpose::Argument,
+            root.clone(),
+            PathSelectionMode::FileOrDirectory,
+            PathOutputPolicy::RelativeTo(root),
+            false,
+        );
+        let mut session = RunModalSession {
+            signature: Some(ModalSignature::File {
+                field: 0,
+                context,
+                mode: RunPathInsertMode::Replace,
+            }),
+            token_area: Rect::new(0, 0, 4, 2),
+            preset_editable: Some(EditableGeometry::new(Rect::new(1, 1, 4, 1), 1, false)),
+            environment_editable: Some(EditableGeometry::new(Rect::new(1, 2, 4, 1), 2, false)),
+            environment_area: Rect::new(0, 2, 8, 4),
+            environment_click_values: vec!["HOME".to_owned()],
+            file: Some(FilePickerSession::with_memory_source(
+                contract,
+                source.clone(),
+            )),
+            file_geometry: FilePickerGeometry::default(),
+            file_missing_root: true,
+            clicks,
+            file_picker_source: Some(source),
+            ..RunModalSession::default()
+        };
+        let press = ratatui_crossterm::crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            session
+                .click
+                .update(&press, Some(&ModalHit::EnvironmentOption(0))),
+            ClickOutcome::Armed,
+        );
+        let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
+        assert!(json.contains("file_picker_source"));
+        assert!(json.contains("file_missing_root"));
+        assert!(json.contains("environment_editable"));
+        assert!(json.contains("environment_click_values"));
     }
 }
 
@@ -649,10 +1000,18 @@ fn list_style() -> ListPickerStyle {
     }
 }
 
-fn file_picker_contract(context: &RunPathContext) -> (PathPickerState, bool) {
+fn file_picker_contract(
+    context: &RunPathContext,
+    memory_source: Option<&MemoryFilePickerSource>,
+) -> (PathPickerState, bool) {
     let workdir = PathBuf::from(&context.workdir);
-    let missing_root = !workdir.is_dir();
-    let start = if missing_root {
+    let missing_root = memory_source.map_or_else(
+        || !workdir.is_dir(),
+        |source| !source.contains_directory(&workdir),
+    );
+    let start = if let Some(source) = memory_source {
+        source.nearest_directory(&workdir)
+    } else if missing_root {
         workdir
             .ancestors()
             .skip(1)
@@ -822,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_and_token_modals_route_every_key_and_left_down_target() {
+    fn environment_and_token_modals_route_every_key_and_primary_release_target() {
         let names = vec!["HOME".to_owned(), "PATH".to_owned(), "SHELL".to_owned()];
         let modal = ModalState::RunEnvironmentPicker {
             field: 4,
@@ -897,8 +1256,12 @@ mod tests {
             session.handle_event(mouse(9, 7, MouseEventKind::Down(MouseButton::Left)), &home),
             RunModalEvent::Handling(EventHandling::Consumed)
         );
-        assert!(matches!(
+        assert_eq!(
             session.handle_event(mouse(9, 10, MouseEventKind::Down(MouseButton::Left)), &home,),
+            RunModalEvent::Handling(EventHandling::Consumed)
+        );
+        assert!(matches!(
+            session.handle_event(mouse(9, 10, MouseEventKind::Up(MouseButton::Left)), &home,),
             RunModalEvent::Insert { field: 4, .. }
         ));
 
@@ -960,6 +1323,10 @@ mod tests {
                 mouse(9, 5, MouseEventKind::Down(MouseButton::Left)),
                 &tokens,
             ),
+            RunModalEvent::Handling(EventHandling::Consumed)
+        );
+        assert_eq!(
+            session.handle_event(mouse(9, 5, MouseEventKind::Up(MouseButton::Left)), &tokens,),
             RunModalEvent::OpenFile { field: 2 }
         );
         assert_eq!(
@@ -1032,6 +1399,394 @@ mod tests {
     }
 
     #[test]
+    fn token_and_environment_wheels_reach_the_last_visible_owner_row() {
+        let names = (0..20)
+            .map(|index| format!("NAME_{index:02}"))
+            .collect::<Vec<_>>();
+        let environment = ModalState::RunEnvironmentPicker {
+            field: 0,
+            names: names.clone(),
+            query: String::new(),
+            visible: names,
+        };
+        let mut session = RunModalSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &environment, Locale::En);
+            })
+            .unwrap();
+        for _ in 0..30 {
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        session.environment_area.x,
+                        session.environment_area.y,
+                        MouseEventKind::ScrollDown,
+                    ),
+                    &environment,
+                ),
+                consumed()
+            );
+        }
+        assert_eq!(session.environment_list.selected_index, 19);
+        assert!(session.environment_list.scroll > 0);
+
+        let options = vec![RunTokenOption::Today; 20];
+        let token = ModalState::RunTokenMenu { field: 0, options };
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &token, Locale::En);
+            })
+            .unwrap();
+        for _ in 0..30 {
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        session.token_area.x,
+                        session.token_area.y,
+                        MouseEventKind::ScrollDown,
+                    ),
+                    &token,
+                ),
+                consumed()
+            );
+        }
+        assert_eq!(session.token.selected_index, 19);
+        assert!(session.token.scroll > 0);
+    }
+
+    #[test]
+    fn environment_sync_preserves_equal_cursor_and_accepts_external_values() {
+        let names = vec!["abcdef".to_owned(), "remote".to_owned()];
+        let original = ModalState::RunEnvironmentPicker {
+            field: 2,
+            names: names.clone(),
+            query: "abcdef".to_owned(),
+            visible: names.clone(),
+        };
+        let mut session = RunModalSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &original, Locale::En);
+            })
+            .unwrap();
+        for _ in 0..4 {
+            assert_eq!(
+                session.handle_event(key(KeyCode::Left), &original),
+                consumed()
+            );
+        }
+        assert_eq!(
+            session.environment.cursor(),
+            2,
+            "Left did not move the cursor"
+        );
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &original, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('X')), &original),
+            action(Action::SetRunEnvironmentQuery("abXcdef".to_owned()))
+        );
+
+        let mut external = RunModalSession::default();
+        terminal
+            .draw(|frame| {
+                let _ = external.render(frame, frame.area(), &original, Locale::En);
+            })
+            .unwrap();
+        let changed = ModalState::RunEnvironmentPicker {
+            field: 2,
+            names,
+            query: "remote".to_owned(),
+            visible: vec!["remote".to_owned()],
+        };
+        terminal
+            .draw(|frame| {
+                let _ = external.render(frame, frame.area(), &changed, Locale::En);
+            })
+            .unwrap();
+        let rendered = buffer_text(&terminal);
+        assert!(
+            rendered.contains("remote"),
+            "external value is missing: {rendered}"
+        );
+        assert!(
+            !rendered.contains("abcdef"),
+            "stale value remains: {rendered}"
+        );
+        assert_eq!(
+            external.handle_event(key(KeyCode::Char('X')), &changed),
+            action(Action::SetRunEnvironmentQuery("remoteX".to_owned()))
+        );
+    }
+
+    #[test]
+    fn file_notice_uses_only_spare_rows_for_a_missing_root() {
+        let dir = tempdir().unwrap();
+        let existing = ModalState::RunFilePicker {
+            field: 0,
+            context: RunPathContext {
+                workdir: dir.path().display().to_string(),
+                invoke_cwd: dir.path().display().to_string(),
+            },
+            mode: RunPathInsertMode::Replace,
+        };
+        let mut session = RunModalSession::default();
+        let mut tall = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        tall.draw(|frame| {
+            let _ = session.render(frame, frame.area(), &existing, Locale::En);
+        })
+        .unwrap();
+        assert!(!buffer_text(&tall).contains("working directory is missing"));
+
+        let missing = ModalState::RunFilePicker {
+            field: 0,
+            context: RunPathContext {
+                workdir: dir.path().join("gone/deeper").display().to_string(),
+                invoke_cwd: dir.path().display().to_string(),
+            },
+            mode: RunPathInsertMode::Replace,
+        };
+        let mut one = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        one.draw(|frame| {
+            let _ = session.render(frame, frame.area(), &missing, Locale::En);
+        })
+        .unwrap();
+        let one_row = buffer_text(&one);
+        assert!(
+            one_row.contains("Arguments"),
+            "picker lost its only row: {one_row}"
+        );
+        assert!(!one_row.contains("working directory is missing"));
+
+        let mut two = Terminal::new(TestBackend::new(80, 2)).unwrap();
+        two.draw(|frame| {
+            let _ = session.render(frame, frame.area(), &missing, Locale::En);
+        })
+        .unwrap();
+        let two_rows = buffer_text(&two);
+        assert!(
+            two_rows.contains("working directory is missing"),
+            "{two_rows}"
+        );
+        assert!(
+            two_rows.contains("Arguments"),
+            "picker chrome is missing: {two_rows}"
+        );
+    }
+
+    #[test]
+    fn preset_modal_keeps_input_semantics_centering_and_compact_border() {
+        let fresh = ModalState::RunPresetName {
+            value: String::new(),
+            existing: BTreeSet::from(["saved".to_owned()]),
+        };
+        let mut session = RunModalSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &fresh, Locale::En);
+            })
+            .unwrap();
+        let rendered = buffer_text(&terminal);
+        assert!(!rendered.contains("This overwrites the existing preset"));
+        assert_eq!(terminal.backend().buffer()[(10, 6)].symbol(), "╭");
+        assert_eq!(terminal.backend().buffer()[(69, 6)].symbol(), "╮");
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('c')), &fresh),
+            action(Action::SetModalInput("c".to_owned()))
+        );
+        assert_eq!(
+            session.handle_event(control('c'), &fresh),
+            action(Action::Quit)
+        );
+
+        let saved = ModalState::RunPresetName {
+            value: "saved".to_owned(),
+            existing: BTreeSet::from(["saved".to_owned()]),
+        };
+        let mut compact = RunModalSession::default();
+        let mut five = Terminal::new(TestBackend::new(60, 5)).unwrap();
+        five.draw(|frame| {
+            let _ = compact.render(frame, frame.area(), &saved, Locale::En);
+        })
+        .unwrap();
+        assert!(!buffer_text(&five).contains("This overwrites"));
+        assert_eq!(five.backend().buffer()[(0, 4)].symbol(), "╰");
+        assert_eq!(five.backend().buffer()[(59, 4)].symbol(), "╯");
+
+        let mut six = Terminal::new(TestBackend::new(60, 6)).unwrap();
+        six.draw(|frame| {
+            let _ = compact.render(frame, frame.area(), &saved, Locale::En);
+        })
+        .unwrap();
+        assert!(buffer_text(&six).contains("This overwrites the existing preset saved."));
+        assert_eq!(six.backend().buffer()[(0, 5)].symbol(), "╰");
+        assert_eq!(six.backend().buffer()[(59, 5)].symbol(), "╯");
+    }
+
+    #[test]
+    fn environment_and_token_ignore_key_releases_and_plain_c() {
+        let environment = ModalState::RunEnvironmentPicker {
+            field: 3,
+            names: vec!["HOME".to_owned()],
+            query: String::new(),
+            visible: vec!["HOME".to_owned()],
+        };
+        let mut environment_session = RunModalSession::default();
+        assert_eq!(
+            environment_session.handle_event(
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('x'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                &environment,
+            ),
+            ignored()
+        );
+        assert_eq!(
+            environment_session.handle_event(key(KeyCode::Char('c')), &environment),
+            action(Action::SetRunEnvironmentQuery("c".to_owned()))
+        );
+
+        let token = ModalState::RunTokenMenu {
+            field: 3,
+            options: vec![RunTokenOption::FileOrFolder],
+        };
+        let mut token_session = RunModalSession::default();
+        assert_eq!(
+            token_session.handle_event(
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                &token,
+            ),
+            ignored()
+        );
+        assert_eq!(
+            token_session.handle_event(key(KeyCode::Char('c')), &token),
+            ignored()
+        );
+        assert_eq!(
+            token_session.handle_event(control('c'), &token),
+            action(Action::Quit)
+        );
+        assert_eq!(
+            token_session.handle_event(key(KeyCode::Enter), &token),
+            RunModalEvent::OpenFile { field: 3 }
+        );
+    }
+
+    #[test]
+    fn recomposed_picker_rows_cancel_an_armed_semantic_item() {
+        let old_token = ModalState::RunTokenMenu {
+            field: 1,
+            options: vec![RunTokenOption::Today, RunTokenOption::Home],
+        };
+        let mut token_session = RunModalSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = token_session.render(frame, frame.area(), &old_token, Locale::En);
+            })
+            .unwrap();
+        let token_cell = (token_session.token_area.x, token_session.token_area.y);
+        assert_eq!(
+            token_session.handle_event(
+                mouse(
+                    token_cell.0,
+                    token_cell.1,
+                    MouseEventKind::Down(MouseButton::Left),
+                ),
+                &old_token,
+            ),
+            consumed()
+        );
+        let reordered = ModalState::RunTokenMenu {
+            field: 1,
+            options: vec![RunTokenOption::Home, RunTokenOption::Today],
+        };
+        terminal
+            .draw(|frame| {
+                let _ = token_session.render(frame, frame.area(), &reordered, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            token_session.handle_event(
+                mouse(
+                    token_cell.0,
+                    token_cell.1,
+                    MouseEventKind::Up(MouseButton::Left),
+                ),
+                &reordered,
+            ),
+            ignored(),
+            "a release must not activate the new item at an old pressed index"
+        );
+
+        let names = vec!["HOME".to_owned(), "PATH".to_owned()];
+        let old_environment = ModalState::RunEnvironmentPicker {
+            field: 2,
+            names: names.clone(),
+            query: String::new(),
+            visible: names.clone(),
+        };
+        let mut environment_session = RunModalSession::default();
+        terminal
+            .draw(|frame| {
+                let _ =
+                    environment_session.render(frame, frame.area(), &old_environment, Locale::En);
+            })
+            .unwrap();
+        let environment_cell = (
+            environment_session.environment_area.x,
+            environment_session.environment_area.y,
+        );
+        assert_eq!(
+            environment_session.handle_event(
+                mouse(
+                    environment_cell.0,
+                    environment_cell.1,
+                    MouseEventKind::Down(MouseButton::Left),
+                ),
+                &old_environment,
+            ),
+            consumed()
+        );
+        let filtered = ModalState::RunEnvironmentPicker {
+            field: 2,
+            names,
+            query: "P".to_owned(),
+            visible: vec!["PATH".to_owned()],
+        };
+        terminal
+            .draw(|frame| {
+                let _ = environment_session.render(frame, frame.area(), &filtered, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            environment_session.handle_event(
+                mouse(
+                    environment_cell.0,
+                    environment_cell.1,
+                    MouseEventKind::Up(MouseButton::Left),
+                ),
+                &filtered,
+            ),
+            ignored(),
+            "filtering must not turn the pressed HOME row into PATH"
+        );
+    }
+
+    #[test]
     fn file_modal_uses_real_picker_events_missing_root_and_dot_output() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("input.txt"), b"input").unwrap();
@@ -1055,6 +1810,11 @@ mod tests {
                 let _ = session.render(frame, frame.area(), &modal, Locale::En);
             })
             .unwrap();
+        session.cancel_click();
+        assert!(
+            session.file.is_some(),
+            "cancellation must keep the active picker"
+        );
         assert_eq!(
             session.handle_event(key(KeyCode::F(2)), &modal),
             RunModalEvent::Handling(EventHandling::Ignored)
@@ -1101,5 +1861,30 @@ mod tests {
             })
             .unwrap();
         assert!(!buffer_text(&terminal).trim().is_empty());
+    }
+
+    #[test]
+    fn file_modal_uses_the_in_memory_source_for_a_synthetic_workdir() {
+        let modal = ModalState::RunFilePicker {
+            field: 3,
+            context: RunPathContext {
+                workdir: "/fixtures/work".to_owned(),
+                invoke_cwd: "/fixtures/invoke".to_owned(),
+            },
+            mode: RunPathInsertMode::Replace,
+        };
+        let source = MemoryFilePickerSource::new(
+            PathBuf::from("/fixtures"),
+            BTreeSet::from([PathBuf::from("/fixtures"), PathBuf::from("/fixtures/work")]),
+            BTreeSet::from([PathBuf::from("/fixtures/work/input.txt")]),
+        );
+        let mut session = RunModalSession::default();
+        session.set_file_picker_source(source);
+        session.sync(&modal);
+        assert_eq!(
+            session.file.as_ref().unwrap().current_dir(),
+            &PathBuf::from("/fixtures/work")
+        );
+        assert!(!session.file_missing_root);
     }
 }

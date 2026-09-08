@@ -758,6 +758,7 @@ fn agent_skill_installation_needs_one_convention() {
     sandbox
         .command()
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .args(["agent", "install"])
         .assert()
         .code(2)
@@ -804,6 +805,9 @@ fn agent_skill_installation_refuses_before_it_resolves_the_user_directory() {
     sandbox
         .command()
         .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("HOMEDRIVE")
+        .env_remove("HOMEPATH")
         .args(["agent", "install"])
         .assert()
         .code(2)
