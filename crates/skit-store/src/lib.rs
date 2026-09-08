@@ -22,17 +22,19 @@ pub use config::{
     PromptRunnerRow,
 };
 pub use mutations::{
-    FileAgentSkillStore, FileRunnerManagementStore, PreparedExternalCopyEdit, PreparedLaunch,
+    AgentSkillInstallPoint, FileAgentSkillStore, FileRunnerManagementStore,
+    LaunchSnapshotAllocator, LaunchSnapshotAttempt, LaunchSnapshotAttemptOutcome,
+    LaunchSnapshotRequest, LaunchSnapshotStem, PreparedExternalCopyEdit, PreparedLaunch,
     RegistryRebuildProblem, RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas,
-    content_hash,
+    SystemLaunchSnapshotAllocator, content_hash,
 };
 pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;
 pub use paths::{
-    expand_user_path, override_directory, platform_config_dir, platform_data_dir,
-    platform_state_dir, stored_filename, stored_filenames,
+    LAUNCH_SNAPSHOT_PREFIX, expand_user_path, is_launch_snapshot_name, override_directory,
+    platform_config_dir, platform_data_dir, platform_state_dir, stored_filename, stored_filenames,
 };
 pub use prompt_selection::FilePromptSelectionStore;
-pub use read::FileStore;
+pub use read::{EntryCreateClock, FileStore};
 pub use stamp::{iso_stamp, now_iso};
 pub use state::{CoordinatedStateError, ExternalRollbackOutcome, FileFormStateStore};

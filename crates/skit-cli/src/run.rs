@@ -3,5 +3,8 @@
 mod command;
 
 pub(crate) use command::{
-    RunArgs, RunError, apply_sets, run, run_with_roots, source_text, token_context,
+    RunArgs, RunClock, RunError, RunInvocation, RunPorts, RunServices, apply_sets, run,
+    run_with_services, source_text, system_time_from_utc, token_context,
 };
+#[cfg(test)]
+pub(crate) use command::{StageWriteFaultGuard, new_injected_file_with_allocator};

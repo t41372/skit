@@ -324,6 +324,12 @@ impl PathPickerState {
         self.selection
     }
 
+    /// Exact policy that transforms an accepted absolute path into form text.
+    #[must_use]
+    pub const fn output_policy(&self) -> &PathOutputPolicy {
+        &self.output
+    }
+
     /// Whether more than one path can be returned.
     #[must_use]
     pub const fn allow_multiple(&self) -> bool {
@@ -369,6 +375,31 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn path_picker_exposes_the_exact_output_policy() {
+        let absolute = PathPickerState::new(
+            PickerPurpose::Source,
+            PathBuf::from("/workspace"),
+            PathSelectionMode::File,
+            PathOutputPolicy::Absolute,
+            false,
+        );
+        assert_eq!(absolute.output_policy(), &PathOutputPolicy::Absolute);
+
+        let base = PathBuf::from("/workspace/base");
+        let relative = PathPickerState::new(
+            PickerPurpose::Argument,
+            PathBuf::from("/workspace"),
+            PathSelectionMode::FileOrDirectory,
+            PathOutputPolicy::RelativeTo(base.clone()),
+            true,
+        );
+        assert_eq!(
+            relative.output_policy(),
+            &PathOutputPolicy::RelativeTo(base)
+        );
+    }
 
     #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
     enum Choice {

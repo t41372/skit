@@ -17,6 +17,15 @@ pub fn library_surface(
     state_dir: &Path,
     config_dir: &Path,
 ) -> Result<LibrarySurface, RepositoryError> {
+    library_surface_at(store, state_dir, config_dir, OffsetDateTime::now_utc())
+}
+
+pub(crate) fn library_surface_at(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    now: OffsetDateTime,
+) -> Result<LibrarySurface, RepositoryError> {
     let form_state = FileFormStateStore::new(state_dir);
     let form_projector = FormLibraryProjector;
     let configured_runners = FileConfigStore::new(config_dir.to_path_buf())
@@ -31,5 +40,5 @@ pub fn library_surface(
         &form_projector,
         effective_entry_settings,
     )
-    .load_at(&configured_runners, OffsetDateTime::now_utc())
+    .load_at(&configured_runners, now)
 }

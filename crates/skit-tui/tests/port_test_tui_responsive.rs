@@ -19,14 +19,12 @@ use skit_application::{
 };
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode, parameters::ParamDecl};
 use skit_i18n::Locale;
-use skit_tui::{
-    AddControlId, AddScreenEvent, AddScreenSession, AddTextField, EventHandling, HitTarget,
-    TuiSession, ViewGeometry, render_add, render_with_session,
-};
+use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
 use skit_ui::{
     Action, AddWorkflowState, FormField, FormPurpose, FormView, LibraryState, PreferencesAction,
     PreferencesControlId, PreferencesView, RunFormContext, RunFormView, Screen, UiCommand,
 };
+use unicode_width::UnicodeWidthStr as _;
 
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -35,6 +33,15 @@ fn key(code: KeyCode) -> Event {
 fn click(area: Rect) -> Event {
     Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+fn release(area: Rect) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
         column: area.x,
         row: area.y,
         modifiers: KeyModifiers::NONE,
@@ -74,10 +81,20 @@ fn draw(
     width: u16,
     height: u16,
 ) -> (Terminal<TestBackend>, ViewGeometry) {
+    draw_in_locale(session, state, width, height, Locale::En)
+}
+
+fn draw_in_locale(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    width: u16,
+    height: u16,
+    locale: Locale,
+) -> (Terminal<TestBackend>, ViewGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut geometry = ViewGeometry::default();
     terminal
-        .draw(|frame| geometry = render_with_session(frame, state, Locale::En, session))
+        .draw(|frame| geometry = render_with_session(frame, state, locale, session))
         .unwrap();
     (terminal, geometry)
 }
@@ -95,6 +112,19 @@ fn drive(
     handling
 }
 
+fn drive_click(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    area: Rect,
+) -> EventHandling {
+    assert_eq!(
+        drive(session, state, geometry, click(area)),
+        EventHandling::Consumed
+    );
+    drive(session, state, geometry, release(area))
+}
+
 fn lines(buffer: &Buffer) -> Vec<String> {
     (0..buffer.area.height)
         .map(|y| {
@@ -107,6 +137,31 @@ fn lines(buffer: &Buffer) -> Vec<String> {
 
 fn text(buffer: &Buffer) -> String {
     lines(buffer).join("\n")
+}
+
+fn visible_lines(buffer: &Buffer) -> Vec<String> {
+    buffer
+        .content()
+        .chunks(usize::from(buffer.area.width))
+        .map(|cells| {
+            let mut line = String::new();
+            let mut continuation_cells = 0;
+            for cell in cells {
+                if continuation_cells > 0 {
+                    continuation_cells -= 1;
+                    continue;
+                }
+                let symbol = cell.symbol();
+                line.push_str(symbol);
+                continuation_cells = symbol.width().saturating_sub(1);
+            }
+            line
+        })
+        .collect()
+}
+
+fn visible_text(buffer: &Buffer) -> String {
+    visible_lines(buffer).join("\n")
 }
 
 fn position(buffer: &Buffer, needle: &str) -> Option<(usize, usize)> {
@@ -138,6 +193,42 @@ fn rows_with(buffer: &Buffer, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+fn assert_no_border_collision(buffer: &Buffer, surface: &str) {
+    let collisions = [('╰', '└'), ('┘', '╯'), ('╭', '┌'), ('┐', '╮')];
+    for (row, cells) in buffer
+        .content()
+        .chunks(usize::from(buffer.area.width))
+        .enumerate()
+    {
+        for pair in cells.windows(2) {
+            let left = pair[0].symbol().chars().next();
+            let right = pair[1].symbol().chars().next();
+            assert!(
+                !collisions.contains(&(left.unwrap_or(' '), right.unwrap_or(' '))),
+                "{surface} has touching borders on row {row}:\n{}",
+                text(buffer)
+            );
+        }
+    }
+}
+
+fn assert_library_rows_are_visible(locale: Locale, width: u16, height: u16) {
+    let state = library(vec![
+        summary("alpha", "Alpha"),
+        summary("beta", "Beta"),
+        summary("gamma", "Gamma"),
+    ]);
+    let mut session = TuiSession::default();
+    let (terminal, _) = draw_in_locale(&mut session, &state, width, height, locale);
+    let rendered = text(terminal.backend().buffer());
+    for name in ["Alpha", "Beta", "Gamma"] {
+        assert!(
+            rendered.contains(name),
+            "Library hid {name} at {width}x{height} in {locale:?}:\n{rendered}"
+        );
+    }
+}
+
 fn command_hit(geometry: &ViewGeometry, command: UiCommand) -> Option<Rect> {
     geometry
         .hits
@@ -160,7 +251,7 @@ fn hit_text(buffer: &Buffer, area: Rect) -> String {
 }
 
 fn bordered_control_height(buffer: &Buffer, title: &str) -> usize {
-    let rows = lines(buffer);
+    let rows = visible_lines(buffer);
     let top = rows
         .iter()
         .position(|row| row.contains(title))
@@ -231,9 +322,15 @@ fn test_breakpoint_tiers_are_the_documented_contract() {
         let (_, geometry) = draw(&mut session, &state, 26, height);
         command_rows(&geometry).len()
     };
-    assert!(footer_rows(28) > 6);
+    assert!(
+        footer_rows(28) >= footer_rows(27),
+        "the tall-tier budget must not make an allocated footer smaller"
+    );
     assert_eq!(footer_rows(27), 6);
-    assert_eq!(footer_rows(16), 6);
+    assert!(
+        (1..=6).contains(&footer_rows(16)),
+        "the normal-tier budget must use only rows left after the primary viewport"
+    );
     assert_eq!(footer_rows(15), 2);
     assert_eq!(footer_rows(10), 2);
     assert_eq!(footer_rows(9), 1);
@@ -310,6 +407,10 @@ fn test_width_tier_boundary_flips_side_by_side_to_stacked() {
 
 #[test]
 fn test_narrow_short_hides_detail_and_tab_pin_survives_resizes() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        assert_library_rows_are_visible(locale, 46, 12);
+    }
+
     let mut state = library(vec![summary("alpha", "Alpha")]);
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 70, 12);
@@ -335,6 +436,10 @@ fn test_narrow_short_hides_detail_and_tab_pin_survives_resizes() {
 
 #[test]
 fn test_tiny_narrow_tab_still_brings_the_pane_back() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        assert_library_rows_are_visible(locale, 46, 9);
+    }
+
     let mut state = library(vec![summary("alpha", "Alpha")]);
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 46, 9);
@@ -363,18 +468,40 @@ fn test_height_tier_boundaries_flatten_search_then_drop_the_global_row() {
     let mut search = library(vec![summary("alpha", "Alpha")]);
     search.update(Action::BeginSearch);
     let mut session = TuiSession::default();
-    let (normal, _) = draw(&mut session, &search, 100, 16);
+    let (normal, _) = draw(&mut session, &search, 100, 17);
     assert_eq!(
         bordered_control_height(normal.backend().buffer(), "Search"),
         3
     );
     let mut session = TuiSession::default();
-    let (short, _) = draw(&mut session, &search, 100, 15);
+    let (transition, _) = draw(&mut session, &search, 100, 16);
     assert_eq!(
-        bordered_control_height(short.backend().buffer(), "Search"),
+        bordered_control_height(transition.backend().buffer(), "Search"),
         1,
-        "short-tier search must flatten"
+        "the first normal-tier row must keep the fallback flat Search"
     );
+
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        for searching in [false, true] {
+            let mut state = library(vec![summary("alpha", "Alpha")]);
+            if searching {
+                state.update(Action::BeginSearch);
+            }
+            let mut session = TuiSession::default();
+            let (terminal, _) = draw_in_locale(&mut session, &state, 100, 15, locale);
+            let rendered = visible_text(terminal.backend().buffer());
+            let first_row = &visible_lines(terminal.backend().buffer())[0];
+            let search = skit_i18n::text(locale, "Search");
+            assert!(
+                first_row.contains(search.as_ref())
+                    && !first_row
+                        .chars()
+                        .any(|character| ['╭', '┌', '╮', '┐'].contains(&character)),
+                "short browse={searching} did not use the flat search row in {locale:?}:\n{}",
+                rendered
+            );
+        }
+    }
 
     let browse = library(vec![summary("alpha", "Alpha")]);
     let mut session = TuiSession::default();
@@ -385,6 +512,146 @@ fn test_height_tier_boundaries_flatten_search_then_drop_the_global_row() {
     let (nine, geometry) = draw(&mut session, &browse, 100, 9);
     assert_eq!(command_rows(&geometry).len(), 1);
     assert!(text(nine.backend().buffer()).contains("1/1 entry"));
+}
+
+#[test]
+fn test_growing_across_height_tiers_never_shrinks_the_primary_viewport() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        for (shorter, taller) in [(6, 7), (9, 10), (15, 16), (27, 28)] {
+            let state = library(vec![
+                summary("alpha", "Alpha"),
+                summary("beta", "Beta"),
+                summary("gamma", "Gamma"),
+            ]);
+            let mut session = TuiSession::default();
+            let (_, before) = draw_in_locale(&mut session, &state, 100, shorter, locale);
+            let (_, after) = draw_in_locale(&mut session, &state, 100, taller, locale);
+            assert!(
+                after.rows.height >= before.rows.height,
+                "growing from {shorter} to {taller} rows shrank the primary viewport from {} to {} rows in {locale:?}",
+                before.rows.height,
+                after.rows.height,
+            );
+        }
+    }
+}
+
+#[test]
+fn test_footer_minimum_structure_is_monotonic_and_keeps_status_out_of_hits() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        for width in [38, 100] {
+            let mut state = library(vec![
+                summary("alpha", "Alpha"),
+                summary("beta", "Beta"),
+                summary("gamma", "Gamma"),
+            ]);
+            state.update(Action::SetStatus("STATUS_SENTINEL".to_owned()));
+            state.update(Action::ToggleDetail {
+                currently_visible: true,
+            });
+            let mut previous_rows = None;
+
+            for height in 14..=19 {
+                let mut session = TuiSession::default();
+                let (terminal, geometry) =
+                    draw_in_locale(&mut session, &state, width, height, locale);
+                if let Some(previous) = previous_rows {
+                    assert!(
+                        geometry.rows.height >= previous,
+                        "the primary body shrank from {previous} to {} rows at {width}x{height} in {locale:?}",
+                        geometry.rows.height,
+                    );
+                }
+                previous_rows = Some(geometry.rows.height);
+
+                let search = skit_i18n::text(locale, "Search");
+                let expected_header_height = if height <= 16 { 1 } else { 3 };
+                assert_eq!(
+                    bordered_control_height(terminal.backend().buffer(), search.as_ref()),
+                    expected_header_height,
+                    "the Search header used an intermediate or wrong shape at {width}x{height} in {locale:?}:\n{}",
+                    text(terminal.backend().buffer()),
+                );
+                if height <= 16 {
+                    assert_eq!(
+                        session.handle_event(
+                            Event::Mouse(MouseEvent {
+                                kind: MouseEventKind::Down(MouseButton::Left),
+                                column: 0,
+                                row: 0,
+                                modifiers: KeyModifiers::NONE,
+                            }),
+                            &state,
+                            &geometry,
+                        ),
+                        EventHandling::Consumed,
+                        "the flat Search row lost its pointer hit at {width}x{height} in {locale:?}",
+                    );
+                    assert_eq!(
+                        session.handle_event(
+                            Event::Mouse(MouseEvent {
+                                kind: MouseEventKind::Down(MouseButton::Left),
+                                column: 0,
+                                row: 1,
+                                modifiers: KeyModifiers::NONE,
+                            }),
+                            &state,
+                            &geometry,
+                        ),
+                        EventHandling::Ignored,
+                        "the flat Search row registered a ghost second-row hit at {width}x{height} in {locale:?}",
+                    );
+                }
+
+                let command_hits = geometry
+                    .hits
+                    .iter()
+                    .filter(|hit| matches!(hit.action, HitTarget::Command(_)))
+                    .collect::<Vec<_>>();
+                assert!(
+                    !command_hits.is_empty(),
+                    "the footer lost every command at {width}x{height} in {locale:?}:\n{}",
+                    text(terminal.backend().buffer()),
+                );
+                assert!(
+                    rows_with(terminal.backend().buffer(), "STATUS_SENTINEL").len() == 1,
+                    "the footer lost or duplicated its status at {width}x{height} in {locale:?}:\n{}",
+                    text(terminal.backend().buffer()),
+                );
+                let status_row =
+                    u16::try_from(rows_with(terminal.backend().buffer(), "STATUS_SENTINEL")[0])
+                        .unwrap();
+                for hit in command_hits {
+                    assert!(
+                        hit.rect.bottom() <= status_row || hit.rect.y > status_row,
+                        "footer hit {:?} overlaps status row {status_row} at {width}x{height} in {locale:?}",
+                        hit.rect,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_root_hit_rectangles_stay_inside_every_boundary_viewport() {
+    let state = library(vec![summary("alpha", "Alpha")]);
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        for width in [1, 2, 10, 16, 24, 79, 80] {
+            for height in [1, 2, 6, 7, 9, 10, 15, 16, 27, 28] {
+                let mut session = TuiSession::default();
+                let (_, geometry) = draw_in_locale(&mut session, &state, width, height, locale);
+                for hit in geometry.hits {
+                    assert!(hit.rect.width > 0 && hit.rect.height > 0);
+                    assert!(
+                        hit.rect.right() <= width && hit.rect.bottom() <= height,
+                        "hit {:?} escaped {width}x{height} in {locale:?}",
+                        hit.rect,
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -421,7 +688,7 @@ fn test_footer_wraps_between_pills_and_wrapped_chips_stay_clickable() {
     let detail = command_hit(&geometry, UiCommand::ToggleDetail).unwrap();
     assert!(detail.y > search.y, "Tab pill did not wrap after Search");
     assert_eq!(
-        drive(&mut session, &mut state, &geometry, click(detail)),
+        drive_click(&mut session, &mut state, &geometry, detail),
         EventHandling::Action(Action::ToggleDetail {
             currently_visible: true,
         })
@@ -429,7 +696,7 @@ fn test_footer_wraps_between_pills_and_wrapped_chips_stay_clickable() {
     let (terminal, geometry) = draw(&mut session, &state, 44, 24);
     assert!(position(terminal.backend().buffer(), "Detail pane").is_none());
     let detail = command_hit(&geometry, UiCommand::ToggleDetail).unwrap();
-    let _ = drive(&mut session, &mut state, &geometry, click(detail));
+    let _ = drive_click(&mut session, &mut state, &geometry, detail);
     let (terminal, _) = draw(&mut session, &state, 44, 24);
     assert!(position(terminal.backend().buffer(), "Detail pane").is_some());
 }
@@ -481,6 +748,29 @@ fn test_short_tier_caps_visible_lines_but_keeps_chips_scroll_reachable() {
 
 #[test]
 fn test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack() {
+    for (locale, first_option, save) in [
+        (Locale::En, "Automatic", "Save"),
+        (Locale::ZhCn, "自动", "保存"),
+        (Locale::ZhTw, "自動", "儲存"),
+    ] {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Preferences(
+            Box::new(preferences()),
+        )));
+        let mut session = TuiSession::default();
+        let (terminal, _) = draw_in_locale(&mut session, &state, 24, 6, locale);
+        let rendered = visible_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains(first_option),
+            "Preferences hid its first option at 24x6 in {locale:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Ctrl+S") && rendered.contains(save),
+            "Preferences hid its primary action at 24x6 in {locale:?}:\n{rendered}"
+        );
+        assert_no_border_collision(terminal.backend().buffer(), "Preferences");
+    }
+
     let rows = [
         (
             PreferencesControlId::PypiChoice,
@@ -542,19 +832,37 @@ fn test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack
 
 #[test]
 fn test_help_overlay_caps_to_a_tiny_screen_and_scrolls_by_key() {
-    let mut state = library(vec![summary("alpha", "Alpha")]);
-    state.update(Action::OpenHelp);
-    let mut session = TuiSession::default();
-    let (terminal, geometry) = draw(&mut session, &state, 40, 8);
-    assert_eq!(geometry.first_visible, 0);
-    assert!(geometry.rows.right() <= 40 && geometry.rows.bottom() <= 8);
-    assert!(text(terminal.backend().buffer()).contains("Help"));
-    assert_eq!(
-        session.handle_event(key(KeyCode::Down), &state, &geometry),
-        EventHandling::Consumed
-    );
-    let (_, geometry) = draw(&mut session, &state, 40, 8);
-    assert!(geometry.first_visible > 0);
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let mut state = library(vec![summary("alpha", "Alpha")]);
+        state.update(Action::OpenHelp);
+        let mut session = TuiSession::default();
+        let (terminal, geometry) = draw_in_locale(&mut session, &state, 40, 8, locale);
+        assert_eq!(geometry.first_visible, 0);
+        assert!(geometry.rows.right() <= 40 && geometry.rows.bottom() <= 8);
+        let help = skit_i18n::text(locale, "Help");
+        let quit = skit_i18n::text(locale, "Quit");
+        let before = visible_text(terminal.backend().buffer());
+        let title_count = before.matches(help.as_ref()).count();
+        assert!(
+            !before.contains(quit.as_ref()),
+            "fixture already shows Quit"
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::End), &state, &geometry),
+            EventHandling::Consumed
+        );
+        let (terminal, geometry) = draw_in_locale(&mut session, &state, 40, 8, locale);
+        let after = visible_text(terminal.backend().buffer());
+        assert!(geometry.first_visible > 0);
+        assert!(
+            after.contains(quit.as_ref()),
+            "Help scrolling did not make Quit visible in {locale:?}:\n{after}"
+        );
+        assert_eq!(
+            title_count, 1,
+            "Help printed its title more than once in {locale:?}:\n{before}"
+        );
+    }
 }
 
 #[test]
@@ -568,11 +876,12 @@ fn test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen() {
     let (terminal, _) = draw(&mut session, &state, 40, 20);
     let rows = lines(terminal.backend().buffer());
     let titles = rows_with(terminal.backend().buffer(), "Confirm removal");
-    assert!(
-        titles.len() >= 2,
-        "header rendered but popup title is missing: {rows:#?}"
+    assert_eq!(
+        titles.len(),
+        1,
+        "the confirmation title must have one owner: {rows:#?}"
     );
-    let top = *titles.last().unwrap();
+    let top = titles[0];
     assert!(rows[top].contains('┐') || rows[top].contains('╮'));
     let bottom = rows
         .iter()
@@ -582,6 +891,12 @@ fn test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen() {
         .map(|(y, _)| y)
         .expect("confirmation bottom border is visible");
     assert!(bottom < 20);
+
+    let (_, geometry) = draw(&mut session, &state, 40, 6);
+    assert!(
+        geometry.hits.is_empty(),
+        "the modal-owned buttons must not compete with a global footer"
+    );
 }
 
 #[test]
@@ -617,9 +932,17 @@ fn test_env_picker_fits_input_and_esc_chip_across_the_tiers() {
 
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 70, 20);
+    let title_rows = rows_with(terminal.backend().buffer(), "Environment variable");
+    assert_eq!(
+        title_rows.len(),
+        1,
+        "the environment picker title must have one owner:\n{}",
+        text(terminal.backend().buffer())
+    );
+    let title_row = &lines(terminal.backend().buffer())[title_rows[0]];
     assert!(
-        rows_with(terminal.backend().buffer(), "Environment variable").len() >= 2,
-        "environment header rendered but picker popup is missing"
+        title_row.contains('┐') || title_row.contains('╮'),
+        "the environment picker top border is visible: {title_row:?}"
     );
     assert!(command_hit(&geometry, UiCommand::CloseModal).is_some());
 
@@ -638,51 +961,45 @@ fn test_env_picker_fits_input_and_esc_chip_across_the_tiers() {
 
 #[test]
 fn test_add_source_fields_stay_reachable_on_short_terminals() {
-    let mut workflow = AddWorkflowState::new(Vec::new());
-    let mut session = AddScreenSession::default();
-    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
-    let mut geometry = Default::default();
-    terminal
-        .draw(|frame| {
-            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En)
-        })
-        .unwrap();
-    assert_eq!(
-        session.focused(),
-        Some(&AddControlId::Text(AddTextField::SourcePath))
-    );
-    let rendered = text(terminal.backend().buffer());
-    assert!(
-        rendered.contains("[Ctrl+O] Select"),
-        "the short layout must keep Browse's independent keyboard path visible: {rendered}"
-    );
-    let browse = geometry
-        .hits
-        .iter()
-        .find(|hit| hit.target == AddControlId::BrowseSource)
-        .expect("the short layout keeps the Browse mouse target visible");
-    assert!(browse.area.bottom() <= geometry.body.bottom());
-
-    // Browse has its own key, so two field-navigation steps reach Name: path -> template -> name.
-    for _ in 0..2 {
-        if let Some(AddScreenEvent::Action(action)) =
-            session.handle_event(key(KeyCode::Tab), &workflow, &geometry)
-        {
-            let _ = workflow.reduce(action);
-        }
-        terminal
-            .draw(|frame| {
-                geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En)
-            })
-            .unwrap();
+    for (locale, primary, continue_label) in [
+        (Locale::En, "Source path", "Continue"),
+        (Locale::ZhCn, "源文件路径", "继续"),
+        (Locale::ZhTw, "來源路徑", "繼續"),
+    ] {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Add(Box::new(
+            AddWorkflowState::new(Vec::new()),
+        ))));
+        let mut session = TuiSession::default();
+        let (terminal, _) = draw_in_locale(&mut session, &state, 24, 6, locale);
+        let rendered = visible_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains(primary),
+            "Add hid its primary content at 24x6 in {locale:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Enter") && rendered.contains(continue_label),
+            "Add hid Continue at 24x6 in {locale:?}:\n{rendered}"
+        );
+        assert_no_border_collision(terminal.backend().buffer(), "Add");
     }
-    let name = AddControlId::Text(AddTextField::CommandName);
-    assert_eq!(session.focused(), Some(&name));
-    let area = geometry
-        .hits
-        .iter()
-        .find_map(|hit| (hit.target == name).then_some(hit.area))
-        .expect("focused name input is visible after focus scrolling");
-    assert_eq!(area.height, 3);
-    assert!(area.bottom() <= geometry.body.bottom());
+
+    // Browse has its own key. Two navigation steps reach Name: path -> template -> name.
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(
+        AddWorkflowState::new(Vec::new()),
+    ))));
+    let mut session = TuiSession::default();
+    let (_, mut geometry) = draw(&mut session, &state, 80, 12);
+    for _ in 0..2 {
+        let _ = drive(&mut session, &mut state, &geometry, key(KeyCode::Tab));
+        let (_, next_geometry) = draw(&mut session, &state, 80, 12);
+        geometry = next_geometry;
+    }
+    let (terminal, _) = draw(&mut session, &state, 80, 12);
+    assert!(
+        text(terminal.backend().buffer()).contains("Name"),
+        "focus did not bring the command name into view:\n{}",
+        text(terminal.backend().buffer())
+    );
 }

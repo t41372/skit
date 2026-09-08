@@ -231,7 +231,7 @@ impl Localize for JavaScriptSyntaxError {
 /// TypeScript suffixes and non-Node runtimes use only the mandatory parser-backed gate. A missing,
 /// failed, or timed-out optional process is also non-fatal because the mandatory gate has already
 /// accepted the source.
-pub fn check_javascript_syntax<R: JavaScriptSyntaxGateRunner>(
+pub fn check_javascript_syntax<R: JavaScriptSyntaxGateRunner + ?Sized>(
     runtime: Option<&ResolvedJavaScriptRuntime>,
     source: &Path,
     runner: &R,
@@ -262,7 +262,7 @@ pub fn check_javascript_syntax<R: JavaScriptSyntaxGateRunner>(
 ///
 /// On rejection, `source` drops before this function returns. A caller can pass its private staged
 /// file guard so the temporary file closes and unlinks on every refusal, including on Windows.
-pub fn retain_javascript_source_if_valid<T, R: JavaScriptSyntaxGateRunner>(
+pub fn retain_javascript_source_if_valid<T, R: JavaScriptSyntaxGateRunner + ?Sized>(
     source: T,
     runtime: Option<&ResolvedJavaScriptRuntime>,
     path: &Path,

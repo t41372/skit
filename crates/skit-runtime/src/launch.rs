@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fs, io,
+    env,
+    ffi::OsString,
+    fs, io,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -115,22 +117,49 @@ impl InterpreterPlatform {
 pub struct InterpreterPolicy {
     platform: InterpreterPlatform,
     windows_bash_path: Option<PathBuf>,
+    windows_comspec: Option<OsString>,
+    windows_system_root: Option<OsString>,
 }
 
 impl InterpreterPolicy {
     /// Construct a policy for an explicit platform and configured fallback.
     #[must_use]
     pub fn new(platform: InterpreterPlatform, windows_bash_path: Option<PathBuf>) -> Self {
+        Self::new_with_windows_environment(platform, windows_bash_path, None, None)
+    }
+
+    /// Construct a policy with explicit Windows process environment values.
+    #[must_use]
+    pub fn new_with_windows_environment(
+        platform: InterpreterPlatform,
+        windows_bash_path: Option<PathBuf>,
+        windows_comspec: Option<OsString>,
+        windows_system_root: Option<OsString>,
+    ) -> Self {
         Self {
             platform,
             windows_bash_path,
+            windows_comspec,
+            windows_system_root,
         }
     }
 
     /// Construct the host policy from the configured Windows bash path.
     #[must_use]
     pub fn for_current_host(windows_bash_path: Option<PathBuf>) -> Self {
-        Self::new(InterpreterPlatform::current(), windows_bash_path)
+        Self::new_with_windows_environment(
+            InterpreterPlatform::current(),
+            windows_bash_path,
+            env::var_os("COMSPEC"),
+            env::var_os("SystemRoot"),
+        )
+    }
+
+    /// Return this policy with the configured Windows bash path replaced.
+    #[must_use]
+    pub fn with_windows_bash_path(mut self, windows_bash_path: Option<PathBuf>) -> Self {
+        self.windows_bash_path = windows_bash_path;
+        self
     }
 }
 
@@ -155,6 +184,36 @@ pub struct LaunchPlan {
     pub display: String,
     /// Important non-fatal launch changes.
     pub warnings: Vec<LaunchWarning>,
+}
+
+/// Start one planned launch and wait for its status.
+pub trait LaunchRunner: std::fmt::Debug {
+    /// Run the exact immutable plan and return the raw process status facts.
+    fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput>;
+}
+
+/// Raw process status facts returned by a launch adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaunchProcessOutput {
+    /// Normal process exit code, when the platform returned one.
+    pub exit_code: Option<i32>,
+    /// Terminating signal, when the platform returned one.
+    pub signal: Option<i32>,
+}
+
+/// Start launch plans on the local machine.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemLaunchRunner;
+
+impl LaunchRunner for SystemLaunchRunner {
+    fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
+        let status = Command::new(&plan.program)
+            .args(&plan.args)
+            .envs(&plan.env)
+            .current_dir(&plan.cwd)
+            .status()?;
+        Ok(process_output(status))
+    }
 }
 
 #[derive(Debug)]
@@ -336,7 +395,7 @@ impl LaunchError {
 }
 
 /// Build one immutable process plan.
-pub fn build_launch_plan<P: ProgramProbe>(
+pub fn build_launch_plan<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
@@ -356,7 +415,7 @@ pub fn build_launch_plan<P: ProgramProbe>(
 }
 
 /// Build one immutable process plan with frontend-supplied interpreter configuration.
-pub fn build_launch_plan_with_interpreter_policy<P: ProgramProbe>(
+pub fn build_launch_plan_with_interpreter_policy<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
@@ -384,7 +443,7 @@ pub fn build_launch_plan_with_interpreter_policy<P: ProgramProbe>(
 /// The preview is total: for an entry kind that this skit version does not know, the
 /// preview degrades to the stored command template instead of an error. The run path
 /// (`build_launch_plan`) keeps its refusal.
-pub fn build_launch_preview<P: ProgramProbe>(
+pub fn build_launch_preview<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
@@ -393,8 +452,39 @@ pub fn build_launch_preview<P: ProgramProbe>(
     prompt_runner: Option<&PromptRunner>,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
+    build_launch_preview_with_interpreter_policy(
+        entry,
+        paths,
+        assembly,
+        prompt_body,
+        prompt_display_body,
+        prompt_runner,
+        &InterpreterPolicy::default(),
+        probe,
+    )
+}
+
+/// Build a complete launch preview with explicit interpreter and host policy.
+// Keep the prompt arguments aligned with `build_launch_preview`; the explicit policy is the one
+// additional composition-root input.
+#[allow(clippy::too_many_arguments)]
+pub fn build_launch_preview_with_interpreter_policy<P: ProgramProbe + ?Sized>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    prompt_body: Option<&str>,
+    prompt_display_body: Option<&str>,
+    prompt_runner: Option<&PromptRunner>,
+    interpreter_policy: &InterpreterPolicy,
+    probe: &P,
+) -> Result<LaunchPlan, LaunchError> {
     if !is_known_launch_kind(entry.meta.kind.as_str()) {
-        return Ok(unknown_kind_preview(entry, paths, assembly));
+        return Ok(unknown_kind_preview(
+            entry,
+            paths,
+            assembly,
+            interpreter_policy.platform,
+        ));
     }
     build_launch_plan_inner(
         entry,
@@ -405,7 +495,7 @@ pub fn build_launch_preview<P: ProgramProbe>(
             display: prompt_display_body,
         },
         prompt_runner,
-        &InterpreterPolicy::default(),
+        interpreter_policy,
         &PreviewProbe { local: probe },
     )
 }
@@ -436,11 +526,16 @@ fn is_known_launch_kind(kind: &str) -> bool {
 ///
 /// The template is the only launch material the metadata itself carries, so it becomes
 /// the display text. The template stays raw: it is descriptive text, not an argument.
-fn unknown_kind_preview(entry: &Entry, paths: &LaunchPaths, assembly: &Assembly) -> LaunchPlan {
+fn unknown_kind_preview(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    platform: InterpreterPlatform,
+) -> LaunchPlan {
     let mut parts = assembly
         .masked_env
         .iter()
-        .map(|(name, value)| format!("{name}={}", quote_shell_arg(value)))
+        .map(|(name, value)| format!("{name}={}", quote_shell_arg_for_platform(value, platform)))
         .collect::<Vec<_>>();
     parts.push(EntrySettings::from_meta(&entry.meta).template);
     LaunchPlan {
@@ -454,11 +549,11 @@ fn unknown_kind_preview(entry: &Entry, paths: &LaunchPaths, assembly: &Assembly)
 }
 
 #[derive(Debug)]
-struct PreviewProbe<'a, P> {
+struct PreviewProbe<'a, P: ?Sized> {
     local: &'a P,
 }
 
-impl<P: ProgramProbe> ProgramProbe for PreviewProbe<'_, P> {
+impl<P: ProgramProbe + ?Sized> ProgramProbe for PreviewProbe<'_, P> {
     fn find_program(&self, name: &str) -> Option<PathBuf> {
         Some(PathBuf::from(name))
     }
@@ -480,7 +575,7 @@ impl<P: ProgramProbe> ProgramProbe for PreviewProbe<'_, P> {
     }
 }
 
-fn build_launch_plan_inner<P: ProgramProbe>(
+fn build_launch_plan_inner<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
@@ -545,7 +640,7 @@ fn build_launch_plan_inner<P: ProgramProbe>(
         "r" => r_plan(paths, assembly, &settings, interpreter_policy, probe)?,
         "js" | "ts" => javascript_plan(paths, assembly, &settings, probe)?,
         "exe" => direct_plan(entry, assembly, probe)?,
-        "command" => command_plan(assembly, &settings, probe)?,
+        "command" => command_plan(assembly, &settings, interpreter_policy, probe)?,
         "prompt" => {
             let plan = prompt_plan(
                 prompt_bodies.actual,
@@ -567,7 +662,12 @@ fn build_launch_plan_inner<P: ProgramProbe>(
         }
     };
 
-    let display = display_command(&program, &display_args, &assembly.masked_env);
+    let display = display_command(
+        &program,
+        &display_args,
+        &assembly.masked_env,
+        interpreter_policy.platform,
+    );
     Ok(LaunchPlan {
         program,
         args,
@@ -583,7 +683,7 @@ fn is_builtin_amp_runner(runner: &PromptRunner) -> bool {
         && runner.argv == ["amp".to_owned(), "-x".to_owned(), "{{prompt}}".to_owned()]
 }
 
-fn python_plan<P: ProgramProbe>(
+fn python_plan<P: ProgramProbe + ?Sized>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
@@ -609,7 +709,7 @@ fn python_plan<P: ProgramProbe>(
     Ok((uv, args, display))
 }
 
-fn interpreted_plan<P: ProgramProbe>(
+fn interpreted_plan<P: ProgramProbe + ?Sized>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     interpreter: &str,
@@ -636,7 +736,7 @@ fn interpreted_plan<P: ProgramProbe>(
     Ok((program, args, display))
 }
 
-fn powershell_plan<P: ProgramProbe>(
+fn powershell_plan<P: ProgramProbe + ?Sized>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
@@ -653,7 +753,7 @@ fn powershell_plan<P: ProgramProbe>(
     )
 }
 
-fn r_plan<P: ProgramProbe>(
+fn r_plan<P: ProgramProbe + ?Sized>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
@@ -670,7 +770,7 @@ fn r_plan<P: ProgramProbe>(
     )
 }
 
-fn javascript_plan<P: ProgramProbe>(
+fn javascript_plan<P: ProgramProbe + ?Sized>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
@@ -697,7 +797,7 @@ fn javascript_plan<P: ProgramProbe>(
 }
 
 /// Select the JavaScript runtime by entry pin and deterministic availability order.
-pub fn resolve_javascript_runtime<P: ProgramProbe>(
+pub fn resolve_javascript_runtime<P: ProgramProbe + ?Sized>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<String, LaunchError> {
@@ -706,7 +806,7 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
 }
 
 /// Select one JavaScript runtime and keep its normalized identity and exact program path.
-pub fn resolve_javascript_runtime_program<P: ProgramProbe>(
+pub fn resolve_javascript_runtime_program<P: ProgramProbe + ?Sized>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<ResolvedJavaScriptRuntime, LaunchError> {
@@ -730,7 +830,7 @@ pub fn resolve_javascript_runtime_program<P: ProgramProbe>(
         })
 }
 
-fn direct_plan<P: ProgramProbe>(
+fn direct_plan<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     assembly: &Assembly,
     probe: &P,
@@ -745,9 +845,10 @@ fn direct_plan<P: ProgramProbe>(
     Ok((path, assembly.args.clone(), assembly.masked_args.clone()))
 }
 
-fn command_plan<P: ProgramProbe>(
+fn command_plan<P: ProgramProbe + ?Sized>(
     assembly: &Assembly,
     settings: &EntrySettings,
+    policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     let missing = settings
@@ -762,41 +863,58 @@ fn command_plan<P: ProgramProbe>(
         });
     }
     let command = append_shell_args(
-        render_command_template(&settings.template, &assembly.command_values)?,
+        render_command_template_for_platform(
+            &settings.template,
+            &assembly.command_values,
+            policy.platform,
+        )?,
         &assembly.args,
+        policy.platform,
     );
     let masked = append_shell_args(
-        render_command_template(&settings.template, &assembly.masked_command_values)?,
+        render_command_template_for_platform(
+            &settings.template,
+            &assembly.masked_command_values,
+            policy.platform,
+        )?,
         &assembly.masked_args,
+        policy.platform,
     );
-    #[cfg(windows)]
-    {
-        let shell =
-            windows_command_shell(env::var_os("COMSPEC"), env::var_os("SystemRoot"), probe)?;
-        return Ok((
-            shell,
-            vec!["/C".to_owned(), command],
-            vec!["/C".to_owned(), masked],
-        ));
-    }
-    #[cfg(not(windows))]
-    {
-        let shell = require_program("sh", probe)?;
-        Ok((
-            shell,
-            vec!["-c".to_owned(), command],
-            vec!["-c".to_owned(), masked],
-        ))
+    match policy.platform {
+        InterpreterPlatform::Windows => {
+            let shell = windows_command_shell(
+                policy.windows_comspec.clone(),
+                policy.windows_system_root.clone(),
+                probe,
+            )?;
+            Ok((
+                shell,
+                vec!["/C".to_owned(), command],
+                vec!["/C".to_owned(), masked],
+            ))
+        }
+        InterpreterPlatform::Other => {
+            let shell = require_program("sh", probe)?;
+            Ok((
+                shell,
+                vec!["-c".to_owned(), command],
+                vec!["-c".to_owned(), masked],
+            ))
+        }
     }
 }
 
-fn append_shell_args(mut command: String, args: &[String]) -> String {
+fn append_shell_args(
+    mut command: String,
+    args: &[String],
+    platform: InterpreterPlatform,
+) -> String {
     if !args.is_empty() {
         command.push(' ');
         command.push_str(
             &args
                 .iter()
-                .map(|value| quote_shell_arg(value))
+                .map(|value| quote_shell_arg_for_platform(value, platform))
                 .collect::<Vec<_>>()
                 .join(" "),
         );
@@ -804,7 +922,7 @@ fn append_shell_args(mut command: String, args: &[String]) -> String {
     command
 }
 
-fn prompt_plan<P: ProgramProbe>(
+fn prompt_plan<P: ProgramProbe + ?Sized>(
     prompt_body: Option<&str>,
     prompt_display_body: Option<&str>,
     runner: Option<&PromptRunner>,
@@ -952,13 +1070,17 @@ pub fn render_command_template(
     template: &str,
     values: &BTreeMap<String, String>,
 ) -> Result<String, LaunchError> {
-    #[cfg(windows)]
-    {
-        render_windows_command_template(template, values)
-    }
-    #[cfg(not(windows))]
-    {
-        render_posix_command_template(template, values)
+    render_command_template_for_platform(template, values, InterpreterPlatform::current())
+}
+
+fn render_command_template_for_platform(
+    template: &str,
+    values: &BTreeMap<String, String>,
+    platform: InterpreterPlatform,
+) -> Result<String, LaunchError> {
+    match platform {
+        InterpreterPlatform::Windows => render_windows_command_template(template, values),
+        InterpreterPlatform::Other => render_posix_command_template(template, values),
     }
 }
 
@@ -1021,7 +1143,6 @@ fn next_template_token(template: &str, mut index: usize) -> Option<TemplateToken
     None
 }
 
-#[cfg(windows)]
 fn render_windows_command_template(
     template: &str,
     values: &BTreeMap<String, String>,
@@ -1047,13 +1168,11 @@ fn render_windows_command_template(
     Ok(output)
 }
 
-#[cfg(not(windows))]
 #[derive(Clone, Debug, Default)]
 struct PosixQuoteState {
     frames: Vec<char>,
 }
 
-#[cfg(not(windows))]
 impl PosixQuoteState {
     fn advance(&mut self, text: &str) -> bool {
         let chars = text.chars().collect::<Vec<_>>();
@@ -1106,7 +1225,6 @@ impl PosixQuoteState {
     }
 }
 
-#[cfg(not(windows))]
 fn render_posix_command_template(
     template: &str,
     values: &BTreeMap<String, String>,
@@ -1154,7 +1272,7 @@ fn interpreter<'a>(settings: &'a EntrySettings, default: &'a str) -> &'a str {
     }
 }
 
-fn require_file<P: ProgramProbe>(path: &Path, probe: &P) -> Result<(), LaunchError> {
+fn require_file<P: ProgramProbe + ?Sized>(path: &Path, probe: &P) -> Result<(), LaunchError> {
     if probe.is_file(path) {
         Ok(())
     } else {
@@ -1177,7 +1295,7 @@ fn require_file<P: ProgramProbe>(path: &Path, probe: &P) -> Result<(), LaunchErr
 // The production caller sits in the cfg(windows) arm of command_plan; the function itself
 // compiles on every host so its owner runs — and its mutants die — on the Linux gates.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn windows_command_shell<P: ProgramProbe>(
+fn windows_command_shell<P: ProgramProbe + ?Sized>(
     comspec: Option<std::ffi::OsString>,
     system_root: Option<std::ffi::OsString>,
     probe: &P,
@@ -1194,7 +1312,10 @@ fn windows_command_shell<P: ProgramProbe>(
     require_program("cmd.exe", probe)
 }
 
-fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, LaunchError> {
+fn require_program<P: ProgramProbe + ?Sized>(
+    name: &str,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
     probe
         .find_program(name)
         .ok_or_else(|| LaunchError::ProgramNotFound {
@@ -1207,7 +1328,7 @@ fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, La
 /// `PATH` always wins. Only bash-compatible shell names use `windows_bash_path`, and only on
 /// Windows. A hand-edited configured fallback is accepted when that filesystem object exists;
 /// config authoring applies its stricter regular-file validation before this resolver.
-pub fn resolve_interpreter<P: ProgramProbe>(
+pub fn resolve_interpreter<P: ProgramProbe + ?Sized>(
     name: &str,
     platform: InterpreterPlatform,
     windows_bash_path: Option<&Path>,
@@ -1233,7 +1354,7 @@ pub fn resolve_interpreter<P: ProgramProbe>(
 ///
 /// Frontends use this projection for path completion. Keeping the resolver public prevents a
 /// form adapter from approximating `origin`, copy fallback, or custom-path validation.
-pub fn resolve_launch_workdir<P: ProgramProbe>(
+pub fn resolve_launch_workdir<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     probe: &P,
@@ -1250,7 +1371,7 @@ pub fn resolve_launch_workdir<P: ProgramProbe>(
 ///
 /// Run forms use this path to silence completion and offer an ancestor picker when a directory
 /// vanishes. Launch planning applies the existence check through [`resolve_launch_workdir`].
-pub fn project_launch_workdir<P: ProgramProbe>(
+pub fn project_launch_workdir<P: ProgramProbe + ?Sized>(
     entry: &Entry,
     paths: &LaunchPaths,
     probe: &P,
@@ -1287,53 +1408,67 @@ pub fn project_launch_workdir<P: ProgramProbe>(
 
 /// Start a child and wait for its process status.
 pub fn execute_launch(plan: &LaunchPlan) -> Result<i32, LaunchError> {
-    let status = Command::new(&plan.program)
-        .args(&plan.args)
-        .envs(&plan.env)
-        .current_dir(&plan.cwd)
-        .status()
-        .map_err(|source| LaunchError::Process {
-            operation: "run",
-            source,
-        })?;
-    Ok(status_code(status))
+    execute_launch_with(plan, &SystemLaunchRunner)
 }
 
-fn status_code(status: ExitStatus) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
-    }
+/// Start a plan with an explicit low-level process adapter.
+pub fn execute_launch_with(
+    plan: &LaunchPlan,
+    runner: &(impl LaunchRunner + ?Sized),
+) -> Result<i32, LaunchError> {
+    let output = runner.run(plan).map_err(|source| LaunchError::Process {
+        operation: "run",
+        source,
+    })?;
+    Ok(portable_status(output))
+}
+
+fn process_output(status: ExitStatus) -> LaunchProcessOutput {
+    let exit_code = status.code();
     #[cfg(unix)]
-    {
+    let signal = {
         use std::os::unix::process::ExitStatusExt as _;
-        128 + status
-            .signal()
-            .expect("a Unix status without a code has a signal")
-    }
+        status.signal()
+    };
     #[cfg(not(unix))]
-    {
-        125
+    let signal = None;
+    LaunchProcessOutput { exit_code, signal }
+}
+
+const fn portable_status(output: LaunchProcessOutput) -> i32 {
+    match (output.exit_code, output.signal) {
+        (Some(code), _) => code,
+        (None, Some(signal)) => 128 + signal,
+        (None, None) => 125,
     }
 }
 
-fn display_command(program: &Path, args: &[String], env: &BTreeMap<String, String>) -> String {
+fn display_command(
+    program: &Path,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    platform: InterpreterPlatform,
+) -> String {
     let mut parts = env
         .iter()
-        .map(|(name, value)| format!("{name}={}", quote_shell_arg(value)))
+        .map(|(name, value)| format!("{name}={}", quote_shell_arg_for_platform(value, platform)))
         .collect::<Vec<_>>();
-    parts.push(quote_shell_arg(&program.display().to_string()));
-    parts.extend(args.iter().map(|value| quote_shell_arg(value)));
+    parts.push(quote_shell_arg_for_platform(
+        &program.display().to_string(),
+        platform,
+    ));
+    parts.extend(
+        args.iter()
+            .map(|value| quote_shell_arg_for_platform(value, platform)),
+    );
     parts.join(" ")
 }
 
-#[cfg(windows)]
-fn quote_shell_arg(value: &str) -> String {
-    quote_windows_arg(value)
-}
-
-#[cfg(not(windows))]
-fn quote_shell_arg(value: &str) -> String {
-    quote_posix_arg(value)
+fn quote_shell_arg_for_platform(value: &str, platform: InterpreterPlatform) -> String {
+    match platform {
+        InterpreterPlatform::Windows => quote_windows_arg(value),
+        InterpreterPlatform::Other => quote_posix_arg(value),
+    }
 }
 
 fn quote_posix_arg(value: &str) -> String {
@@ -1428,6 +1563,7 @@ fn is_executable(path: &Path) -> bool {
 mod private_tests {
     use super::*;
     use skit_domain::{EntryKind, EntryMeta, Slug};
+    use std::cell::RefCell;
     use tempfile::TempDir;
 
     #[derive(Debug, Default)]
@@ -1556,6 +1692,70 @@ mod private_tests {
             windows_command_shell(None, Some(OsString::from("C:\\Windows")), &empty),
             Err(LaunchError::ProgramNotFound { name }) if name == "cmd.exe"
         ));
+    }
+
+    #[test]
+    fn command_plan_uses_the_explicit_windows_shell_policy_on_every_host() {
+        let mut command = entry("command");
+        EntrySettings {
+            template: "tool {value}".to_owned(),
+            ..EntrySettings::default()
+        }
+        .write_to_meta(&mut command.meta);
+        let assembly = Assembly {
+            args: vec!["tail with spaces".to_owned()],
+            masked_args: vec!["tail with spaces".to_owned()],
+            command_values: BTreeMap::from([("value".to_owned(), "quoted \"value\"".to_owned())]),
+            masked_command_values: BTreeMap::from([(
+                "value".to_owned(),
+                "quoted \"value\"".to_owned(),
+            )]),
+            masked_env: BTreeMap::from([("TOKEN".to_owned(), "masked \"value\"".to_owned())]),
+            ..Assembly::default()
+        };
+        let policy = InterpreterPolicy::new_with_windows_environment(
+            InterpreterPlatform::Windows,
+            None,
+            Some(OsString::from("C:\\explicit\\cmd.exe")),
+            Some(OsString::from("C:\\poison-system-root")),
+        );
+
+        let probe = Probe {
+            directories: vec![PathBuf::from("/invoke")],
+            ..Probe::default()
+        };
+        let plan = build_launch_plan_with_interpreter_policy(
+            &command,
+            &paths(),
+            &assembly,
+            None,
+            None,
+            &policy,
+            &probe,
+        )
+        .unwrap();
+        let preview = build_launch_preview_with_interpreter_policy(
+            &command,
+            &paths(),
+            &assembly,
+            None,
+            None,
+            None,
+            &policy,
+            &probe,
+        )
+        .unwrap();
+
+        assert_eq!(plan.program, PathBuf::from("C:\\explicit\\cmd.exe"));
+        assert_eq!(
+            plan.args,
+            ["/C", r#"tool "quoted \"value\"" "tail with spaces""#,]
+        );
+        assert_eq!(
+            plan.display,
+            r#"TOKEN="masked \"value\"" C:\explicit\cmd.exe /C "tool \"quoted \\\"value\\\"\" \"tail with spaces\"""#
+        );
+        assert_eq!(preview, plan);
     }
 
     #[test]
@@ -1707,7 +1907,112 @@ mod private_tests {
                 .args(["-c", "kill -TERM $$"])
                 .status()
                 .unwrap();
-            assert_eq!(status_code(status), 143);
+            assert_eq!(portable_status(process_output(status)), 143);
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingLaunchRunner {
+        plans: RefCell<Vec<LaunchPlan>>,
+        output: LaunchProcessOutput,
+    }
+
+    impl LaunchRunner for RecordingLaunchRunner {
+        fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
+            self.plans.borrow_mut().push(plan.clone());
+            Ok(self.output)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingLaunchRunner;
+
+    impl LaunchRunner for FailingLaunchRunner {
+        fn run(&self, _plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "spawn denied",
+            ))
+        }
+    }
+
+    #[test]
+    fn injected_launch_runner_receives_the_exact_immutable_plan() {
+        let plan = LaunchPlan {
+            program: PathBuf::from("/runtime/tool"),
+            args: vec!["--flag".to_owned(), "two words".to_owned()],
+            env: BTreeMap::from([("TOKEN".to_owned(), "value".to_owned())]),
+            cwd: PathBuf::from("/work"),
+            display: "TOKEN=value /runtime/tool --flag 'two words'".to_owned(),
+            warnings: vec![LaunchWarning::AmpOneShot],
+        };
+        let runner = RecordingLaunchRunner {
+            plans: RefCell::new(Vec::new()),
+            output: LaunchProcessOutput {
+                exit_code: Some(7),
+                signal: None,
+            },
+        };
+
+        assert_eq!(execute_launch_with(&plan, &runner).unwrap(), 7);
+        assert_eq!(runner.plans.into_inner(), [plan]);
+    }
+
+    #[test]
+    fn launch_core_owns_io_error_and_portable_status_mapping() {
+        let plan = LaunchPlan {
+            program: PathBuf::from("/runtime/tool"),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: PathBuf::from("/work"),
+            display: "/runtime/tool".to_owned(),
+            warnings: Vec::new(),
+        };
+        let error = execute_launch_with(&plan, &FailingLaunchRunner).unwrap_err();
+        assert!(matches!(
+            error,
+            LaunchError::Process {
+                operation: "run",
+                ref source,
+            } if source.kind() == io::ErrorKind::PermissionDenied
+                && source.to_string() == "spawn denied"
+        ));
+
+        for (output, expected) in [
+            (
+                LaunchProcessOutput {
+                    exit_code: Some(0),
+                    signal: None,
+                },
+                0,
+            ),
+            (
+                LaunchProcessOutput {
+                    exit_code: Some(7),
+                    signal: Some(9),
+                },
+                7,
+            ),
+            (
+                LaunchProcessOutput {
+                    exit_code: None,
+                    signal: Some(15),
+                },
+                143,
+            ),
+            (
+                LaunchProcessOutput {
+                    exit_code: None,
+                    signal: None,
+                },
+                125,
+            ),
+        ] {
+            let runner = RecordingLaunchRunner {
+                plans: RefCell::new(Vec::new()),
+                output,
+            };
+            assert_eq!(execute_launch_with(&plan, &runner).unwrap(), expected);
         }
     }
 
@@ -1726,5 +2031,19 @@ mod private_tests {
         assert!(size > limit);
         assert_eq!(limit, 60_000);
         assert_eq!(unit, "bytes");
+    }
+
+    #[test]
+    fn a_windows_template_keeps_escaped_braces_and_an_unknown_placeholder() {
+        let values = BTreeMap::from([("name".to_owned(), "Ada Lovelace".to_owned())]);
+
+        let rendered = render_command_template_for_platform(
+            "echo {{ {name} }} {other}",
+            &values,
+            InterpreterPlatform::Windows,
+        )
+        .unwrap();
+
+        assert_eq!(rendered, "echo { \"Ada Lovelace\" } {other}");
     }
 }

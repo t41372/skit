@@ -351,7 +351,10 @@ pub enum SettingsAction {
     /// Ask the script for its parameter definitions again when the save runs.
     Resync,
     /// Replace the settings-local detected-placeholder selection in body order.
-    SetPromptCandidates(Vec<String>),
+    SetPromptCandidates {
+        /// Complete selected placeholder list in body order.
+        selected: Vec<String>,
+    },
     /// Save every axis, after validation.
     Save,
     /// Leave the screen, through the discard guard when anything moved.
@@ -785,7 +788,7 @@ impl SettingsView {
                 self.focus(RESYNC_KEY);
                 SettingsEffect::None
             }
-            SettingsAction::SetPromptCandidates(selected) => {
+            SettingsAction::SetPromptCandidates { selected } => {
                 self.set_prompt_candidates(&selected);
                 SettingsEffect::None
             }
@@ -2568,5 +2571,145 @@ mod tests {
         let json = serde_json::to_string(&view).unwrap();
         let restored: SettingsView = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, view);
+    }
+
+    #[test]
+    fn set_prompt_candidates_action_has_canonical_json_contract() {
+        let settings_action = SettingsAction::SetPromptCandidates {
+            selected: vec!["first".to_owned(), "second".to_owned()],
+        };
+        let canonical = serde_json::json!({
+            "action": "set_prompt_candidates",
+            "selected": ["first", "second"]
+        });
+        assert_eq!(serde_json::to_value(&settings_action).unwrap(), canonical);
+
+        let action = crate::Action::Settings(settings_action);
+        let encoded = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "settings": canonical
+            })
+        );
+        let restored = serde_json::from_value::<crate::Action>(encoded.clone()).unwrap();
+        assert_eq!(restored, action);
+        assert_eq!(serde_json::to_value(restored).unwrap(), encoded);
+
+        for malformed in [
+            serde_json::json!({
+                "action": "set_prompt_candidates"
+            }),
+            serde_json::json!({
+                "set_prompt_candidates": ["first", "second"]
+            }),
+        ] {
+            assert!(serde_json::from_value::<SettingsAction>(malformed).is_err());
+        }
+    }
+
+    /// Every `SettingsInputs` field, carrying a value the default does not hold.
+    fn sentinel_inputs() -> SettingsInputs {
+        let mut managed = ParamDecl::new("SENTINEL_PARAM");
+        managed.prompt = "Sentinel prompt".to_owned();
+        SettingsInputs {
+            selector: "sentinel-selector".to_owned(),
+            kind: "sentinel-kind".to_owned(),
+            name: "Sentinel name".to_owned(),
+            description: "Sentinel description".to_owned(),
+            source: "/sentinel/source.py".to_owned(),
+            reference_mode: true,
+            workdir: "/sentinel/work".to_owned(),
+            interpreter: "/sentinel/bin/python".to_owned(),
+            runner: "sentinel-runner".to_owned(),
+            supports_modes: true,
+            has_original_file: true,
+            has_stored_name: true,
+            pinnable_interpreter: true,
+            has_analyzer: true,
+            declared_schema: true,
+            reader_fields: 27,
+            managed: vec![managed],
+            candidates: vec!["SENTINEL_CANDIDATE".to_owned()],
+            template: "sentinel {VALUE}".to_owned(),
+            interpolate: true,
+            dependency_flavor: Some(DependencyFlavor::Npm),
+            effective_dependencies: vec!["sentinel-package@1".to_owned()],
+            effective_requires_python: ">=3.13".to_owned(),
+            needs: vec!["sentinel-tool".to_owned()],
+            configured_runners: vec!["sentinel-runner".to_owned()],
+            presets: BTreeMap::from([(
+                "sentinel-preset".to_owned(),
+                BTreeMap::from([("SENTINEL_PARAM".to_owned(), "value".to_owned())]),
+            )]),
+            revealed: Some(SettingsSectionId::Needs),
+        }
+    }
+
+    /// Pin the complete `SettingsInputs` shape.
+    ///
+    /// The screen reads this struct once when it opens, so a field nobody names here is a field no
+    /// section can show. Naming every field without `..` makes a new field a compile error, and
+    /// each value differs from the default so an unread field stays visible.
+    #[test]
+    fn settings_inputs_names_all_twenty_seven_fields_the_screen_reads() {
+        let default = SettingsInputs::default();
+        let SettingsInputs {
+            selector,
+            kind,
+            name,
+            description,
+            source,
+            reference_mode,
+            workdir,
+            interpreter,
+            runner,
+            supports_modes,
+            has_original_file,
+            has_stored_name,
+            pinnable_interpreter,
+            has_analyzer,
+            declared_schema,
+            reader_fields,
+            managed,
+            candidates,
+            template,
+            interpolate,
+            dependency_flavor,
+            effective_dependencies,
+            effective_requires_python,
+            needs,
+            configured_runners,
+            presets,
+            revealed,
+        } = sentinel_inputs();
+
+        assert_ne!(selector, default.selector);
+        assert_ne!(kind, default.kind);
+        assert_ne!(name, default.name);
+        assert_ne!(description, default.description);
+        assert_ne!(source, default.source);
+        assert_ne!(reference_mode, default.reference_mode);
+        assert_ne!(workdir, default.workdir);
+        assert_ne!(interpreter, default.interpreter);
+        assert_ne!(runner, default.runner);
+        assert_ne!(supports_modes, default.supports_modes);
+        assert_ne!(has_original_file, default.has_original_file);
+        assert_ne!(has_stored_name, default.has_stored_name);
+        assert_ne!(pinnable_interpreter, default.pinnable_interpreter);
+        assert_ne!(has_analyzer, default.has_analyzer);
+        assert_ne!(declared_schema, default.declared_schema);
+        assert_ne!(reader_fields, default.reader_fields);
+        assert_ne!(managed, default.managed);
+        assert_ne!(candidates, default.candidates);
+        assert_ne!(template, default.template);
+        assert_ne!(interpolate, default.interpolate);
+        assert_ne!(dependency_flavor, default.dependency_flavor);
+        assert_ne!(effective_dependencies, default.effective_dependencies);
+        assert_ne!(effective_requires_python, default.effective_requires_python);
+        assert_ne!(needs, default.needs);
+        assert_ne!(configured_runners, default.configured_runners);
+        assert_ne!(presets, default.presets);
+        assert_ne!(revealed, default.revealed);
     }
 }
