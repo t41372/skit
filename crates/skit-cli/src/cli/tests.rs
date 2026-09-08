@@ -21,6 +21,8 @@ use tempfile::TempDir;
 
 use super::*;
 
+mod legacy_walker_rules;
+
 fn tui_effect_in_english(
     service: &LibraryService<FileStore>,
     store: &FileStore,

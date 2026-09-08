@@ -80,6 +80,29 @@ was incorrect. They are required product capabilities and are release blockers u
 The executable status and evidence for these areas is in `rust-contract-matrix.md`. This document
 does not claim that the cutover is complete while any matrix row is incomplete.
 
+## Ratatui layout and input contracts
+
+The Ratatui adapter classifies each frame once. A width below 80 columns is narrow. Heights 0-9
+are tiny, 10-15 are short, 16-27 are normal, and 28 or more are tall. The root planner gives the
+primary body its minimum rows before it assigns header and footer rows. Short and tiny layouts use
+a flat Library search row and an undecorated footer. Self-titled screens and modals own their title;
+they do not also render a global title. Boundary tests cover zero-size viewports, each adjacent tier,
+all three locales, hit containment, and body growth that never shrinks the primary viewport.
+
+Mouse actions use one semantic press-and-release contract. Primary Down arms the target. A primary
+Up activates it only when the semantic target still matches. A drag, a nonprimary button, a resize,
+or a different owner cancels the press. An editable field can place its caret on primary Down, but
+that placement does not activate an action. Shared geometry maps terminal cells to complete ASCII,
+wide, combining, emoji-ZWJ, secret, and horizontally scrolled graphemes. Wheel input belongs to the
+topmost visible list, dropdown, modal, body, or footer under the pointer. It cancels an armed click
+and clamps the owner's scroll offset to its final visual rows.
+
+The live Unix PTY test sends real SGR mouse Down and Up bytes at 46x12. It verifies the 1003 and 1006
+mode transitions and their shutdown restoration. The test replays all output through `vt100` and checks
+the final terminal grid, so erased history text cannot pass as visible text. Ignored pointer motion
+emits no frame. Consumed input, reducer actions, resize events, and completed background work request
+a redraw. The dirty flag uses a monotonic OR until the loop draws the next frame.
+
 ## Localized messages
 
 `skit-i18n` owns one static catalog and two presentation types:

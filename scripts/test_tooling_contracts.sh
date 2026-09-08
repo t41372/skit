@@ -10,6 +10,81 @@ expect_text() {
   fi
 }
 
+parse_mutants_config_contract() {
+  local file=$1
+  local line
+  local in_array=0
+  local arrays=0
+  local close_pattern='^[[:space:]]*\][[:space:]]*$'
+  local entry_pattern='^[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*$'
+  local ignorable_pattern='^[[:space:]]*(#.*)?$'
+
+  while IFS= read -r line || test -n "$line"; do
+    if test "$in_array" -eq 1; then
+      if [[ $line =~ $close_pattern ]]; then
+        in_array=0
+      elif [[ $line =~ $entry_pattern ]]; then
+        printf 'exclusion:%s\n' "${BASH_REMATCH[1]}"
+      elif ! [[ $line =~ $ignorable_pattern ]]; then
+        return 1
+      fi
+    elif [[ $line =~ $ignorable_pattern ]]; then
+      continue
+    else
+      case "$line" in
+        'test_workspace = true' | 'all_features = true')
+          printf 'setting:%s\n' "$line"
+          ;;
+        'exclude_re = [')
+          arrays=$((arrays + 1))
+          test "$arrays" -eq 1 || return 1
+          in_array=1
+          printf 'setting:%s\n' "$line"
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    fi
+  done < "$file"
+  test "$arrays" -eq 1 && test "$in_array" -eq 0
+}
+
+mutants_config_is_exact() {
+  local file=$1
+  local expected
+  local actual
+  expected=$'setting:test_workspace = true\nsetting:all_features = true\nsetting:exclude_re = [\nexclusion:replace current_argument_dialect'
+  if ! actual="$(parse_mutants_config_contract "$file")"; then
+    echo "$file contains an invalid or unreviewed top-level mutation setting" >&2
+    return 1
+  fi
+  if [[ $actual != "$expected" ]]; then
+    printf '%s\n%s\n%s\n%s\n' \
+      "$file has the wrong ordered mutation settings; expected:" \
+      "$expected" \
+      'actual:' \
+      "$actual" >&2
+    return 1
+  fi
+}
+
+mutation_workflow_platforms_are_exact() {
+  local file=$1
+  local expected
+  local actual
+  expected=$'ubuntu-latest\nubuntu-latest'
+  actual="$(sed -n 's/^[[:space:]]*runs-on:[[:space:]]*//p' "$file")"
+  if [[ $actual != "$expected" ]]; then
+    printf '%s\n%s\n%s\n%s\n' \
+      "$file has the wrong mutation workflow platforms; expected:" \
+      "$expected" \
+      'actual:' \
+      "$actual" >&2
+    return 1
+  fi
+}
+
 expect_text Cargo.toml 'tree-sitter = "0.26.12"'
 setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
 test "$(grep -rF "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
@@ -225,15 +300,46 @@ test "$(grep -cF "$mutation_gate" .github/workflows/mutation.yml)" -eq 2 || {
 expect_text .github/workflows/mutation.yml 'types: [opened, synchronize, reopened, labeled]'
 expect_text .github/workflows/mutation.yml '!cancelled() &&'
 
-# A zero-survivor gate means something only while the exclusion list stays honest. Exactly one
-# mutant is excluded, and only because this host compiles that half of the function out. An
-# exclusion added quietly is how such a gate rots.
-expect_text .cargo/mutants.toml 'exclude_re = ["replace current_argument_dialect"]'
-mutation_exclusions="$(grep -c '^[[:space:]]*exclude' .cargo/mutants.toml)"
-test "$mutation_exclusions" -eq 1 || {
-  echo "the mutation configuration must exclude exactly one mutant, found $mutation_exclusions" >&2
+# A zero-survivor gate means something only while the mutation selection stays honest. Parse the
+# complete top-level configuration and allow only the reviewed settings and ordered exclusions.
+mutants_config_is_exact .cargo/mutants.toml
+if mutants_config_is_exact <(
+  sed '/"replace current_argument_dialect"/a\    "unexpected_exclusion",' \
+    .cargo/mutants.toml
+) 2>/dev/null; then
+  echo 'the mutation exclusion parser accepted an injected second entry' >&2
   exit 1
-}
+fi
+if mutants_config_is_exact <(
+  sed 's/^    "replace current_argument_dialect",$/    "replace current_argument_dialect"/' \
+    .cargo/mutants.toml
+) 2>/dev/null; then
+  echo 'the mutation configuration parser accepted an entry without its TOML comma' >&2
+  exit 1
+fi
+for unexpected_mutation_setting in \
+  'exclude_globs = ["crates/**"]' \
+  'examine_globs = ["crates/**"]' \
+  'examine_re = ["matches_path"]' \
+  'skip_calls = ["matches_path"]'; do
+  if mutants_config_is_exact <(
+    sed -n 'p' .cargo/mutants.toml
+    printf '%s\n' "$unexpected_mutation_setting"
+  ) 2>/dev/null; then
+    echo "the mutation configuration parser accepted: $unexpected_mutation_setting" >&2
+    exit 1
+  fi
+done
+expect_text .cargo/mutants.toml 'The current mutation workflow runs only on Linux.'
+expect_text .cargo/mutants.toml 'must use `--no-config` or a separate config without this exclusion'
+mutation_workflow_platforms_are_exact .github/workflows/mutation.yml
+if mutation_workflow_platforms_are_exact <(
+  sed -n 'p' .github/workflows/mutation.yml
+  printf '%s\n' '  unexpected-windows-job:' '    runs-on: windows-latest'
+) 2>/dev/null; then
+  echo 'the mutation workflow parser accepted an injected Windows job' >&2
+  exit 1
+fi
 
 # Mutation testing runs as shards, because one job cannot finish every mutant inside the platform
 # ceiling. The three places that name the shard count must agree, or some shard silently never runs
@@ -255,6 +361,140 @@ expect_text .github/workflows/mutation.yml "SHARD_COUNT: \"$mutation_shards\""
 expect_text .github/workflows/mutation.yml '    needs: mutation'
 expect_text .github/workflows/mutation.yml 'if-no-files-found: error'
 expect_text .github/workflows/mutation.yml 'reported no outcomes'
+
+# The complete UI walk is expensive, so pull requests opt in with one label. Scheduled and manual
+# runs always execute. A failed walk must keep its replay data even when GIF rendering also fails.
+ui_walker_workflow=.github/workflows/ui-walker.yml
+test -f "$ui_walker_workflow" || {
+  echo 'the UI walker workflow is missing' >&2
+  exit 1
+}
+expect_text "$ui_walker_workflow" 'types: [opened, synchronize, reopened, labeled]'
+expect_text "$ui_walker_workflow" 'schedule:'
+expect_text "$ui_walker_workflow" 'workflow_dispatch:'
+expect_text "$ui_walker_workflow" '      record_success:'
+expect_text "$ui_walker_workflow" "SKIT_WALKER_RECORD_SUCCESS: \${{ ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested')) || (github.event_name == 'workflow_dispatch' && inputs.record_success)) && '1' || '0' }}"
+record_success_input="$(awk '
+  $0 == "      record_success:" { capture = 1; print; next }
+  capture && $0 !~ /^        / { exit }
+  capture { print }
+' "$ui_walker_workflow")"
+for contract in '        required: false' '        type: boolean' '        default: false'; do
+  if ! printf '%s\n' "$record_success_input" | grep -Fqx "$contract"; then
+    echo "the record_success input must contain: $contract" >&2
+    exit 1
+  fi
+done
+if grep -Eq '^  push:' "$ui_walker_workflow"; then
+  echo 'the UI walker must not run for an ordinary branch push' >&2
+  exit 1
+fi
+ui_walker_gate="github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'ui-walker-requested') || (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested'))"
+test "$(grep -cF "$ui_walker_gate" "$ui_walker_workflow")" -eq 1 || {
+  echo 'the UI walker job must reject unrelated label events but honor an existing opt-in label' >&2
+  exit 1
+}
+expect_text "$ui_walker_workflow" 'runs-on: ubuntu-24.04'
+expect_text "$ui_walker_workflow" 'permissions: {}'
+expect_text "$ui_walker_workflow" '      contents: read'
+if grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]+write([[:space:]]|$)' "$ui_walker_workflow"; then
+  echo 'the UI walker does not need a write permission' >&2
+  exit 1
+fi
+expect_text "$ui_walker_workflow" 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
+expect_text "$ui_walker_workflow" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_text "$ui_walker_workflow" 'SKIT_WALKER_CASES: "2"'
+expect_text "$ui_walker_workflow" 'SKIT_WALKER_STEPS: "100"'
+expect_text "$ui_walker_workflow" 'SKIT_WALKER_PROFILES: "complete"'
+expect_text "$ui_walker_workflow" 'timeout-minutes: 90'
+expect_text "$ui_walker_workflow" 'https://github.com/asciinema/agg/releases/download/v1.9.0/agg-x86_64-unknown-linux-gnu'
+expect_text "$ui_walker_workflow" 'f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6'
+expect_text "$ui_walker_workflow" '"$RUNNER_TEMP/agg"'
+if grep -Eq 'cargo install([[:space:]]|.*)agg|sudo .*agg|/usr/(local/)?bin/agg' \
+  "$ui_walker_workflow"; then
+  echo 'the UI walker must not install agg globally or through Cargo' >&2
+  exit 1
+fi
+expect_text "$ui_walker_workflow" 'agg-smoke.cast'
+expect_text "$ui_walker_workflow" 'agg-smoke.gif'
+expect_text "$ui_walker_workflow" 'test -s "$RUNNER_TEMP/agg-smoke.gif"'
+expect_text "$ui_walker_workflow" 'agg 1.9.0 ignores resize events'
+
+ui_walker_step() {
+  local name=$1
+  awk -v marker="      - name: $name" '
+    $0 == marker { capture = 1 }
+    capture && $0 ~ /^      - name:/ && $0 != marker { exit }
+    capture { print }
+  ' "$ui_walker_workflow"
+}
+
+expect_ui_step_text() {
+  local name=$1
+  local text=$2
+  local block
+  block="$(ui_walker_step "$name")"
+  if ! printf '%s\n' "$block" | grep -Fq -- "$text"; then
+    echo "the '$name' step does not contain: $text" >&2
+    return 1
+  fi
+}
+
+walker_step='Run the complete UI model walk'
+expect_ui_step_text "$walker_step" 'id: walker'
+expect_ui_step_text "$walker_step" 'continue-on-error: true'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_CASES" -gt 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_STEPS" -gt 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_RECORD_SUCCESS" = 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_RECORD_SUCCESS" = 1'
+expect_ui_step_text "$walker_step" 'cargo test --locked -p skit-cli-rs --lib cli::tui_real_random_walk::real_random_walk -- --exact --list'
+expect_ui_step_text "$walker_step" "grep -cFx 'cli::tui_real_random_walk::real_random_walk: test'"
+expect_ui_step_text "$walker_step" 'cargo test --locked -p skit-cli-rs --lib cli::tui_real_random_walk::real_random_walk -- --exact --nocapture'
+expect_ui_step_text "$walker_step" "-path 'target/ui-walker-artifacts/success-*/success.cast'"
+expect_ui_step_text "$walker_step" 'test "$success_count" -eq 1'
+expect_ui_step_text "$walker_step" 'tee target/ui-walker-artifacts/walker.log'
+expect_ui_step_text "$walker_step" 'timeout --signal=TERM --kill-after=5m 65m'
+
+render_step='Render captured casts'
+expect_ui_step_text "$render_step" 'id: render'
+expect_ui_step_text "$render_step" "hashFiles('target/ui-walker-artifacts/failure-*/failure.cast') != ''"
+expect_ui_step_text "$render_step" "hashFiles('target/ui-walker-artifacts/success-*/success.cast') != ''"
+expect_ui_step_text "$render_step" 'continue-on-error: true'
+expect_ui_step_text "$render_step" "-path 'target/ui-walker-artifacts/failure-*/failure.cast'"
+expect_ui_step_text "$render_step" "-o -path 'target/ui-walker-artifacts/success-*/success.cast'"
+expect_ui_step_text "$render_step" 'bundle="${cast%/*}"'
+expect_ui_step_text "$render_step" 'stem="${stem%.cast}"'
+expect_ui_step_text "$render_step" '"$bundle/$stem.gif"'
+expect_ui_step_text "$render_step" '"$bundle/agg.log"'
+expect_ui_step_text "$render_step" '-print0 > "$RUNNER_TEMP/ui-walker-casts"'
+expect_ui_step_text "$render_step" 'done < "$RUNNER_TEMP/ui-walker-casts"'
+render_block="$(ui_walker_step "$render_step")"
+if printf '%s\n' "$render_block" | grep -Fq 'done < <('; then
+  echo 'the renderer must not discard the find command exit status' >&2
+  exit 1
+fi
+if printf '%s\n' "$render_block" | grep -Eq 'ui-walker-artifacts/(failure\.(cast|gif)|agg\.log)'; then
+  echo 'the renderer must keep each output in its atomic failure bundle' >&2
+  exit 1
+fi
+
+upload_step='Upload UI walker artifacts'
+expect_ui_step_text "$upload_step" 'if: ${{ !cancelled() }}'
+expect_ui_step_text "$upload_step" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_ui_step_text "$upload_step" 'path: target/ui-walker-artifacts/'
+expect_ui_step_text "$upload_step" 'if-no-files-found: error'
+
+fail_step='Fail after artifact capture'
+expect_ui_step_text "$fail_step" "if: \${{ !cancelled() && (steps.walker.outcome == 'failure' || steps.render.outcome == 'failure') }}"
+expect_ui_step_text "$fail_step" 'exit 1'
+ui_render_line="$(grep -nF -- '- name: Render captured casts' "$ui_walker_workflow" | cut -d: -f1)"
+ui_upload_line="$(grep -nF -- '- name: Upload UI walker artifacts' "$ui_walker_workflow" | cut -d: -f1)"
+ui_fail_line="$(grep -nF -- '- name: Fail after artifact capture' "$ui_walker_workflow" | cut -d: -f1)"
+test -n "$ui_render_line" && test -n "$ui_upload_line" && test -n "$ui_fail_line" &&
+  test "$ui_render_line" -lt "$ui_upload_line" && test "$ui_upload_line" -lt "$ui_fail_line" || {
+  echo 'the UI walker must render, upload, and then fail in that order' >&2
+  exit 1
+}
 
 # Every workflow job needs a time bound. Without one a stuck job runs to the six-hour default, and
 # the run is cancelled before the log flushes, so the failure teaches nothing about where it stuck.

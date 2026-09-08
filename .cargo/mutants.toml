@@ -7,9 +7,14 @@ all_features = true
 # workspace suite. The derived budget then times out honest runs. Do not add `timeout_multiplier`
 # or `minimum_test_timeout` here: they only govern that automatic path.
 
+# The current mutation workflow runs only on Linux. A Windows mutation run
+# must use `--no-config` or a separate config without this exclusion to test its native function.
+
 # A mutant inside code this host compiles out can never be killed here. The text changes, the file
 # still builds because the item is not compiled, and every test passes, so cargo-mutants reports it
 # missed. `current_argument_dialect` is written twice, once per host, and the Windows half is that
 # case on a Linux runner. The POSIX half is not a survivor either way: `ArgumentDialect` has no
 # `Default`, so mutating it does not build.
-exclude_re = ["replace current_argument_dialect"]
+exclude_re = [
+    "replace current_argument_dialect",
+]
