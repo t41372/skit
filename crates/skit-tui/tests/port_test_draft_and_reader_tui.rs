@@ -134,10 +134,10 @@ fn rendered(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
 }
 
-/// Click one rendered add control through the same mouse path as the host session.
-fn left_click(column: u16, row: u16) -> Event {
+/// Send one primary mouse phase through the same path as the host session.
+fn left_mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -326,11 +326,43 @@ fn test_review_dynamic_optstring_keeps_ticks_and_space_chip() {
         ReviewDefaults::default(),
     );
     assert!(!review.candidates().is_empty()); // ...the ticks remain (constants are additive)
-    let screen = render_add_text(&AddWorkflowState::from_review(review), 100, 40);
+    let workflow = AddWorkflowState::from_review(review);
+    let mut session = AddScreenSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let mut geometry = AddScreenGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+        })
+        .unwrap();
+    while !matches!(session.focused(), Some(AddControlId::Candidate(_))) {
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &workflow,
+                &geometry,
+            ),
+            Some(AddScreenEvent::Changed)
+        );
+    }
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+        })
+        .unwrap();
+    let screen = rendered(terminal.backend().buffer());
     assert!(screen.contains(SELF_PARSE_NOTICE)); // the passthrough notice
     assert!(screen.contains(TICK_PROMPT)); // ...and the tick list mounts (the #rv-cand-0 twin)
     assert!(screen.contains("Space")); // the Space chip key hint is advertised
     assert!(screen.contains("Toggle")); // ...as a real toggle path
+    assert!(matches!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Action(AddAction::SetReviewCandidate { .. }))
+    ));
 }
 
 #[test]
@@ -452,7 +484,27 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         .find(|hit| hit.target == AddControlId::Draft(doomed_index))
         .expect("the doomed draft is a mouse target")
         .area;
-    let select = session.handle_event(left_click(draft_area.x, draft_area.y), &workflow, &geometry);
+    assert_eq!(
+        session.handle_event(
+            left_mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                draft_area.x,
+                draft_area.y,
+            ),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let select = session.handle_event(
+        left_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            draft_area.x,
+            draft_area.y,
+        ),
+        &workflow,
+        &geometry,
+    );
     assert_eq!(
         select,
         Some(AddScreenEvent::Action(AddAction::SelectDraft(doomed_index)))
@@ -640,6 +692,34 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
             geometry = render_add(frame, frame.area(), &present, &mut session, Locale::En);
         })
         .unwrap();
+    let draft = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.target, AddControlId::Draft(_)))
+        .expect("the listed draft is clickable")
+        .area;
+    assert_eq!(
+        session.handle_event(
+            left_mouse(MouseEventKind::Down(MouseButton::Left), draft.x, draft.y),
+            &present,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let selected = session.handle_event(
+        left_mouse(MouseEventKind::Up(MouseButton::Left), draft.x, draft.y),
+        &present,
+        &geometry,
+    );
+    let Some(AddScreenEvent::Action(action @ AddAction::SelectDraft(_))) = selected else {
+        panic!("the draft click must select its row: {selected:?}");
+    };
+    let _ = present.reduce(action);
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &present, &mut session, Locale::En);
+        })
+        .unwrap();
     let text = rendered(terminal.backend().buffer());
     assert!(text.contains("Ctrl+D")); // the mouse path is advertised
     assert!(text.contains("Delete draft"));
@@ -650,7 +730,19 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
         .find(|hit| hit.target == AddControlId::DeleteDraft)
         .expect("the advertised delete chip is clickable")
         .area;
-    let event = session.handle_event(left_click(delete.x, delete.y), &present, &geometry);
+    assert_eq!(
+        session.handle_event(
+            left_mouse(MouseEventKind::Down(MouseButton::Left), delete.x, delete.y,),
+            &present,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let event = session.handle_event(
+        left_mouse(MouseEventKind::Up(MouseButton::Left), delete.x, delete.y),
+        &present,
+        &geometry,
+    );
     assert_eq!(
         event,
         Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))

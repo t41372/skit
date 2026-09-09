@@ -9,7 +9,10 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_application::path_completion::{PathCompletionProvider, PathCompletionRequest};
 use skit_i18n::{Locale, Localize, Message};
-use skit_tui::{collect_form, collect_run_form, run, run_preflighted, run_with_path_completion};
+use skit_tui::{
+    collect_form, collect_run_form, collect_run_form_with_path_completion, run, run_preflighted,
+    run_with_path_completion,
+};
 use skit_ui::{Action, Effect, FormField, FormPurpose, FormView, LibraryState, RunFormView};
 
 #[derive(Debug)]
@@ -98,6 +101,28 @@ fn public_terminal_wrapper_child() {
                 None
             );
         }
+        "collect-run-with-path" => {
+            let form = RunFormView::from_declarations(
+                "demo",
+                "Wrapper run with path completion",
+                &[],
+                &BTreeMap::new(),
+                &[],
+                "",
+                &BTreeMap::new(),
+                "",
+            );
+            assert_eq!(
+                collect_run_form_with_path_completion(
+                    form,
+                    harmless_host,
+                    Locale::En,
+                    Arc::new(EmptyPathProvider),
+                )
+                .unwrap(),
+                None
+            );
+        }
         other => panic!("unknown wrapper mode {other}"),
     }
 }
@@ -117,6 +142,7 @@ fn every_public_terminal_wrapper_owns_a_real_terminal_lifecycle() {
         ("run", "Library"),
         ("run-with-path", "Library"),
         ("collect-run", "Extra arguments"),
+        ("collect-run-with-path", "Extra arguments"),
     ] {
         run_child_in_pty("public_terminal_wrapper_child", Some(mode), marker, None);
     }

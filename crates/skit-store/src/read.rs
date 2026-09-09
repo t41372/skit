@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::Deserialize;
@@ -13,10 +14,26 @@ use skit_i18n::Localize;
 
 use crate::{fs_ops::try_acquire_lock, mutations::registry::Registry};
 
+/// Supply the instant for one entry creation transaction.
+pub trait EntryCreateClock: std::fmt::Debug + Send + Sync {
+    /// Return the current UTC instant.
+    fn now_utc(&self) -> time::OffsetDateTime;
+}
+
+#[derive(Debug)]
+struct SystemEntryCreateClock;
+
+impl EntryCreateClock for SystemEntryCreateClock {
+    fn now_utc(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc()
+    }
+}
+
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
 pub struct FileStore {
     data_dir: PathBuf,
+    create_clock: Arc<dyn EntryCreateClock>,
 }
 
 impl FileStore {
@@ -25,7 +42,27 @@ impl FileStore {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
+            create_clock: Arc::new(SystemEntryCreateClock),
         }
+    }
+
+    /// Use an explicit entry-creation clock.
+    ///
+    /// Composition tests use this constructor to replay activity ordering. Production uses
+    /// [`Self::new`] and the system clock.
+    #[must_use]
+    pub fn with_create_clock(
+        data_dir: impl Into<PathBuf>,
+        create_clock: Arc<dyn EntryCreateClock>,
+    ) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            create_clock,
+        }
+    }
+
+    pub(crate) fn create_stamp(&self) -> String {
+        crate::stamp::iso_stamp(self.create_clock.now_utc())
     }
 
     /// Return the configured data root.
@@ -482,7 +519,7 @@ fn origin() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, io};
+    use std::{cell::Cell, io, sync::Arc};
 
     use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
     use skit_domain::EntrySettings;
@@ -490,6 +527,19 @@ mod tests {
     use toml::{Table, Value};
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedEntryCreateClock(&'static str);
+
+    impl EntryCreateClock for FixedEntryCreateClock {
+        fn now_utc(&self) -> time::OffsetDateTime {
+            time::OffsetDateTime::parse(
+                self.0,
+                &time::format_description::well_known::Iso8601::DEFAULT,
+            )
+            .unwrap()
+        }
+    }
 
     fn request(name: &str, kind: &str, description: &str) -> CreateEntry {
         CreateEntry {
@@ -510,6 +560,23 @@ mod tests {
             }),
             settings: EntrySettings::default(),
         }
+    }
+
+    #[test]
+    fn explicit_create_clock_controls_persisted_activity_ordering() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::with_create_clock(
+            root.path(),
+            Arc::new(FixedEntryCreateClock("2026-08-28T12:34:56+00:00")),
+        );
+
+        let created = store
+            .create(request("Clocked", "shell", "fixed activity"))
+            .unwrap();
+        let reopened = FileStore::new(root.path()).resolve("Clocked").unwrap();
+
+        assert_eq!(created.meta.added_at, "2026-08-28T12:34:56+00:00");
+        assert_eq!(reopened.meta.added_at, created.meta.added_at);
     }
 
     fn registry_document(root: &TempDir) -> Table {

@@ -1,8 +1,9 @@
 //! Completeness guard for Python `tests/test_tui_responsive.py` at `main@206f9ef`.
 //!
-//! Seventeen contracts have executable terminal-geometry equivalents. Two assert widget structures
-//! that do not exist in the Ratatui frontend and stay architecture-closed rather than being
-//! represented by a weaker test of a different widget.
+//! Seventeen contracts have executable terminal-geometry equivalents. Three Rust-only contracts
+//! cover frontend adapter invariants. Two Python contracts assert widget structures that do not
+//! exist in the Ratatui frontend and stay architecture-closed rather than being represented by a
+//! weaker test of a different widget.
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -28,6 +29,12 @@ const EXECUTABLE: &[&str] = &[
     "test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen",
     "test_env_picker_fits_input_and_esc_chip_across_the_tiers",
     "test_add_source_fields_stay_reachable_on_short_terminals",
+];
+
+const RUST_ADDITIVE: &[&str] = &[
+    "test_growing_across_height_tiers_never_shrinks_the_primary_viewport",
+    "test_footer_minimum_structure_is_monotonic_and_keeps_status_out_of_hits",
+    "test_root_hit_rectangles_stay_inside_every_boundary_viewport",
 ];
 
 const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
@@ -75,8 +82,8 @@ fn every_executable_responsive_contract_has_exactly_one_rust_oracle() {
     let names = test_names(&source);
     assert_eq!(
         names.len(),
-        EXECUTABLE.len(),
-        "responsive target added or lost a parity test: {names:#?}"
+        EXECUTABLE.len() + RUST_ADDITIVE.len(),
+        "responsive target added or lost a declared test: {names:#?}"
     );
     let actual = names.iter().cloned().collect::<BTreeSet<_>>();
     assert_eq!(
@@ -86,9 +93,10 @@ fn every_executable_responsive_contract_has_exactly_one_rust_oracle() {
     );
     let expected = EXECUTABLE
         .iter()
+        .chain(RUST_ADDITIVE)
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
-    assert_eq!(actual, expected, "responsive executable mapping drifted");
+    assert_eq!(actual, expected, "responsive test inventory drifted");
 }
 
 #[test]

@@ -64,13 +64,14 @@ use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
-    JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
-    ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
-    javascript_dependencies_need_install, javascript_dependency_failure_detail,
-    javascript_dependency_manifest, javascript_dependency_manifest_for_module,
-    javascript_module_type, preflight_javascript_dependencies,
-    resolve_javascript_dependency_installer, split_javascript_requirement,
-    split_javascript_requirements,
+    DependencyInstallServices, JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
+    ensure_javascript_dependencies_for_module,
+    ensure_javascript_dependencies_for_module_with_services,
+    ensure_javascript_dependencies_with_environment, javascript_dependencies_need_install,
+    javascript_dependency_failure_detail, javascript_dependency_manifest,
+    javascript_dependency_manifest_for_module, javascript_module_type,
+    preflight_javascript_dependencies, resolve_javascript_dependency_installer,
+    split_javascript_requirement, split_javascript_requirements,
 };
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 
@@ -115,7 +116,6 @@ enum Outcome {
 #[derive(Debug)]
 struct RecordingRunner {
     calls: Mutex<Vec<DependencyCommand>>,
-    announcements: Mutex<Vec<String>>,
     outcome: Outcome,
 }
 
@@ -123,7 +123,6 @@ impl RecordingRunner {
     fn new(outcome: Outcome) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
-            announcements: Mutex::new(Vec::new()),
             outcome,
         }
     }
@@ -135,20 +134,9 @@ impl RecordingRunner {
     fn calls(&self) -> Vec<DependencyCommand> {
         self.calls.lock().unwrap().clone()
     }
-
-    fn announcements(&self) -> Vec<String> {
-        self.announcements.lock().unwrap().clone()
-    }
 }
 
 impl DependencyCommandRunner for RecordingRunner {
-    fn installation_started(&self, installer: &str) {
-        self.announcements
-            .lock()
-            .unwrap()
-            .push(installer.to_owned());
-    }
-
     fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         self.calls.lock().unwrap().push(command.clone());
         match &self.outcome {
@@ -1743,30 +1731,34 @@ fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
     let runner = RecordingRunner::success();
-    ensure_javascript_dependencies_for_module(
+    let announcements = Mutex::new(Vec::new());
+    let announce = |installer: &str| {
+        announcements.lock().unwrap().push(installer.to_owned());
+    };
+    ensure_javascript_dependencies_for_module_with_services(
         &dir,
         "node",
         &deps(&["chalk"]),
         None,
         &BTreeMap::new(),
         &probe,
-        &runner,
+        DependencyInstallServices::new(&runner, &announce),
     )
     .unwrap();
-    assert_eq!(runner.announcements(), ["npm"]);
+    assert_eq!(*announcements.lock().unwrap(), ["npm"]);
 
-    ensure_javascript_dependencies_for_module(
+    ensure_javascript_dependencies_for_module_with_services(
         &dir,
         "node",
         &deps(&["chalk"]),
         None,
         &BTreeMap::new(),
         &probe,
-        &runner,
+        DependencyInstallServices::new(&runner, &announce),
     )
     .unwrap();
     assert_eq!(
-        runner.announcements(),
+        *announcements.lock().unwrap(),
         ["npm"],
         "a fresh marker must stay silent"
     );

@@ -21,6 +21,57 @@ use tempfile::TempDir;
 
 use super::*;
 
+fn tui_effect_in_english(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    effect: UiEffect,
+) -> Result<UiAction, CliError> {
+    use super::tui_host::{ProductRoots, SystemClock, SystemEnvironment, TuiPlatform};
+    use crate::run::RunPorts;
+
+    TuiHost::new(
+        service,
+        ProductRoots::new(
+            store.data_dir(),
+            state_dir,
+            config_dir,
+            user_home(),
+            env::current_dir().unwrap(),
+        ),
+        Locale::En,
+        &SystemClock,
+        TuiPlatform::new(
+            &SystemEnvironment,
+            &SYSTEM_TERMINAL,
+            &SYSTEM_EDITOR,
+            RunPorts::system(),
+            &SYSTEM_FILE_ALLOCATOR,
+            &SYSTEM_OUTPUT,
+            &SYSTEM_PREFERENCE_FILES,
+        ),
+    )
+    .unwrap()
+    .serve(effect)
+}
+
+fn tui_add_effect_in_english(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    effects: Vec<AddEffect>,
+) -> Result<UiAction, CliError> {
+    tui_effect_in_english(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        UiEffect::Add(effects),
+    )
+}
+
 #[test]
 fn plain_python_metadata_questions_have_one_exhaustive_entrance() {
     let asks = |kind, dep, python, owned, suggestions, no_input, interactive, tui| {
@@ -1402,7 +1453,8 @@ fn tui_add_host_reads_exact_source_and_commits_through_the_reducer_seam() {
     let _ = workflow.reduce(AddAction::SetSourcePath(source.display().to_string()));
     let effects = workflow.reduce(AddAction::Continue);
 
-    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    let action =
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap();
     let UiAction::Add(AddAction::SourceInspected { request, result }) = action else {
         panic!("source inspection must return through the typed reducer");
     };
@@ -1431,7 +1483,8 @@ fn tui_add_host_reads_exact_source_and_commits_through_the_reducer_seam() {
         panic!("a reviewed file commit must carry the byte-exact source expectation");
     };
     assert_eq!(expected.bytes, raw);
-    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    let action =
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap();
     let UiAction::Add(AddAction::CommitFinished { request, result }) = action else {
         panic!("repository completion must return through the typed reducer");
     };
@@ -1444,7 +1497,7 @@ fn tui_add_host_reads_exact_source_and_commits_through_the_reducer_seam() {
         slug: completed,
         message,
         ..
-    } = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap()
+    } = tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap()
     else {
         panic!("the final host effect must refresh and select the new entry");
     };
@@ -1468,7 +1521,7 @@ fn tui_add_refuses_a_source_that_changed_after_review_without_writing_an_entry()
     let _ = workflow.reduce(AddAction::SetSourcePath(source.display().to_string()));
     let inspect = workflow.reduce(AddAction::Continue);
     let UiAction::Add(AddAction::SourceInspected { request, result }) =
-        tui_add_effect(&service, &store, &state_dir, &config_dir, inspect).unwrap()
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, inspect).unwrap()
     else {
         panic!("source inspection must return to the reducer");
     };
@@ -1479,7 +1532,7 @@ fn tui_add_refuses_a_source_that_changed_after_review_without_writing_an_entry()
     let UiAction::Add(AddAction::CommitFinished {
         request,
         result: Err(reason),
-    }) = tui_add_effect(&service, &store, &state_dir, &config_dir, commit).unwrap()
+    }) = tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, commit).unwrap()
     else {
         panic!("a stale review must return a typed commit refusal");
     };
@@ -1510,7 +1563,7 @@ fn tui_add_refuses_a_same_bytes_identity_replacement_without_any_write() {
     let UiAction::Add(AddAction::SourceInspected {
         request,
         result: Ok(expected),
-    }) = tui_add_effect(&service, &store, &state_dir, &config_dir, inspect).unwrap()
+    }) = tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, inspect).unwrap()
     else {
         panic!("source inspection must return a snapshot");
     };
@@ -1533,7 +1586,7 @@ fn tui_add_refuses_a_same_bytes_identity_replacement_without_any_write() {
     let UiAction::Add(AddAction::CommitFinished {
         result: Err(reason),
         ..
-    }) = tui_add_effect(&service, &store, &state_dir, &config_dir, commit).unwrap()
+    }) = tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, commit).unwrap()
     else {
         panic!("a replaced source must return a typed commit refusal");
     };
@@ -1560,7 +1613,7 @@ fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_replacement() {
     let created = add_command(&service, "Kept", "printf kept");
     fs::write(&draft, "print('replacement')\n").unwrap();
 
-    let action = tui_add_effect(
+    let action = tui_add_effect_in_english(
         &service,
         &store,
         &unusable_state,
@@ -1591,7 +1644,7 @@ fn complete_after_draft_cleanup(root: &TempDir, expected: AddSourceSnapshot) -> 
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
     let created = add_command(&service, "Committed", "printf committed");
-    let action = tui_add_effect(
+    let action = tui_add_effect_in_english(
         &service,
         &store,
         &state_dir,
@@ -1811,7 +1864,7 @@ fn tui_changed_draft_refresh_refuses_a_symlink_row_without_touching_either_file(
     let UiAction::Add(AddAction::DraftDeleted {
         request,
         result: Err(problem),
-    }) = tui_add_effect(&service, &store, state.path(), config.path(), effects).unwrap()
+    }) = tui_add_effect_in_english(&service, &store, state.path(), config.path(), effects).unwrap()
     else {
         panic!("a changed row that is no longer a regular draft must return a typed error");
     };
@@ -2045,7 +2098,9 @@ fn tui_author_draft_unchanged_cleanup_keeps_a_postinspection_replacement() {
     fs::remove_file(&snapshot.path).unwrap();
     fs::rename(&staged, &snapshot.path).unwrap();
 
-    let error = discard_authored_draft(root.path(), &snapshot).unwrap_err();
+    let error =
+        discard_authored_draft_with_allocator(root.path(), &snapshot, &SYSTEM_FILE_ALLOCATOR)
+            .unwrap_err();
     assert!(
         error
             .message()
@@ -3505,7 +3560,8 @@ fn shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts() {
         })
         .unwrap();
 
-    let inspector = CliHealthInspector::new(&service, &store, &config_dir);
+    let inspector =
+        CliHealthInspector::new(&service, &store, &config_dir, Locale::En, &SystemProbe);
     let debug = format!("{inspector:?}");
     // Ask for the paths the way the debug text spells them. A host that separates names with a
     // backslash writes each one twice in debug text, so a raw path never matches.
@@ -4254,11 +4310,22 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(accepted)).unwrap(),
         UiAction::PreferencesSaved {
             locale: "zh-TW".to_owned(),
-            message: "Preferences saved".to_owned(),
+            message: "偏好設定已儲存".to_owned(),
         }
     );
     assert_eq!(config.get("editor").unwrap(), "micro");
     assert_eq!(config.get("lang").unwrap(), "zh-TW");
+
+    let simplified = skit_application::preferences::PreferencesChangeSet {
+        settings: BTreeMap::from([("lang".to_owned(), "zh-CN".to_owned())]),
+    };
+    assert_eq!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(simplified)).unwrap(),
+        UiAction::PreferencesSaved {
+            locale: "zh-CN".to_owned(),
+            message: "偏好设置已保存".to_owned(),
+        }
+    );
 
     assert!(matches!(
         tui_preferences_effect(
@@ -4340,7 +4407,7 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
     let failure = PreferencesChangeSet {
         settings: BTreeMap::from([("editor".to_owned(), "nano".to_owned())]),
     };
-    let action = tui_effect(
+    let action = tui_effect_in_english(
         &service,
         &store,
         &state_dir,
@@ -4355,7 +4422,7 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
     let skill_parent = root.path().join("skill-parent-is-a-file");
     fs::write(&skill_parent, b"keep skill parent").unwrap();
     let skills_dir = skill_parent.join("skills");
-    let action = tui_effect(
+    let action = tui_effect_in_english(
         &service,
         &store,
         &state_dir,
@@ -8442,9 +8509,13 @@ impl MirrorPromptPty {
     fn finish(mut self) -> (String, String) {
         self.writer.take();
         // An instrumented child writes its coverage profile as it exits, and parallel load makes
-        // that take more than six seconds. This deadline only stops a hung child from holding the
-        // suite, so it can be generous.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // that take longer under load. Keep the normal test deadline short.
+        let finish_seconds = if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+            120
+        } else {
+            30
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(finish_seconds);
         let status = loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 break status;
@@ -10542,7 +10613,7 @@ fn draft_delete_reads_the_content_witness_the_row_kept() {
     let mut edited = row.clone();
     edited.content_hash = Some(content_hash(b"print('other')\n"));
     assert_eq!(
-        consume_draft_summary(root.path(), &edited).unwrap(),
+        consume_draft_summary_with_allocator(root.path(), &edited, &SYSTEM_FILE_ALLOCATOR).unwrap(),
         DraftConsumeOutcome::Changed
     );
     assert_eq!(fs::read(&path).unwrap(), b"print('kept')\n");
@@ -10553,7 +10624,8 @@ fn draft_delete_reads_the_content_witness_the_row_kept() {
     let mut unchanged = tui_drafts(root.path()).pop().unwrap();
     unchanged.content_hash = Some(content_hash(b"print('kept')\n"));
     assert_eq!(
-        consume_draft_summary(root.path(), &unchanged).unwrap(),
+        consume_draft_summary_with_allocator(root.path(), &unchanged, &SYSTEM_FILE_ALLOCATOR)
+            .unwrap(),
         DraftConsumeOutcome::Removed
     );
     assert!(!path.exists());
@@ -11064,7 +11136,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .iter()
         .find(|row| row.name.as_deref() == Some("agent"))
         .expect("the named runner row must be visible");
-    let action = tui_save_runner(
+    let action = tui_save_runner_at(
         &service,
         &config_dir,
         RunnerSaveRequest {
@@ -11080,6 +11152,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
             },
         },
         RunnerSaveOwner::Manager,
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(
@@ -11100,7 +11173,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .into_iter()
         .find(|row| row.name.as_deref() == Some("broken"))
         .expect("the malformed named row must be visible");
-    let action = tui_save_runner(
+    let action = tui_save_runner_at(
         &service,
         &config_dir,
         RunnerSaveRequest {
@@ -11111,6 +11184,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
             },
         },
         RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(
@@ -11134,12 +11208,13 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .into_iter()
         .find(|row| row.reason.as_deref() == Some("row-not-table"))
         .expect("the malformed scalar row must remain visible");
-    let action = tui_remove_runner(
+    let action = tui_remove_runner_at(
         &service,
         &config_dir,
         RunnerRemoveRequest::RawRow {
             expected: raw_row.identity,
         },
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(
@@ -11155,7 +11230,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         snapshot_token: "stale".to_owned(),
     };
     let before = fs::read(&config_path).unwrap();
-    let action = tui_save_runner(
+    let action = tui_save_runner_at(
         &service,
         &config_dir,
         RunnerSaveRequest {
@@ -11164,6 +11239,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
             target: RunnerSaveTarget::RawRow { expected: stale },
         },
         RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(action, UiAction::RunnerEditorSaveFailed { .. }));
@@ -11174,7 +11250,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .into_iter()
         .find(|row| row.name.as_deref() == Some("agent"))
         .expect("updated named runner remains visible");
-    let action = tui_remove_runner(
+    let action = tui_remove_runner_at(
         &service,
         &config_dir,
         RunnerRemoveRequest::Named {
@@ -11182,6 +11258,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
             expected: agent.key_identities,
             expected_pinned_count: 0,
         },
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(
@@ -11210,7 +11287,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
     };
     let before = fs::read(&config_path).unwrap();
     assert!(matches!(
-        tui_remove_runner(&service, &config_dir, stale_remove).unwrap(),
+        tui_remove_runner_at(&service, &config_dir, stale_remove, Locale::En).unwrap(),
         UiAction::Runners(RunnerManagerAction::MutationFailed(_))
     ));
     assert_eq!(fs::read(&config_path).unwrap(), before);
@@ -11221,12 +11298,13 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .pop()
         .expect("the malformed prompt container is one raw row");
     assert_eq!(raw.identity.index, None);
-    let action = tui_remove_runner(
+    let action = tui_remove_runner_at(
         &service,
         &config_dir,
         RunnerRemoveRequest::RawRow {
             expected: raw.identity,
         },
+        Locale::En,
     )
     .unwrap();
     assert!(matches!(
@@ -11248,7 +11326,7 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
     };
     let before = fs::read(&config_path).unwrap();
     assert!(matches!(
-        tui_remove_runner(&service, &config_dir, raw_stale).unwrap(),
+        tui_remove_runner_at(&service, &config_dir, raw_stale, Locale::En).unwrap(),
         UiAction::Runners(RunnerManagerAction::MutationFailed(_))
     ));
     assert_eq!(fs::read(&config_path).unwrap(), before);
@@ -11335,6 +11413,22 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
     let prompt_settings = EntrySettings::from_meta(&prompt.meta);
     assert_eq!(prompt_settings.runner, "codex");
     assert!(!prompt_settings.interpolate);
+    // A prompt save that turns insertion off writes no parameters at all, so the schema keeps the
+    // stored values and the co-submitted addition is not applied.
+    assert!(prompt_settings.params.is_empty());
+    assert!(prompt_settings.parameters.is_empty());
+
+    // Turning insertion on again writes the schema the screen carries.
+    let mut values = SubmittedValues::new();
+    values.insert("interpolate".to_owned(), FieldValue::boolean(true));
+    values.insert(
+        "parameter:add".to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(vec!["topic".to_owned()])),
+    );
+    tui_submit_settings(&service, &store, &state_dir, prompt.slug.as_str(), &values).unwrap();
+    let prompt_settings =
+        EntrySettings::from_meta(&service.show(prompt.slug.as_str()).unwrap().meta);
+    assert!(prompt_settings.interpolate);
     assert_eq!(prompt_settings.params, ["topic"]);
     assert!(
         prompt_settings
@@ -11573,10 +11667,9 @@ fn settings_host_manages_detected_prompt_candidates_in_body_order_and_drops_stal
             .collect::<Vec<_>>()
     );
     let mut view = SettingsView::from_inputs(&inputs);
-    view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
-        names.last().unwrap().clone(),
-        names[0].clone(),
-    ]));
+    view.update(skit_ui::SettingsAction::SetPromptCandidates {
+        selected: vec![names.last().unwrap().clone(), names[0].clone()],
+    });
     let values = view.submitted_values();
     tui_submit_settings(&service, &store, &state_dir, prompt.slug.as_str(), &values).unwrap();
     let saved = service.show(prompt.slug.as_str()).unwrap();
@@ -11602,9 +11695,9 @@ fn settings_host_manages_detected_prompt_candidates_in_body_order_and_drops_stal
     let fresh_inputs =
         settings_inputs(&service, &store, &config_dir, &state_dir, &saved, None).unwrap();
     let mut stale_view = SettingsView::from_inputs(&fresh_inputs);
-    stale_view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
-        "gone".to_owned(),
-    ]));
+    stale_view.update(skit_ui::SettingsAction::SetPromptCandidates {
+        selected: vec!["gone".to_owned()],
+    });
     let stale_values = stale_view.submitted_values();
     let payload = store.payload_path(&saved).unwrap();
     let rewritten = fs::read_to_string(&payload)
@@ -11659,9 +11752,9 @@ fn settings_host_manages_detected_prompt_candidates_in_body_order_and_drops_stal
         key: "interpolate".to_owned(),
         value: FieldValue::boolean(true),
     });
-    view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
-        "first".to_owned(),
-    ]));
+    view.update(skit_ui::SettingsAction::SetPromptCandidates {
+        selected: vec!["first".to_owned()],
+    });
     tui_submit_settings(
         &service,
         &store,
@@ -11808,7 +11901,8 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     let _ = remove_workflow.reduce(AddAction::SelectDraft(0));
     let _ = remove_workflow.reduce(AddAction::DeleteSelectedDraft);
     let effects = remove_workflow.reduce(AddAction::ConfirmDraftDelete(true));
-    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    let action =
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap();
     assert!(matches!(
         action,
         UiAction::Add(AddAction::DraftDeleted {
@@ -11826,7 +11920,8 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     let _ = missing_workflow.reduce(AddAction::DeleteSelectedDraft);
     let effects = missing_workflow.reduce(AddAction::ConfirmDraftDelete(true));
     fs::remove_file(&missing_path).unwrap();
-    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    let action =
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap();
     assert!(matches!(
         action,
         UiAction::Add(AddAction::DraftDeleted {
@@ -11857,7 +11952,8 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     );
     let mut edit_workflow = AddWorkflowState::from_review(review);
     let effects = edit_workflow.reduce(AddAction::EditSource);
-    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    let action =
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, effects).unwrap();
     assert!(matches!(
         action,
         UiAction::Add(AddAction::SourceEdited {
@@ -11868,7 +11964,7 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     assert_eq!(fs::read(&source).unwrap(), b"print('after')\n");
 
     assert_eq!(
-        tui_add_effect(
+        tui_add_effect_in_english(
             &service,
             &store,
             &state_dir,
@@ -11879,11 +11975,11 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
         UiAction::ClearStatus
     );
     assert_eq!(
-        tui_add_effect(&service, &store, &state_dir, &config_dir, Vec::new()).unwrap(),
+        tui_add_effect_in_english(&service, &store, &state_dir, &config_dir, Vec::new()).unwrap(),
         UiAction::ClearStatus
     );
 
-    let invalid = tui_add_effect(
+    let invalid = tui_add_effect_in_english(
         &service,
         &store,
         &state_dir,
@@ -11921,7 +12017,7 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     let mut unreadable_permissions = original_permissions.clone();
     unreadable_permissions.set_mode(0o000);
     fs::set_permissions(&scripts_dir, unreadable_permissions).unwrap();
-    let degraded = tui_add_effect(
+    let degraded = tui_add_effect_in_english(
         &service,
         &store,
         &state_dir,
@@ -12200,22 +12296,26 @@ fn a_printed_line_wears_its_sense_and_drops_it_where_it_cannot_show() {
 
     // A terminal wears the sense; a redirected stream keeps the plain text.
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Green, Some(40)),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, Some(40), true,),
         "\u{1b}[32mdone\u{1b}[0m"
     );
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Green, None),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, None, true),
         "done"
     );
     // A line that states a fact wears nothing, terminal or not.
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Plain, Some(40)),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Plain, Some(40), true,),
         "done"
     );
     // The colour follows the fold, so a folded line wears one sequence around the whole answer.
     assert_eq!(
-        super::paint_for_output("aaa bbb", super::HumanStyle::Red, Some(3)),
+        super::paint_for_output_with_colour("aaa bbb", super::HumanStyle::Red, Some(3), true,),
         "\u{1b}[31maaa\nbbb\u{1b}[0m"
+    );
+    assert_eq!(
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, Some(40), false,),
+        "done"
     );
 
     // Rich drops every style for either answer, and keeps it otherwise.
