@@ -14,7 +14,7 @@ use ratatui_widgets::{
     borders::{BorderType, Borders},
     paragraph::Paragraph,
 };
-use skit_i18n::{Locale, format_text, render as localize, text};
+use skit_i18n::{Locale, catalog, format_text, text};
 use skit_ui::{
     CommandContext, LibraryState, Screen, UiBinding, UiCommand, UiCommandSpec, UiKey, command_specs,
 };
@@ -633,7 +633,14 @@ impl FooterSession {
 
         if let Some(status) = state.status() {
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-            frame.render_widget(Paragraph::new(localize(locale, status)), status_area);
+            // Reducer refusals are complete catalog keys. Host receipts already contain
+            // localized text and user values; do not translate their fragments again.
+            let status = if catalog().iter().any(|row| row.english == status) {
+                text(locale, status)
+            } else {
+                std::borrow::Cow::Borrowed(status)
+            };
+            frame.render_widget(Paragraph::new(status), status_area);
         } else if matches!(state.screen(), Screen::Library) {
             let status = default_library_status(state, locale);
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
@@ -1682,6 +1689,53 @@ mod tests {
             .map(|hit| hit.rect.y)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn status_translation_preserves_values_and_localizes_complete_catalog_keys() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+            let receipt = format_text(
+                locale,
+                "Installed the skit Agent Skill: {}",
+                &[&"/tmp/on/off/agent/SKILL.md"],
+            );
+            for (status, expected) in [
+                (receipt.clone(), receipt),
+                (
+                    "A name is required.".to_owned(),
+                    text(locale, "A name is required.").into_owned(),
+                ),
+            ] {
+                let mut state = LibraryState::default();
+                state.update(skit_ui::Action::SetStatus(status));
+                let mut session = FooterSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(120, 8)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        let _ = session.render(
+                            frame,
+                            frame.area(),
+                            &state,
+                            locale,
+                            FooterInputOwnership::default(),
+                        );
+                    })
+                    .unwrap();
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    rendered
+                        .replace(' ', "")
+                        .contains(&expected.replace(' ', "")),
+                    "{locale:?}: {rendered}"
+                );
+            }
+        }
     }
 
     #[test]
