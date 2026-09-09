@@ -1,6 +1,8 @@
 //! Peak resident memory of fresh CLI processes.
 
-use std::{collections::BTreeMap, fs, path::Path};
+#[cfg(not(target_os = "macos"))]
+use std::fs;
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     Metric, SuiteKind, SuiteOutput, SuitePlan,
@@ -119,6 +121,8 @@ fn sample_peak(
 ) -> Result<u64, SuiteError> {
     #[cfg(target_os = "macos")]
     {
+        // The BSD probe reads stderr. It does not make a probe file.
+        let _ = (case, sample);
         let mut argv = vec![path_arg(time_binary), "-l".to_owned()];
         argv.extend(target.iter().cloned());
         let output = run_process(&ProcessSpec {
@@ -128,7 +132,7 @@ fn sample_peak(
             timeout: PROBE_TIMEOUT,
             check: true,
         })?;
-        return Ok(bsd_time_max_kib(&String::from_utf8_lossy(&output.stderr))?);
+        Ok(bsd_time_max_kib(&String::from_utf8_lossy(&output.stderr))?)
     }
     #[cfg(not(target_os = "macos"))]
     {
