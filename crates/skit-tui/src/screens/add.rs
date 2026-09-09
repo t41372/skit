@@ -675,6 +675,9 @@ impl AddScreenSession {
             return self.activate(target, state);
         }
         if let Event::Paste(value) = event {
+            if value.is_empty() {
+                return None;
+            }
             let Some(AddControlId::Text(field)) = self.focus.current().cloned() else {
                 return None;
             };
@@ -3338,6 +3341,11 @@ mod tests {
         assert_eq!(
             session.focused(),
             Some(&AddControlId::Text(AddTextField::ReviewName))
+        );
+        assert_eq!(
+            session.handle_event(Event::Paste(String::new()), &state, &geometry),
+            None,
+            "an empty paste must not clear derived Add provenance",
         );
 
         let cleared = session.handle_event(
