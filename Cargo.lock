@@ -2870,8 +2870,6 @@ dependencies = [
  "time",
  "toml",
  "toml_edit",
- "winapi-util",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
