@@ -2623,12 +2623,13 @@ impl TuiSession {
     pub(crate) fn render_confirm_remove(
         &mut self,
         frame: &mut Frame,
+        area: Rect,
         name: &str,
         original_file_preserved: bool,
         locale: Locale,
     ) -> ViewGeometry {
         self.confirm_remove
-            .render(frame, name, original_file_preserved, locale)
+            .render(frame, area, name, original_file_preserved, locale)
     }
 
     pub(crate) fn render_run(
@@ -3473,6 +3474,11 @@ impl TuiSession {
                     }
                 }
                 RunClickTarget::SelectOption { field, value } => {
+                    if let Some(WidgetControl::Choice { state, .. }) =
+                        self.run.controls.get_mut(field)
+                    {
+                        state.close();
+                    }
                     EventHandling::Action(Action::SelectFieldOption { field, value })
                 }
                 RunClickTarget::RadioOption { field, value } => {
@@ -5828,6 +5834,14 @@ mod textarea_band_tests {
                 field: index,
                 value: "option-00".to_owned(),
             })
+        );
+        assert_eq!(
+            session.handle_open_select_key(
+                index,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &form
+            ),
+            Some(EventHandling::Consumed)
         );
         for _ in 0..30 {
             assert_eq!(

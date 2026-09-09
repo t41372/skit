@@ -18,6 +18,7 @@ use ratatui_interact::traits::{ContainerAction, EventResult};
 use ratatui_widgets::{
     block::Block,
     borders::Borders,
+    clear::Clear,
     paragraph::{Paragraph, Wrap},
 };
 use skit_i18n::{Locale, text};
@@ -41,6 +42,60 @@ pub(crate) enum ConfirmRemoveEvent {
     Close,
     Consumed,
     Ignored,
+}
+
+fn compact_dialog_button_areas(
+    inner: Rect,
+    buttons: &[(String, ContainerAction)],
+) -> Vec<(usize, Rect)> {
+    if inner.is_empty() || buttons.is_empty() {
+        return Vec::new();
+    }
+    let widths = buttons
+        .iter()
+        .map(|(label, _)| {
+            u16::try_from(label.width().saturating_add(2))
+                .unwrap_or(u16::MAX)
+                .min(inner.width)
+        })
+        .collect::<Vec<_>>();
+    let gaps = u16::try_from(buttons.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let horizontal_width = widths
+        .iter()
+        .copied()
+        .fold(0_u16, u16::saturating_add)
+        .saturating_add(gaps);
+    if horizontal_width <= inner.width {
+        let mut x = inner
+            .x
+            .saturating_add(inner.width.saturating_sub(horizontal_width) / 2);
+        let y = inner.bottom().saturating_sub(1);
+        return widths
+            .into_iter()
+            .enumerate()
+            .map(|(index, width)| {
+                let area = Rect::new(x, y, width, 1);
+                x = x.saturating_add(width).saturating_add(1);
+                (index, area)
+            })
+            .collect();
+    }
+    let needed_height = u16::try_from(buttons.len()).unwrap_or(u16::MAX);
+    if needed_height > inner.height {
+        return Vec::new();
+    }
+    let first_y = inner.bottom().saturating_sub(needed_height);
+    widths
+        .into_iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let x = inner
+                .x
+                .saturating_add(inner.width.saturating_sub(width) / 2);
+            let y = first_y.saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+            (index, Rect::new(x, y, width, 1))
+        })
+        .collect()
 }
 
 /// Persistent mature dialog state for entry removal.
@@ -127,6 +182,7 @@ impl ConfirmRemoveSession {
     pub(crate) fn render(
         &mut self,
         frame: &mut Frame,
+        area: Rect,
         name: &str,
         original_file_preserved: bool,
         locale: Locale,
@@ -154,21 +210,82 @@ impl ConfirmRemoveSession {
                 (text(locale, "Remove").into_owned(), ContainerAction::Submit),
                 (text(locale, "Keep").into_owned(), ContainerAction::Close),
             ]);
-        let mut popup = PopupDialog::new(&config, &mut self.dialog, |frame, area, ()| {
-            let mut lines = vec![Line::from(format!(
-                "{} {name}?",
-                text(locale, "Remove this entry:")
-            ))];
-            if original_file_preserved {
-                lines.push(Line::default());
-                lines.push(Line::from(Span::styled(
-                    text(locale, "Your original file will not be deleted."),
-                    Style::default().add_modifier(Modifier::DIM),
-                )));
+        let popup_area =
+            PopupDialog::new(&config, &mut self.dialog, |_, _, ()| {}).calculate_area(frame.area());
+        let dependency_button_width = config
+            .buttons
+            .iter()
+            .map(|(label, _)| {
+                u16::try_from(label.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(4)
+            })
+            .fold(0_u16, u16::saturating_add)
+            .saturating_add(
+                u16::try_from(config.buttons.len().saturating_sub(1))
+                    .unwrap_or(u16::MAX)
+                    .saturating_mul(2),
+            );
+        if popup_area.width < 30
+            || popup_area.height < 5
+            || dependency_button_width > popup_area.width.saturating_sub(2)
+        {
+            self.dialog.click_regions.clear();
+            frame.render_widget(Clear, area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .title(format!(" {} ", text(locale, "Confirm removal")));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let button_areas = compact_dialog_button_areas(inner, &config.buttons);
+            let message_bottom = button_areas
+                .iter()
+                .map(|(_, area)| area.y)
+                .min()
+                .unwrap_or_else(|| inner.bottom());
+            let message_area = Rect::new(
+                inner.x,
+                inner.y,
+                inner.width,
+                message_bottom.saturating_sub(inner.y),
+            );
+            frame.render_widget(
+                Paragraph::new(format!("{} {name}?", text(locale, "Remove this entry:")))
+                    .wrap(Wrap { trim: false }),
+                message_area,
+            );
+            let style = ButtonStyle::new(ButtonVariant::SingleLine)
+                .focused(Color::Black, ACCENT)
+                .unfocused(Color::White, BOX_DIM);
+            for (index, button_area) in button_areas {
+                let mut state = ButtonState::enabled();
+                state.set_focused(self.dialog.is_button_focused(index));
+                let _ = Button::new(&config.buttons[index].0, &state)
+                    .variant(ButtonVariant::SingleLine)
+                    .style(style.clone())
+                    .render_stateful(button_area, frame.buffer_mut());
+                self.dialog
+                    .click_regions
+                    .register(button_area, DialogFocusTarget::Button(index));
             }
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-        });
-        popup.render(frame);
+        } else {
+            let mut popup = PopupDialog::new(&config, &mut self.dialog, |frame, area, ()| {
+                let mut lines = vec![Line::from(format!(
+                    "{} {name}?",
+                    text(locale, "Remove this entry:")
+                ))];
+                if original_file_preserved {
+                    lines.push(Line::default());
+                    lines.push(Line::from(Span::styled(
+                        text(locale, "Your original file will not be deleted."),
+                        Style::default().add_modifier(Modifier::DIM),
+                    )));
+                }
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+            });
+            popup.render(frame);
+        }
         self.config = Some(config);
         ViewGeometry::default()
     }
@@ -536,7 +653,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Alpha", true, Locale::En);
+                let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
             })
             .unwrap();
         let remove = find_text(terminal.backend().buffer(), "Remove");
@@ -584,7 +701,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Beta", false, Locale::ZhTw);
+                let _ = session.render(frame, frame.area(), "Beta", false, Locale::ZhTw);
             })
             .unwrap();
         assert!(!find_text(terminal.backend().buffer(), "Beta").is_empty());
@@ -596,7 +713,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Alpha", true, Locale::En);
+                let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
             })
             .unwrap();
 
@@ -627,7 +744,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Alpha", true, Locale::En);
+                let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
             })
             .unwrap();
         let remove = find_text(terminal.backend().buffer(), "Remove");
@@ -659,7 +776,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Alpha", true, Locale::En);
+                let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
             })
             .unwrap();
         let remove = find_text(terminal.backend().buffer(), "Remove");
@@ -669,7 +786,7 @@ mod tests {
         );
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Beta", false, Locale::En);
+                let _ = session.render(frame, frame.area(), "Beta", false, Locale::En);
             })
             .unwrap();
         let replacement = find_text(terminal.backend().buffer(), "Remove");
@@ -685,7 +802,7 @@ mod tests {
         );
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, "Beta", false, Locale::En);
+                let _ = session.render(frame, frame.area(), "Beta", false, Locale::En);
             })
             .unwrap();
         assert_eq!(
@@ -806,6 +923,122 @@ mod tests {
     }
 
     #[test]
+    fn compact_confirm_remove_keeps_both_actions_visible_and_operable() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+            for height in [5, 6] {
+                let mut session = ConfirmRemoveSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(24, height)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        let _ = session.render(frame, frame.area(), "Alpha", true, locale);
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert_eq!(buffer[(0, 0)].symbol(), "┌");
+                assert_eq!(buffer[(23, 0)].symbol(), "┐");
+                assert_eq!(buffer[(0, height - 1)].symbol(), "└");
+                assert_eq!(buffer[(23, height - 1)].symbol(), "┘");
+
+                let regions = session
+                    .dialog
+                    .click_regions
+                    .regions()
+                    .iter()
+                    .map(|region| (region.area, region.data))
+                    .collect::<Vec<_>>();
+                let labels = [text(locale, "Remove"), text(locale, "Keep")];
+                assert_eq!(regions.len(), 2, "{locale:?} at 24x{height}");
+                for (index, (area, target)) in regions.iter().enumerate() {
+                    assert_eq!(
+                        target,
+                        &DialogFocusTarget::Button(index),
+                        "{locale:?} at 24x{height}",
+                    );
+                    assert!(
+                        !area.is_empty() && area.right() <= 24 && area.bottom() <= height,
+                        "{locale:?} at 24x{height}: {area:?}",
+                    );
+                    assert_eq!(
+                        usize::from(area.width),
+                        labels[index].width().saturating_add(2),
+                        "{locale:?} button {index} was clipped at 24x{height}",
+                    );
+                    assert!(
+                        (area.x..area.right())
+                            .any(|column| { !buffer[(column, area.y)].symbol().trim().is_empty() }),
+                        "{locale:?} button {index} has no visible text at 24x{height}",
+                    );
+                }
+                assert!(
+                    regions[0].0.intersection(regions[1].0).is_empty(),
+                    "{locale:?} compact actions overlap at 24x{height}",
+                );
+                assert_eq!(
+                    session.dialog.current_focus(),
+                    Some(&DialogFocusTarget::Button(1)),
+                    "{locale:?} compact focus at 24x{height}",
+                );
+                assert!(session.dialog.is_visible());
+
+                for (index, expected) in [
+                    (0, ConfirmRemoveEvent::Submit),
+                    (1, ConfirmRemoveEvent::Close),
+                ] {
+                    let mut mouse_session = session.clone();
+                    let area = regions[index].0;
+                    assert_eq!(
+                        mouse_session
+                            .handle_event(&mouse(area, MouseEventKind::Down(MouseButton::Left),)),
+                        ConfirmRemoveEvent::Consumed,
+                    );
+                    assert_eq!(
+                        mouse_session
+                            .handle_event(&mouse(area, MouseEventKind::Up(MouseButton::Left),)),
+                        expected,
+                    );
+                }
+
+                let mut keep = session.clone();
+                assert_eq!(
+                    keep.handle_event(&key(KeyCode::Enter)),
+                    ConfirmRemoveEvent::Ignored,
+                    "the shared command registry owns Enter",
+                );
+                let mut remove = session;
+                assert_eq!(
+                    remove.handle_event(&key(KeyCode::Tab)),
+                    ConfirmRemoveEvent::Consumed
+                );
+                assert_eq!(
+                    remove.dialog.current_focus(),
+                    Some(&DialogFocusTarget::Button(0)),
+                );
+                assert_eq!(
+                    remove.handle_event(&key(KeyCode::Enter)),
+                    ConfirmRemoveEvent::Ignored,
+                    "the shared command registry owns Enter after focus changes",
+                );
+            }
+        }
+
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+            let mut session = ConfirmRemoveSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), "Alpha", true, locale);
+                })
+                .unwrap();
+            assert!(session.dialog.click_regions.regions().is_empty());
+            assert_eq!(
+                session.handle_event(&key(KeyCode::Esc)),
+                ConfirmRemoveEvent::Ignored,
+                "the shared command registry owns Escape",
+            );
+        }
+    }
+
+    #[test]
     fn discard_overlay_renders_the_full_keep_editing_label_in_both_chinese_locales() {
         for (locale, keep) in [(Locale::ZhCn, "继续编辑"), (Locale::ZhTw, "繼續編輯")] {
             let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
@@ -827,5 +1060,19 @@ mod tests {
                 "missing {keep}: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn the_compact_button_row_refuses_a_panel_that_is_too_small_for_one_column() {
+        let buttons = vec![
+            ("Remove".to_owned(), ContainerAction::Submit),
+            ("Keep editing".to_owned(), ContainerAction::Close),
+        ];
+
+        assert_eq!(
+            compact_dialog_button_areas(Rect::new(0, 0, 4, 2), &buttons),
+            vec![(0, Rect::new(0, 0, 4, 1)), (1, Rect::new(0, 1, 4, 1))]
+        );
+        assert!(compact_dialog_button_areas(Rect::new(0, 0, 4, 1), &buttons).is_empty());
     }
 }

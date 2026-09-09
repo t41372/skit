@@ -900,6 +900,47 @@ fn test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen() {
 }
 
 #[test]
+fn compact_confirm_remove_keeps_central_keyboard_paths_at_tiny_boundaries() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+        let mut state = library(vec![summary("alpha", "Alpha")]);
+        state.update(Action::SetStatus("BACKGROUND STATUS".to_owned()));
+        state.update(Action::AskRemove);
+
+        for (width, height) in [(24, 6), (1, 1)] {
+            let mut submit = TuiSession::default();
+            let (terminal, geometry) = draw_in_locale(&mut submit, &state, width, height, locale);
+            assert!(
+                !visible_text(terminal.backend().buffer()).contains("BACKGROUND STATUS"),
+                "ConfirmRemove exposed the blocked status in {locale:?} at {width}x{height}",
+            );
+            assert_eq!(state.status(), Some("BACKGROUND STATUS"));
+            assert!(
+                geometry.hits.is_empty(),
+                "ConfirmRemove published a competing public hit in {locale:?} at {width}x{height}",
+            );
+            assert_eq!(
+                submit.handle_event(key(KeyCode::Char('y')), &state, &geometry),
+                EventHandling::Action(Action::Submit),
+                "ConfirmRemove lost y in {locale:?} at {width}x{height}",
+            );
+
+            let mut close = TuiSession::default();
+            let (_, geometry) = draw_in_locale(&mut close, &state, width, height, locale);
+            assert_eq!(
+                close.handle_event(key(KeyCode::Char('n')), &state, &geometry),
+                EventHandling::Action(Action::Back),
+                "ConfirmRemove lost n in {locale:?} at {width}x{height}",
+            );
+            assert_eq!(
+                close.handle_event(key(KeyCode::Esc), &state, &geometry),
+                EventHandling::Action(Action::Back),
+                "ConfirmRemove lost Escape in {locale:?} at {width}x{height}",
+            );
+        }
+    }
+}
+
+#[test]
 fn test_env_picker_fits_input_and_esc_chip_across_the_tiers() {
     let form = RunFormView::from_declarations(
         "demo",
