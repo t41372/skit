@@ -2900,6 +2900,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "skit-tui-walker-model"
+version = "0.5.0"
+dependencies = [
+ "proptest",
+ "ratatui-core",
+ "ratatui-crossterm",
+ "serde",
+ "serde_json",
+ "skit-application",
+ "skit-domain",
+ "skit-i18n",
+ "skit-tui",
+ "skit-ui",
+ "tempfile",
+]
+
+[[package]]
 name = "skit-tui-walker-support"
 version = "0.5.0"
 dependencies = [
