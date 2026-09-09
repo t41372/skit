@@ -3465,7 +3465,7 @@ impl TuiSession {
                     if let Some(WidgetControl::Choice { state, .. }) =
                         self.run.controls.get_mut(index)
                     {
-                        state.open();
+                        state.toggle();
                     }
                     if form.focused() == index {
                         EventHandling::Consumed

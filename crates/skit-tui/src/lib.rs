@@ -516,16 +516,13 @@ pub(crate) fn command_action(
     context: CommandContext,
     geometry: &ViewGeometry,
 ) -> Action {
-    match (context, command) {
-        (CommandContext::Settings, UiCommand::NewRunner) => {
-            Action::Settings(skit_ui::SettingsAction::NewRunner)
-        }
-        (_, UiCommand::ToggleDetail) => Action::ToggleDetail {
+    match command {
+        UiCommand::ToggleDetail => Action::ToggleDetail {
             currently_visible: geometry.detail_pane_visible,
         },
         _ => command
-            .direct_action()
-            .expect("only detail commands need rendered state"),
+            .action_for_context(context)
+            .expect("the active command context owns this visible command"),
     }
 }
 

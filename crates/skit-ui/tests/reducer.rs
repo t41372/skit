@@ -83,6 +83,19 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
     ] {
         assert!(command.direct_action().is_some(), "command={command:?}");
     }
+    assert_eq!(UiCommand::NewRunner.direct_action(), None);
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::RunForm),
+        Some(Action::OpenRunRunnerEditor)
+    );
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::Settings),
+        Some(Action::Settings(SettingsAction::NewRunner))
+    );
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::LibraryBrowse),
+        None
+    );
 
     let mut state = state();
     assert!(matches!(state.workflow().active(), Screen::Library));
