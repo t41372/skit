@@ -220,4 +220,4 @@ quota returns.
 - The 15-profile matrix runs nightly, not on every PR.
   **Stands.** `SKIT_WALKER_PROFILES=complete` selects the matrix; the default is `bounded`.
 - The random walk's effect limit is the real walker's 16, not the legacy 64.
-  **Stands.** `EFFECT_LIMIT` is 16 at `crates/skit-cli/src/cli/tui_real_walker.rs:61`.
+  **Stands.** `EFFECT_LIMIT` is 16 in `crates/skit-cli/src/cli/tui_real_walker/corpus.rs`.
