@@ -72,9 +72,12 @@ live in its own `tests/` directory (M4, M5). Modules:
   two failures never share a bundle), and the branch-free env readers for `SKIT_WALKER_CASES`,
   `SKIT_WALKER_STEPS`, `SKIT_WALKER_PROFILES` (`bounded`|`complete`), `SKIT_WALKER_RECORD_SUCCESS`
   (`0`|`1`), `SKIT_WALKER_LIVENESS_EVERY`, and `SKIT_WALKER_REPRO`. Strictness without branch lines:
-  `["0", "1"].iter().position(|v| *v == raw).expect("SKIT_WALKER_RECORD_SUCCESS must be 0 or 1") == 1`;
-  positive integers as `parse().ok().filter(positive).unwrap_or(default)` followed by
-  `assert!(value > 0)`; the workflow's shell guards refuse zero before cargo runs.
+  `["0", "1"].iter().position(|v| *v == raw).expect("SKIT_WALKER_RECORD_SUCCESS must be 0 or 1") == 1`.
+  `SKIT_WALKER_CASES` and `SKIT_WALKER_STEPS` read a present value as a positive integer. A zero, a
+  negative number, or a value that is not a number stops the walk with a message that names the
+  variable and the value. `SKIT_WALKER_LIVENESS_EVERY` takes `0` as never and refuses a negative
+  number or a value that is not a number. An absent variable takes its default. The workflow's shell guards stay as an
+  early check.
 
 ## M2. Per-checkpoint oracles in the real engine (skit-cli)
 
