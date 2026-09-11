@@ -62,8 +62,11 @@ Clippy with warnings denied, Rustdoc with warnings denied, `cargo fmt --check`, 
 tests (188 passed, 3 ignored). Windows: `cargo xwin check --locked --target x86_64-pc-windows-msvc
 --workspace --all-targets`, zero errors, pre-existing warning set. F1 in its own worktree: model
 crate coverage complete, `cargo mutants --no-config` over `artifacts.rs` zero missed. Full Linux
-coverage and the complete workspace suite on all three platforms are left to CI on the push that
-the user authorized for this branch. The full mutation gate remains unrun; the 64-shard budget
+coverage and the complete workspace suite on all three platforms ran in CI, dispatched for
+`49e94911` as the earlier runs were: all seven jobs passed at
+https://github.com/t41372/skit/actions/runs/34642242849 (format, lint, and documentation;
+Linux, macOS, and Windows tests; the 100% executable-source coverage gate; the dependency and
+workflow audit; PyPI and uv tool compatibility). The full mutation gate remains unrun; the 64-shard budget
 decision stays with the user.
 
 The existing corpus identities bind the old tree. A moved-file tree has a new source identity.
