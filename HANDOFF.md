@@ -84,9 +84,10 @@ source checks, atomic writes, and completed-run state transactions remain. Norma
 machinery is removed. Injection still uses a temporary source when its bytes must change.
 Raw mouse dispatch was already one event; its Quit probe now tests that same event. Inventory
 errors propagate. Non-pointer input cancels an armed click. Terminal focus reporting is enabled
-and restored. Random cases use the configured length. Successful replay compares all resolutions
-and skips; failure replay compares the recorded boundary. Runtime helpers accept trait objects
-without three forwarding wrappers. Two duplicate sandbox directory syncs are removed.
+and restored, and it is also disabled before a host effect and enabled again after it. Random
+cases use the configured length. Successful replay compares all resolutions and skips; failure
+replay compares the recorded boundary. Runtime helpers accept trait objects without three
+forwarding wrappers. Two duplicate sandbox directory syncs are removed.
 
 Repairs are folded into the related commits. The stored-path change is a separate product
 commit. The complete Mac workspace reached only two obsolete snapshot-path assertions; both are

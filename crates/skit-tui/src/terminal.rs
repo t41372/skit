@@ -1,6 +1,6 @@
 //! Crossterm lifecycle and blocking event loop.
 
-use std::io;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,31 +73,47 @@ fn claim_terminal() -> io::Result<()> {
     {
         return Err(refusal);
     }
-    let enter = || {
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableFocusChange
-        )
-    };
+    let enter = || enter_screen_modes(&mut io::stdout());
     claim_terminal_with(enable_raw_mode, enter, restore_terminal)
+}
+
+/// Enter the screen modes of a session: the alternate screen, mouse capture, and focus reporting.
+///
+/// The terminal claim and the resume after a host effect share this set, so the two paths always
+/// enter the same modes.
+fn enter_screen_modes(out: &mut impl Write) -> io::Result<()> {
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableFocusChange
+    )
+}
+
+/// Leave every screen mode of a session.
+///
+/// The suspend before a host effect and the final restore share this set. Mouse capture and focus
+/// reporting are not part of the alternate screen. After `LeaveAlternateScreen` alone, the terminal
+/// keeps them on, and a child process on the same terminal then receives mouse and focus reports as
+/// input.
+fn leave_screen_modes(out: &mut impl Write) -> io::Result<()> {
+    execute!(
+        out,
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableFocusChange
+    )
 }
 
 /// Restore both terminal modes after a completed session or a partial claim.
 ///
-/// Raw mode and the alternate screen are independent terminal resources. Restoration always
-/// attempts both and keeps the first restoration error. A failed claim uses this function for
-/// best-effort rollback and keeps the original claim error.
+/// Raw mode and the screen modes are independent terminal resources. Restoration always attempts
+/// both and keeps the first restoration error. The screen modes go off before raw mode, the
+/// reverse of the claim: a cooked terminal echoes a mouse or focus report that arrives while its
+/// mode is still on. A failed claim uses this function for best-effort rollback and keeps the
+/// original claim error.
 fn restore_terminal() -> io::Result<()> {
-    restorative_terminal_transition(disable_raw_mode, || {
-        execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            DisableFocusChange
-        )
-    })
+    restorative_terminal_transition(|| leave_screen_modes(&mut io::stdout()), disable_raw_mode)
 }
 
 fn claim_terminal_with<E, T, R>(enable: E, transition: T, rollback: R) -> io::Result<()>
@@ -373,13 +389,15 @@ where
                 &mut |transition| match transition {
                     HostedTerminalTransition::Suspend => {
                         terminal.show_cursor()?;
-                        sequential_terminal_transition(disable_raw_mode, || {
-                            execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
-                        })
+                        // The reverse of the resume: the screen modes go off before raw mode.
+                        sequential_terminal_transition(
+                            || leave_screen_modes(&mut io::stdout()),
+                            disable_raw_mode,
+                        )
                     }
                     HostedTerminalTransition::Resume => {
                         sequential_terminal_transition(enable_raw_mode, || {
-                            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+                            enter_screen_modes(&mut io::stdout())
                         })?;
                         terminal.clear()
                     }
@@ -408,8 +426,8 @@ enum HostedActionStep<O> {
 
 /// Apply one dispatched action and report whether the hosted loop continues.
 ///
-/// The transition callback is the terminal boundary. Production leaves and re-enters the
-/// alternate screen there. Tests use the same path with a recorded fake lifecycle.
+/// The transition callback is the terminal boundary. Production leaves and re-enters every screen
+/// mode there. Tests use the same path with a recorded fake lifecycle.
 fn advance_hosted_action<F, P, E, O>(
     state: &mut LibraryState,
     action: Action,
@@ -824,6 +842,44 @@ mod tests {
             0,
             "a failed raw-mode claim ran a later terminal step"
         );
+    }
+
+    /// The shared command set writes all three modes in both directions.
+    ///
+    /// Windows crossterm can send some of these commands to the console API instead of writing
+    /// ANSI, so this byte contract is a Unix contract.
+    #[cfg(unix)]
+    #[test]
+    fn screen_modes_toggle_the_alternate_screen_mouse_capture_and_focus_reporting() {
+        let mut entered = Vec::new();
+        enter_screen_modes(&mut entered).unwrap();
+        for expected in [
+            "\x1b[?1049h".as_bytes(),
+            "\x1b[?1003h".as_bytes(),
+            "\x1b[?1004h".as_bytes(),
+        ] {
+            assert!(
+                entered.windows(expected.len()).any(|part| part == expected),
+                "the entered modes miss {}: {}",
+                String::from_utf8_lossy(expected),
+                String::from_utf8_lossy(&entered)
+            );
+        }
+
+        let mut left = Vec::new();
+        leave_screen_modes(&mut left).unwrap();
+        for expected in [
+            "\x1b[?1049l".as_bytes(),
+            "\x1b[?1003l".as_bytes(),
+            "\x1b[?1004l".as_bytes(),
+        ] {
+            assert!(
+                left.windows(expected.len()).any(|part| part == expected),
+                "the left modes miss {}: {}",
+                String::from_utf8_lossy(expected),
+                String::from_utf8_lossy(&left)
+            );
+        }
     }
 
     #[test]
