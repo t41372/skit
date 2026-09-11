@@ -1,6 +1,6 @@
 # UI Walker Real-Host Migration Handoff
 
-Updated: 2026-09-08 (Codex: ChatGPT report adjudication and final native CI).
+Updated: 2026-09-11 (Claude: second ChatGPT report adjudication and the walker module split).
 
 Read this file completely before changing source. This handoff and both phase plans are tracked.
 `PHASE3D-PLAN.md` is the approved Phase3d specification, and **`PHASE4-PLAN.md` revision 30 is the
@@ -13,7 +13,63 @@ remaining gates. The current checkpoint supersedes the retired normal-launch sna
 This handoff summarizes state; that file
 holds the design.
 
-## Current checkpoint: ChatGPT report adjudication
+## Current checkpoint: 2026-09-11 review adjudication and module split (Claude)
+
+The user supplied `skit-ui-walker-deep-review-2026-09-11.md` for independent verification
+against `42f9767f`. The input stays unchanged and local. See
+[the adjudication](docs/reviews/ui-walker-20260911/chatgpt-review-adjudication.md) for the three
+findings, the decisions, the split method with its move-only proof, and the validation.
+
+Commits on top of `42f9767f`:
+
+- `75ee5e6d` — split `tui_real_host.rs` (23,610 lines) into a 29-line parent, nine
+  implementation files, `tests.rs` with the shared fixtures, and eighteen topic test files under
+  `crates/skit-cli/src/cli/tui_real_host/`. Code moved only. Items and struct fields that tests or
+  sibling files read are `pub(super)`; the old `pub(super)` items are `pub(crate)` and the parent
+  re-exports the names that sibling modules import.
+- `8cf34611` — split `tui_real_walker.rs` (8,578 lines) the same way under `tui_real_walker/`.
+- `79a493fa` — F1: `SKIT_WALKER_CASES` and `SKIT_WALKER_STEPS` refuse a present value that is not
+  a positive integer; `SKIT_WALKER_LIVENESS_EVERY` keeps `0` as "never" and refuses a
+  non-integer; the reader tests are hermetic through the child-process helper.
+- The final commit adds this checkpoint and the adjudication.
+
+An Opus reviewer read the frozen change in a scratch worktree and verified every finding before
+reporting: zero blockers, one major, four nits, all repaired before the commits above were
+rebuilt. The major was two generated imports whose `#[cfg]` was broader than their use sites
+(dead on Windows); the nits were a comment that rustfmt had sorted away from its import, two
+references to the old walker file name, a refusal message that was wrong for a negative
+liveness interval, and the lost assertion on a zero default in `positive`. The reviewer also
+confirmed the move-only claim at token level (host 741 items before, 742 after with the one new
+helper; walker 336 both times) and that the enabled test sets are identical per platform
+(macOS 150 and 41, Linux 210 and 59, Windows 154 and 59).
+
+The split script, its specs, and the proof reports are kept outside every repository at
+`/Users/tim/LocalData/coding/2026/Projects/6-skit/skit-uiwalker-split-tooling/` (the repository
+bans Python tooling files). Reuse it for a later split of `tui_walker_bundle.rs`.
+
+Rules that the split introduced. Any new child-process test must build its harness name with
+`harness_test_name(module_path!(), "<test>")` from `tui_real_host/tests.rs`; a literal module path
+goes stale on a move and libtest then runs zero tests in the child. A test file whose every item is
+platform-gated needs the same `#[cfg]` on its `mod` line in `tests.rs`. `tui_walker_bundle.rs`
+(6,898 lines, tests interleaved with code) and `tui_real_sandbox_fs.rs` (4,093 lines) stay whole;
+both are smaller than the base's `cli/tests.rs`, `cli.rs`, and `session.rs`.
+
+Gates run for this checkpoint (rerun after the review repairs). Linux, in the OrbStack worktree `~/coding/skit-split`: workspace
+Clippy with warnings denied, Rustdoc with warnings denied, `cargo fmt --check`, the model crate
+(149 passed), and the complete `skit-cli-rs` library suite (662 passed, 0 failed, 6 ignored,
+108.25 s); each of the four child-process tests spawned a child that ran exactly one test. macOS:
+`cargo check`, workspace Clippy with warnings denied, and the macOS-compilable walker and host
+tests (188 passed, 3 ignored). Windows: `cargo xwin check --locked --target x86_64-pc-windows-msvc
+--workspace --all-targets`, zero errors, pre-existing warning set. F1 in its own worktree: model
+crate coverage complete, `cargo mutants --no-config` over `artifacts.rs` zero missed. Full Linux
+coverage and the complete workspace suite on all three platforms are left to CI on the push that
+the user authorized for this branch. The full mutation gate remains unrun; the 64-shard budget
+decision stays with the user.
+
+The existing corpus identities bind the old tree. A moved-file tree has a new source identity.
+Nothing was re-recorded and nothing is retagged; a move-only change cannot change recorded bytes.
+
+## Previous checkpoint: ChatGPT report adjudication (2026-09-08)
 
 The user supplied `skit-ui-walker-deep-review-redone.md` for independent verification against
 `501be70a`. The input stays unchanged and local. See
