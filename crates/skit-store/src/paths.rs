@@ -15,6 +15,15 @@ use skit_i18n::Message;
 
 use crate::FileStore;
 
+/// Prefix for a launch snapshot left by an earlier Rust build.
+pub const LAUNCH_SNAPSHOT_PREFIX: &str = ".run-";
+
+/// Report whether a file name belongs to the old launch snapshot namespace.
+#[must_use]
+pub fn is_launch_snapshot_name(name: &str) -> bool {
+    name.starts_with(LAUNCH_SNAPSHOT_PREFIX)
+}
+
 /// Expand the current user's leading `~` with the platform home-directory adapter.
 ///
 /// Other text stays byte-for-byte unchanged. Environment-variable expansion is not part of this
@@ -320,8 +329,9 @@ pub(crate) fn is_support_file(name: &str) -> bool {
     )
         // the dependency stamp, its crash backup, and its staging directories
         || name.starts_with(".skit-deps")
+        // Ignore launch snapshots left by earlier Rust builds.
+        || is_launch_snapshot_name(name)
         // one run's staged injected source
-        || name.starts_with(".run-")
         || name.starts_with(".injected-")
         // an atomic replacement sibling left by an interrupted write
         || (name.starts_with('.') && name.ends_with(".tmp"))

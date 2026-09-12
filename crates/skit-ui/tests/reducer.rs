@@ -83,6 +83,19 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
     ] {
         assert!(command.direct_action().is_some(), "command={command:?}");
     }
+    assert_eq!(UiCommand::NewRunner.direct_action(), None);
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::RunForm),
+        Some(Action::OpenRunRunnerEditor)
+    );
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::Settings),
+        Some(Action::Settings(SettingsAction::NewRunner))
+    );
+    assert_eq!(
+        UiCommand::NewRunner.action_for_context(CommandContext::LibraryBrowse),
+        None
+    );
 
     let mut state = state();
     assert!(matches!(state.workflow().active(), Screen::Library));
@@ -988,6 +1001,20 @@ fn inert_editing_and_submission_actions_are_total_on_every_non_form_screen() {
     assert!(state.form().is_none());
     assert_eq!(state.update(Action::Backspace), Effect::None);
     assert_eq!(state.update(Action::Submit), Effect::None);
+}
+
+#[test]
+fn shared_focus_actions_move_the_preferences_cursor() {
+    let mut state = state();
+    let preferences = preferences_view();
+    let initial = preferences.focused();
+    state.update(Action::Present(Screen::Preferences(Box::new(preferences))));
+
+    assert_eq!(state.update(Action::FocusNext), Effect::None);
+    let next = state.preferences().unwrap().focused();
+    assert_ne!(next, initial);
+    assert_eq!(state.update(Action::FocusPrevious), Effect::None);
+    assert_eq!(state.preferences().unwrap().focused(), initial);
 }
 
 #[test]

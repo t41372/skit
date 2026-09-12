@@ -369,7 +369,7 @@ impl UiCommand {
             Self::BrowsePath => Action::OpenFocusedRunFilePicker,
             Self::ResetDefault => Action::ResetFocusedRunField,
             Self::SavePreset => Action::OpenRunPresetSave,
-            Self::NewRunner => Action::OpenRunRunnerEditor,
+            Self::NewRunner => return None,
             Self::SavePreferences => Action::Preferences(PreferencesAction::Save),
             Self::ClosePreferences => Action::Preferences(PreferencesAction::Close),
             Self::ManageAgents => Action::Preferences(PreferencesAction::ManageAgents),
@@ -381,6 +381,22 @@ impl UiCommand {
             Self::DiscardChanges => Action::DiscardChanges,
             Self::KeepEditing => Action::KeepEditing,
         })
+    }
+
+    /// Convert a command identity to the action owned by its active context.
+    ///
+    /// A command can appear in more than one screen. The context selects the reducer owner so
+    /// every frontend sends the same typed action for the same visible command.
+    #[must_use]
+    pub const fn action_for_context(self, context: CommandContext) -> Option<Action> {
+        match (context, self) {
+            (CommandContext::RunForm, Self::NewRunner) => Some(Action::OpenRunRunnerEditor),
+            (CommandContext::Settings, Self::NewRunner) => {
+                Some(Action::Settings(SettingsAction::NewRunner))
+            }
+            (_, Self::NewRunner) => None,
+            _ => self.direct_action(),
+        }
     }
 }
 
@@ -1807,6 +1823,7 @@ impl LibraryState {
             Action::SelectVisible(index) => {
                 if index < self.visible.len() {
                     self.selected = Some(index);
+                    self.input_mode = InputMode::Browse;
                 }
             }
             Action::BeginSearch => self.input_mode = InputMode::Search,

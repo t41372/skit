@@ -46,12 +46,9 @@
 //! Buckets:
 //! - ASSERTING (24 `#[test]`): everything the reachable public API can drive directly.
 //! - STUBS (6 `#[ignore]`), recorded in the agent's structured output:
-//!   * `test_write_injected_unique_and_private` — kind="cross-crate". `rewrite.write_injected`
-//!     has no public Rust function; the injected-temp write is inlined in
-//!     `crates/skit-cli/src/run/command.rs:679-699`. It also DIVERGES: the oracle writes the
-//!     secret-bearing copy to the OS temp dir with a `.injected-` prefix (rewrite.py "3b": a
-//!     crash must never strand a plaintext-secret file the store never sweeps), while Rust writes
-//!     `.run-<id>` INTO `entry_dir` at 0o600. Adjudication item for the main agent.
+//!   * `test_write_injected_unique_and_private` — private staging is covered by
+//!     `run::command::tests::source_staging_and_prompt_rendering_keep_execution_files_private`.
+//!     The staged source uses the system temporary directory and a `.injected-` prefix.
 //!   * `test_atomic_write_bytes_cleanup_on_error` — kind="cross-crate". White-box `mock.patch` of
 //!     `os.fdopen`; the atomic writer lives in `skit-store` (`mutations/atomic.rs`) and offers no
 //!     public fault-injection seam. `crates/skit-store/tests/port_test_atomic.rs` stubs the
@@ -346,14 +343,9 @@ fn test_inject_accepts_normal_float() {
 // ==================================================================================
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): `rewrite.write_injected` has no public Rust function. The \
-injected-temp write is inlined in crates/skit-cli/src/run/command.rs:679-699. It also DIVERGES: \
-the oracle writes the secret-bearing copy to the OS temp dir with a `.injected-` prefix \
-(rewrite.py 3b: a crash must never strand a plaintext-secret file the store never sweeps); Rust \
-writes `.run-<id>` INTO entry_dir at 0o600. Oracle ref: src/skit/rewrite.py:145-198."]
+#[ignore = "The private staging contract is covered by run::command::tests::source_staging_and_prompt_rendering_keep_execution_files_private."]
 fn test_write_injected_unique_and_private() {
-    // Oracle behavior (unreachable/divergent): two calls return distinct paths, name starts with
-    // `.injected-`, suffix `.py`, content round-trips, and mode is 0o600 on POSIX.
+    // See the composition-root owner for source bytes, location, permissions, and cleanup.
 }
 
 // ==================================================================================

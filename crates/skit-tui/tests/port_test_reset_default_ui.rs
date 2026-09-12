@@ -51,7 +51,9 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterType, ParameterValue};
 use skit_i18n::Locale;
-use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
+use skit_tui::{
+    EventHandling, HitTarget, RunFieldCommand, TuiSession, ViewGeometry, render_with_session,
+};
 use skit_ui::{Action, LibraryState, RunFormView, Screen, UiCommand};
 
 /// The exact English hint the intercepted-input field owes (i18n key kept verbatim).
@@ -164,8 +166,12 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
 }
 
 fn mouse(column: u16, row: u16) -> Event {
+    mouse_with_kind(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse_with_kind(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -184,7 +190,7 @@ fn has_reset_chip(geometry: &ViewGeometry, field: usize) -> bool {
         hit.action
             == HitTarget::RunFieldCommand {
                 field,
-                command: UiCommand::ResetDefault,
+                command: RunFieldCommand::ResetDefault,
             }
     })
 }
@@ -276,7 +282,7 @@ fn test_reset_chip_mouse_click_restores_the_default() {
             hit.action
                 == HitTarget::RunFieldCommand {
                     field: 0,
-                    command: UiCommand::ResetDefault,
+                    command: RunFieldCommand::ResetDefault,
                 }
         })
         .expect("the ↺ default chip is a click target");
@@ -284,6 +290,18 @@ fn test_reset_chip_mouse_click_restores_the_default() {
     // would stay "world" and this would fail — so the click pins the field-keyed routing end to end.
     assert_eq!(
         session.handle_event(mouse(hit.rect.x, hit.rect.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                hit.rect.x,
+                hit.rect.y,
+            ),
+            &state,
+            &geometry,
+        ),
         EventHandling::Action(Action::ResetRunField(0))
     );
     state.update(Action::ResetRunField(0));

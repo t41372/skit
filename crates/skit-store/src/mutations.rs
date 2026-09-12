@@ -7,13 +7,11 @@ mod runner_management;
 use std::{
     collections::BTreeMap,
     fs,
-    fs::{File, OpenOptions},
-    io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
 use crate::fs_ops::sync_directory;
-pub use agent_skill::FileAgentSkillStore;
+pub use agent_skill::{AgentSkillInstallPoint, FileAgentSkillStore};
 use atomic::{
     FileLock, StagedDirectory, acquire_lock, acquire_shared_lock, atomic_write_bytes,
     create_dir_all, invalid, io_error, write_new_file, write_new_metadata,
@@ -90,7 +88,7 @@ pub struct RegistryRebuildReport {
     pub problems: Vec<RegistryRebuildProblem>,
 }
 
-/// One identity-checked launch whose copy-mode payload cannot change underneath the child.
+/// One identity-checked launch that keeps the stored script path.
 ///
 /// The launch lease remains held until this value is dropped. Source edits may continue while a
 /// child runs, but removing and reusing the entry directory waits until the child and its
@@ -99,7 +97,6 @@ pub struct RegistryRebuildReport {
 pub struct PreparedLaunch {
     entry: Entry,
     payload: Option<PathBuf>,
-    temporary_payload: Option<PathBuf>,
     _lease: FileLock,
 }
 
@@ -138,14 +135,6 @@ impl PreparedLaunch {
     #[must_use]
     pub fn payload_path(&self) -> Option<&Path> {
         self.payload.as_deref()
-    }
-}
-
-impl Drop for PreparedLaunch {
-    fn drop(&mut self) {
-        if let Some(path) = self.temporary_payload.as_ref() {
-            let _ = fs::remove_file(path);
-        }
     }
 }
 
@@ -452,12 +441,10 @@ impl FileStore {
         }
     }
 
-    /// Recheck identity and source bytes, then pin a copy-mode payload for one launch.
+    /// Recheck the entry and source before launch, and retain its removal lease.
     ///
-    /// `expected_source_hash` is the hash observed while the launch form was assembled. Passing it
-    /// closes the legacy-entry gap where a remove/re-add can preserve idless metadata while
-    /// replacing the payload. Reference entries are rechecked but continue to launch their owned
-    /// source path; copy entries launch a private byte-for-byte snapshot.
+    /// The source hash detects edits since the launch form was assembled. The child receives
+    /// the stored path, as in version 0.4. Later source edits use normal filesystem semantics.
     pub fn prepare_launch(
         &self,
         held: &Entry,
@@ -481,7 +468,6 @@ impl FileStore {
             return Ok(PreparedLaunch {
                 entry: fresh,
                 payload: None,
-                temporary_payload: None,
                 _lease: lease,
             });
         }
@@ -491,37 +477,13 @@ impl FileStore {
             return Ok(PreparedLaunch {
                 entry: fresh,
                 payload: Some(source),
-                temporary_payload: None,
                 _lease: lease,
             });
         }
-        let bytes = fs::read(&source).map_err(|error| io_error("read", &source, error))?;
-        if let Some(expected) = expected_source_hash {
-            let actual = content_hash(&bytes);
-            if actual != expected {
-                return Err(RepositoryError::SourceChanged {
-                    slug: fresh.slug.as_str().to_owned(),
-                    expected: expected.to_owned(),
-                    actual,
-                });
-            }
-        }
-
-        if fresh.meta.mode == StorageMode::Reference {
-            return Ok(PreparedLaunch {
-                entry: fresh,
-                payload: Some(source),
-                temporary_payload: None,
-                _lease: lease,
-            });
-        }
-
-        let snapshot = launch_snapshot_path(&source, &self.entry_dir(&fresh.slug));
-        write_launch_snapshot(&source, &snapshot, &bytes)?;
+        read_launch_source_bytes(&source, &fresh.slug, expected_source_hash)?;
         Ok(PreparedLaunch {
             entry: fresh,
-            payload: Some(snapshot.clone()),
-            temporary_payload: Some(snapshot),
+            payload: Some(source),
             _lease: lease,
         })
     }
@@ -636,7 +598,7 @@ impl FileStore {
             mode: request.mode,
             source: request.source,
             source_hash,
-            added_at: crate::stamp::now_iso(),
+            added_at: self.create_stamp(),
             id: Some(id.clone()),
             workdir: request.workdir,
             description: request.description,
@@ -904,16 +866,23 @@ impl FileStore {
     }
 }
 
-fn launch_snapshot_path(source: &Path, entry_dir: &Path) -> PathBuf {
-    let extension = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map_or_else(String::new, |extension| format!(".{extension}"));
-    entry_dir.join(format!(
-        ".run-{}{}",
-        EntryId::generate().as_str(),
-        extension
-    ))
+fn read_launch_source_bytes(
+    source: &Path,
+    slug: &Slug,
+    expected_source_hash: Option<&str>,
+) -> Result<Vec<u8>, RepositoryError> {
+    let bytes = fs::read(source).map_err(|error| io_error("read", source, error))?;
+    if let Some(expected) = expected_source_hash {
+        let actual = content_hash(&bytes);
+        if actual != expected {
+            return Err(RepositoryError::SourceChanged {
+                slug: slug.as_str().to_owned(),
+                expected: expected.to_owned(),
+                actual,
+            });
+        }
+    }
+    Ok(bytes)
 }
 
 fn rebuild_error_reason(error: RepositoryError) -> String {
@@ -939,43 +908,6 @@ fn run_rebuild_before_project_hook(path: &Path) {
             hook(path);
         }
     });
-}
-
-fn write_launch_snapshot(
-    source: &Path,
-    snapshot: &Path,
-    bytes: &[u8],
-) -> Result<(), RepositoryError> {
-    write_launch_snapshot_with(source, snapshot, bytes, File::sync_all)
-}
-
-fn write_launch_snapshot_with(
-    source: &Path,
-    snapshot: &Path,
-    bytes: &[u8],
-    finalize: impl FnOnce(&File) -> io::Result<()>,
-) -> Result<(), RepositoryError> {
-    let permissions = fs::metadata(source)
-        .map_err(|error| io_error("inspect", source, error))?
-        .permissions();
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = options
-        .open(snapshot)
-        .map_err(|error| io_error("create", snapshot, error))?;
-    let result = file
-        .write_all(bytes)
-        .map_err(|error| io_error("write", snapshot, error))
-        .and_then(|()| {
-            file.set_permissions(permissions)
-                .map_err(|error| io_error("chmod", snapshot, error))
-        })
-        .and_then(|()| finalize(&file).map_err(|error| io_error("sync", snapshot, error)));
-    if result.is_err() {
-        drop(file);
-        let _ = fs::remove_file(snapshot);
-    }
-    result
 }
 
 const CORE_METADATA_KEYS: &[&str] = &[
@@ -1613,27 +1545,5 @@ mod tests {
 
         assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
         assert_eq!(fs::read(&source).unwrap(), b"before");
-    }
-
-    #[test]
-    fn a_failed_launch_snapshot_finalize_removes_the_private_file() {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("source.sh");
-        let snapshot = root.path().join(".run-test.sh");
-        fs::write(&source, b"printf checked").unwrap();
-
-        let error = write_launch_snapshot_with(&source, &snapshot, b"printf checked", |_| {
-            Err(io::Error::other("injected sync failure"))
-        })
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            RepositoryError::Io {
-                operation: "sync",
-                ..
-            }
-        ));
-        assert!(!snapshot.exists());
     }
 }

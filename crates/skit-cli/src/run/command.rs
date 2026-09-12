@@ -21,21 +21,23 @@ use skit_domain::{
     parameters::{ParamDecl, ParameterDelivery},
 };
 use skit_form::{FormDrift, form_plan};
-use skit_i18n::{Localize, Message};
+use skit_i18n::{Locale, Localize, Message};
 use skit_language::{
     LanguageError, PromptEncodingError, decode_prompt, inject_values_for_interpreter,
     render_prompt_body,
 };
 use skit_runtime::{
-    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
-    InterpreterPolicy, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
-    ResolvedShellInterpreter, SystemDependencyCommandRunner, SystemInjectedCommandRunner,
-    SystemJavaScriptSyntaxGateRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
-    build_launch_plan_with_interpreter_policy, build_launch_preview,
-    ensure_javascript_dependencies_for_module, ensure_managed_uv, execute_launch,
-    javascript_dependency_install_announcement, javascript_module_type, managed_uv_path,
-    resolve_javascript_runtime_program, retain_javascript_source_if_valid,
-    retain_shell_source_if_valid, shell_self_location_warning, sweep_stale_injected_sources,
+    DependencyCommandRunner, DependencyError, DependencyInstallServices, InjectedCommandRunner,
+    InterpreterPolicy, JavaScriptSyntaxGateRunner, LaunchError, LaunchPaths, LaunchRunner,
+    LaunchWarning, ProgramProbe, PromptRunner, ResolvedShellInterpreter,
+    SystemDependencyCommandRunner, SystemInjectedCommandRunner, SystemJavaScriptSyntaxGateRunner,
+    SystemLaunchRunner, SystemProbe, SystemUvArchiveFetcher, UvArchiveFetcher, UvBootstrapError,
+    UvDownloadConsent, build_launch_plan_with_interpreter_policy,
+    build_launch_preview_with_interpreter_policy,
+    ensure_javascript_dependencies_for_module_with_services, ensure_managed_uv_with_fetcher,
+    execute_launch_with, javascript_dependency_install_announcement, javascript_module_type,
+    managed_uv_path, resolve_javascript_runtime_program, retain_javascript_source_if_valid,
+    retain_shell_source_if_valid, shell_self_location_warning, sweep_stale_injected_sources_at,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -44,22 +46,159 @@ use skit_store::{
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::cli::{entry_candidates, preset_candidates, runner_candidates};
+use crate::cli::{
+    FileAllocator, HostOutput, RunTempLocation as TempLocation,
+    RunTemporaryFilePurpose as TemporaryFilePurpose, SYSTEM_FILE_ALLOCATOR, SYSTEM_OUTPUT,
+    entry_candidates, preset_candidates, runner_candidates,
+};
+
+static SYSTEM_DEPENDENCY_RUNNER: SystemDependencyCommandRunner = SystemDependencyCommandRunner;
+static SYSTEM_INJECTED_RUNNER: SystemInjectedCommandRunner = SystemInjectedCommandRunner;
+static SYSTEM_JAVASCRIPT_GATE: SystemJavaScriptSyntaxGateRunner = SystemJavaScriptSyntaxGateRunner;
+static SYSTEM_LAUNCH_RUNNER: SystemLaunchRunner = SystemLaunchRunner;
+static SYSTEM_PROGRAM_PROBE: SystemProbe = SystemProbe;
+static SYSTEM_UV_FETCHER: SystemUvArchiveFetcher = SystemUvArchiveFetcher;
+
+/// Values from one explicit run invocation.
+#[derive(Clone, Debug)]
+pub(crate) struct RunInvocation {
+    pub(crate) tokens: TokenContext,
+    pub(crate) base_environment: BTreeMap<String, String>,
+    pub(crate) locale: Locale,
+    pub(crate) interpreter_policy: InterpreterPolicy,
+}
+
+/// Read the completion time after a launched process returns.
+pub(crate) trait RunClock: std::fmt::Debug {
+    fn now_utc(&self) -> OffsetDateTime;
+}
 
 #[derive(Clone, Copy, Debug)]
-struct CliDependencyCommandRunner;
+struct SystemRunClock;
 
-impl DependencyCommandRunner for CliDependencyCommandRunner {
-    fn installation_started(&self, installer: &str) {
-        eprintln!(
-            "{}",
-            javascript_dependency_install_announcement(installer)
-                .localize(crate::cli::active_locale())
-        );
+impl RunClock for SystemRunClock {
+    fn now_utc(&self) -> OffsetDateTime {
+        OffsetDateTime::now_utc()
+    }
+}
+
+static SYSTEM_RUN_CLOCK: SystemRunClock = SystemRunClock;
+
+pub(crate) fn system_time_from_utc(at: OffsetDateTime) -> SystemTime {
+    let nanoseconds = at.unix_timestamp_nanos();
+    let magnitude = nanoseconds.unsigned_abs();
+    let seconds = u64::try_from(magnitude / 1_000_000_000).unwrap_or(u64::MAX);
+    let subsecond = u32::try_from(magnitude % 1_000_000_000).unwrap_or(0);
+    let duration = Duration::new(seconds, subsecond);
+    if nanoseconds.is_negative() {
+        SystemTime::UNIX_EPOCH
+            .checked_sub(duration)
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    } else {
+        SystemTime::UNIX_EPOCH
+            .checked_add(duration)
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    }
+}
+
+/// Low-level process and network adapters for the production run pipeline.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunPorts<'a> {
+    probe: &'a dyn ProgramProbe,
+    launch: &'a dyn LaunchRunner,
+    dependencies: &'a dyn DependencyCommandRunner,
+    injected: &'a dyn InjectedCommandRunner,
+    javascript_gate: &'a dyn JavaScriptSyntaxGateRunner,
+    uv_consent: &'a dyn UvDownloadConsent,
+    uv_fetcher: &'a dyn UvArchiveFetcher,
+}
+
+impl<'a> RunPorts<'a> {
+    pub(crate) const fn new(
+        probe: &'a dyn ProgramProbe,
+        launch: &'a dyn LaunchRunner,
+        dependencies: &'a dyn DependencyCommandRunner,
+        injected: &'a dyn InjectedCommandRunner,
+        javascript_gate: &'a dyn JavaScriptSyntaxGateRunner,
+        uv_consent: &'a dyn UvDownloadConsent,
+        uv_fetcher: &'a dyn UvArchiveFetcher,
+    ) -> Self {
+        Self {
+            probe,
+            launch,
+            dependencies,
+            injected,
+            javascript_gate,
+            uv_consent,
+            uv_fetcher,
+        }
     }
 
-    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput> {
-        SystemDependencyCommandRunner.run(command)
+    pub(crate) const fn probe(self) -> &'a dyn ProgramProbe {
+        self.probe
+    }
+
+    pub(crate) const fn system() -> RunPorts<'static> {
+        RunPorts::new(
+            &SYSTEM_PROGRAM_PROBE,
+            &SYSTEM_LAUNCH_RUNNER,
+            &SYSTEM_DEPENDENCY_RUNNER,
+            &SYSTEM_INJECTED_RUNNER,
+            &SYSTEM_JAVASCRIPT_GATE,
+            &TERMINAL_UV_CONSENT,
+            &SYSTEM_UV_FETCHER,
+        )
+    }
+}
+
+/// Explicit values and low-level adapters for one production run.
+#[derive(Debug)]
+pub(crate) struct RunServices<'a> {
+    invocation: RunInvocation,
+    ports: RunPorts<'a>,
+    allocator: &'a dyn FileAllocator,
+    output: &'a dyn HostOutput,
+    clock: &'a dyn RunClock,
+}
+
+impl<'a> RunServices<'a> {
+    pub(crate) const fn new(
+        invocation: RunInvocation,
+        ports: RunPorts<'a>,
+        allocator: &'a dyn FileAllocator,
+        output: &'a dyn HostOutput,
+        clock: &'a dyn RunClock,
+    ) -> Self {
+        Self {
+            invocation,
+            ports,
+            allocator,
+            output,
+            clock,
+        }
+    }
+
+    pub(crate) fn system() -> RunServices<'static> {
+        RunServices::new(
+            RunInvocation {
+                tokens: token_context(),
+                base_environment: env::vars().collect(),
+                locale: crate::cli::active_locale(),
+                interpreter_policy: InterpreterPolicy::for_current_host(None),
+            },
+            RunPorts::system(),
+            &SYSTEM_FILE_ALLOCATOR,
+            &SYSTEM_OUTPUT,
+            &SYSTEM_RUN_CLOCK,
+        )
+    }
+
+    pub(crate) fn now_utc(&self) -> time::OffsetDateTime {
+        self.clock.now_utc()
+    }
+
+    pub(crate) const fn probe(&self) -> &'a dyn ProgramProbe {
+        self.ports.probe()
     }
 }
 
@@ -333,6 +472,18 @@ pub(crate) fn run_with_roots(
     config_dir: &Path,
     args: RunArgs,
 ) -> Result<i32, RunError> {
+    let services = RunServices::system();
+    run_with_services(service, data_store, state_dir, config_dir, args, &services)
+}
+
+pub(crate) fn run_with_services(
+    service: &LibraryService<FileStore>,
+    data_store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    args: RunArgs,
+    services: &RunServices<'_>,
+) -> Result<i32, RunError> {
     let _plain = args.plain;
     let _no_input = args.no_input;
     let held = service.show(&args.selector)?;
@@ -355,12 +506,16 @@ pub(crate) fn run_with_roots(
         .get("shell.bash_path")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
-    let interpreter_policy = InterpreterPolicy::for_current_host(configured_bash);
+    let interpreter_policy = services
+        .invocation
+        .interpreter_policy
+        .clone()
+        .with_windows_bash_path(configured_bash);
     let mut settings = EntrySettings::from_meta(&entry.meta);
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     let saved = state.load(&entry.slug);
-    let base_environment = env::vars().collect::<BTreeMap<_, _>>();
-    let mirror_environment = config.mirror_environment(&base_environment)?;
+    let mirror_environment = config.mirror_environment(&services.invocation.base_environment)?;
+    let probe = services.ports.probe;
 
     let (source, expected_source_hash) = source_snapshot(data_store, &entry, &settings)?;
     let form = (!args.raw).then(|| form_plan(entry.meta.kind.as_str(), &source, &settings));
@@ -414,17 +569,14 @@ pub(crate) fn run_with_roots(
     };
     if !args.raw && args.extra_args.is_empty() && !args.forget_args && !saved.extra_args.is_empty()
     {
-        eprintln!(
-            "{}",
-            skit_i18n::format_text(
-                crate::cli::active_locale(),
-                "Reusing your last arguments: {}",
-                &[&extra_args.join(" ")],
-            )
-        );
+        services.output.diagnostic(&skit_i18n::format_text(
+            services.invocation.locale,
+            "Reusing your last arguments: {}",
+            &[&extra_args.join(" ")],
+        ));
     }
 
-    let context = token_context();
+    let context = &services.invocation.tokens;
     let glob = FileGlobExpander::new(&context.cwd);
     let explicit_arg_declarations = (!args.extra_args.is_empty()).then(|| {
         declarations
@@ -454,7 +606,7 @@ pub(crate) fn run_with_roots(
             &raw_values,
             &extra_args,
             expand_extra,
-            &context,
+            context,
             &glob,
         )?
     };
@@ -483,7 +635,7 @@ pub(crate) fn run_with_roots(
     }
 
     let javascript_runtime = if !args.dry_run && matches!(entry.meta.kind.as_str(), "js" | "ts") {
-        let runtime = resolve_javascript_runtime_program(&settings, &SystemProbe)?;
+        let runtime = resolve_javascript_runtime_program(&settings, probe)?;
         pin_interpreter(&mut settings, &mut entry, &runtime.program);
         Some(runtime)
     } else {
@@ -492,11 +644,11 @@ pub(crate) fn run_with_roots(
 
     let needs_uv_bootstrap = entry.meta.kind.as_str() == "python"
         && settings.interpreter.is_empty()
-        && SystemProbe.find_program("uv").is_none()
-        && !managed_uv_path(data_store.data_dir()).is_file();
+        && probe.find_program("uv").is_none()
+        && !probe.is_file(&managed_uv_path(data_store.data_dir()));
     if entry.meta.kind.as_str() == "python"
         && settings.interpreter.is_empty()
-        && SystemProbe.find_program("uv").is_none()
+        && probe.find_program("uv").is_none()
         && !needs_uv_bootstrap
     {
         pin_interpreter(
@@ -525,14 +677,15 @@ pub(crate) fn run_with_roots(
         invoke_cwd: PathBuf::from(&context.cwd),
     };
     let preflight_plan = if args.dry_run {
-        let _ = build_launch_preview(
+        let _ = build_launch_preview_with_interpreter_policy(
             &entry,
             &paths,
             &assembly,
             prompt_body.as_deref(),
             prompt_display_body.as_deref(),
             runner.as_ref(),
-            &SystemProbe,
+            &interpreter_policy,
+            probe,
         )?;
         None
     } else if !needs_uv_bootstrap {
@@ -543,7 +696,7 @@ pub(crate) fn run_with_roots(
             prompt_body.as_deref(),
             runner.as_ref(),
             &interpreter_policy,
-            &SystemProbe,
+            probe,
         )?)
     } else {
         None
@@ -573,7 +726,7 @@ pub(crate) fn run_with_roots(
 
     if entry.meta.kind.as_str() == "python"
         && settings.interpreter.is_empty()
-        && SystemProbe.find_program("uv").is_none()
+        && probe.find_program("uv").is_none()
         && !args.dry_run
     {
         let mirror = config.mirror()?;
@@ -584,8 +737,14 @@ pub(crate) fn run_with_roots(
             &mut entry,
             data_store.data_dir(),
             mirror_base,
-            &TerminalUvConsent,
-            ensure_managed_uv,
+            UvBootstrapInteraction {
+                consent: services.ports.uv_consent,
+                output: services.output,
+                locale: services.invocation.locale,
+            },
+            |data_dir, mirror_base| {
+                ensure_managed_uv_with_fetcher(data_dir, mirror_base, services.ports.uv_fetcher)
+            },
         )?;
     }
 
@@ -601,6 +760,7 @@ pub(crate) fn run_with_roots(
             shell_interpreter
                 .as_ref()
                 .map(ResolvedShellInterpreter::name),
+            services.allocator,
         )?
     };
     let staged = match (staged, entry.meta.kind.as_str()) {
@@ -611,7 +771,7 @@ pub(crate) fn run_with_roots(
                     source,
                     javascript_runtime.as_ref(),
                     &path,
-                    &SystemJavaScriptSyntaxGateRunner,
+                    services.ports.javascript_gate,
                 )
                 .map_err(|error| RunError::InjectedCopy {
                     detail: error.message(),
@@ -625,7 +785,7 @@ pub(crate) fn run_with_roots(
                     source,
                     shell_interpreter.as_ref(),
                     &path,
-                    &SystemInjectedCommandRunner,
+                    services.ports.injected,
                 )
                 .map_err(|error| RunError::InjectedCopy {
                     detail: error.message(),
@@ -638,26 +798,34 @@ pub(crate) fn run_with_roots(
         && entry.meta.kind.as_str() == "shell"
         && let Some(warning) = shell_self_location_warning(shell_uses_self_location)
     {
-        eprintln!("{}", warning.localize(crate::cli::active_locale()));
+        services
+            .output
+            .diagnostic(&warning.localize(services.invocation.locale));
     }
     if !args.dry_run {
         let entry_dir = data_store.entry_dir_path(&entry.slug);
-        sweep_injected_launch_sources(data_store, &entry);
-        sweep_stale_launch_snapshots(&entry_dir, !assembly.inject_values.is_empty());
+        let cleanup_now = system_time_from_utc(services.clock.now_utc());
+        sweep_injected_launch_sources(data_store, &entry, cleanup_now);
         if matches!(entry.meta.kind.as_str(), "js" | "ts")
             && entry.meta.mode == skit_domain::StorageMode::Copy
         {
             let runtime = javascript_runtime
                 .as_ref()
                 .expect("a non-dry JavaScript launch has a resolved runtime");
-            ensure_javascript_dependencies_for_module(
+            let installation_started = |installer: &str| {
+                services.output.diagnostic(
+                    &javascript_dependency_install_announcement(installer)
+                        .localize(services.invocation.locale),
+                );
+            };
+            ensure_javascript_dependencies_for_module_with_services(
                 &entry_dir,
                 runtime.kind.name(),
                 &settings.dependencies,
                 javascript_module_type(&entry.meta.source),
                 &mirror_environment,
-                &SystemProbe,
-                &CliDependencyCommandRunner,
+                probe,
+                DependencyInstallServices::new(services.ports.dependencies, &installation_started),
             )?;
         }
     }
@@ -694,14 +862,15 @@ pub(crate) fn run_with_roots(
         None
     };
     let mut plan = if args.dry_run {
-        build_launch_preview(
+        build_launch_preview_with_interpreter_policy(
             &entry,
             &paths,
             &assembly,
             prompt_body.as_deref(),
             prompt_display_body.as_deref(),
             runner.as_ref(),
-            &SystemProbe,
+            &interpreter_policy,
+            probe,
         )?
     } else {
         build_launch_plan_with_interpreter_policy(
@@ -711,7 +880,7 @@ pub(crate) fn run_with_roots(
             prompt_body.as_deref(),
             runner.as_ref(),
             &interpreter_policy,
-            &SystemProbe,
+            probe,
         )?
     };
     for (key, value) in mirror_environment {
@@ -719,34 +888,29 @@ pub(crate) fn run_with_roots(
     }
     for warning in &plan.warnings {
         match warning {
-            LaunchWarning::PiPromptProtected => eprintln!(
-                "{}",
-                skit_i18n::format_text(
-                    crate::cli::active_locale(),
+            LaunchWarning::PiPromptProtected => {
+                services.output.diagnostic(&skit_i18n::format_text(
+                    services.invocation.locale,
                     "Warning: Pi would interpret the beginning of this prompt as a CLI option, file, or package command. skit prepended one newline and is continuing; the prompt delivered to Pi is one character longer than the rendered text.",
                     &[],
-                )
-            ),
-            LaunchWarning::AmpOneShot => eprintln!(
-                "{}",
-                skit_i18n::format_text(
-                    crate::cli::active_locale(),
+                ));
+            }
+            LaunchWarning::AmpOneShot => {
+                services.output.diagnostic(&skit_i18n::format_text(
+                    services.invocation.locale,
                     "The built-in amp runner is one-shot: amp -x runs this prompt once and does not open an interactive session.",
                     &[],
-                )
-            ),
+                ));
+            }
         }
     }
 
     if !args.dry_run && prompt_sends_secret(&entry, &declarations, &assembly) {
-        eprintln!(
-            "{}",
-            skit_i18n::format_text(
-                crate::cli::active_locale(),
-                "Secret-marked values are never saved by skit, but this prompt sends them to the selected agent as plaintext; the agent may log or sync them.",
-                &[],
-            )
-        );
+        services.output.diagnostic(&skit_i18n::format_text(
+            services.invocation.locale,
+            "Secret-marked values are never saved by skit, but this prompt sends them to the selected agent as plaintext; the agent may log or sync them.",
+            &[],
+        ));
     }
 
     if args.forget_args {
@@ -757,18 +921,22 @@ pub(crate) fn run_with_roots(
             state.save_preset(&entry.slug, name, &declarations, &raw_values)?;
         }
         for message in injection_transparency_messages(&assembly) {
-            println!("{}", message.localize(crate::cli::active_locale()));
+            services
+                .output
+                .stdout(&message.localize(services.invocation.locale));
         }
-        println!("{}", plan.display);
+        services.output.stdout(&plan.display);
         return Ok(0);
     }
 
     for message in transparency_messages(&assembly, &plan.display) {
-        println!("{}", message.localize(crate::cli::active_locale()));
+        services
+            .output
+            .stdout(&message.localize(services.invocation.locale));
     }
-    let exit = execute_launch(&plan)?;
+    let exit = execute_launch_with(&plan, services.ports.launch)?;
     let slug = &entry.slug;
-    let at = skit_store::now_iso();
+    let at = skit_store::iso_stamp(services.clock.now_utc());
     let recorded_values = (!args.raw).then_some(&raw_values);
     state.record_completed_run_with(
         slug,
@@ -964,7 +1132,15 @@ fn stage_injected_source(
     declarations: &[skit_domain::parameters::ParamDecl],
     assembly: &skit_application::delivery::Assembly,
 ) -> Result<Option<StagedSource>, RunError> {
-    stage_injected_source_with_shell_interpreter(store, entry, source, declarations, assembly, None)
+    stage_injected_source_with_shell_interpreter(
+        store,
+        entry,
+        source,
+        declarations,
+        assembly,
+        None,
+        &SYSTEM_FILE_ALLOCATOR,
+    )
 }
 
 fn stage_injected_source_with_shell_interpreter(
@@ -974,6 +1150,7 @@ fn stage_injected_source_with_shell_interpreter(
     declarations: &[skit_domain::parameters::ParamDecl],
     assembly: &skit_application::delivery::Assembly,
     resolved_shell: Option<&str>,
+    allocator: &dyn FileAllocator,
 ) -> Result<Option<StagedSource>, RunError> {
     let entry_dir = store.entry_dir_path(&entry.slug);
     if assembly.inject_values.is_empty() {
@@ -1000,48 +1177,58 @@ fn stage_injected_source_with_shell_interpreter(
     let adjacent_to_modules = matches!(kind, "js" | "ts")
         && entry.meta.mode == skit_domain::StorageMode::Copy
         && !settings.dependencies.is_empty();
-    let file = new_injected_file(&entry_dir, &suffix, adjacent_to_modules)?;
+    let file =
+        new_injected_file_with_allocator(&entry_dir, &suffix, adjacent_to_modules, allocator)?;
     finish_staged_source(file, rewritten.as_bytes(), write_and_sync_staged_source).map(Some)
 }
 
-fn sweep_injected_launch_sources(store: &FileStore, entry: &Entry) {
-    sweep_stale_injected_sources(&store.entry_dir_path(&entry.slug));
+fn sweep_injected_launch_sources(store: &FileStore, entry: &Entry, now: SystemTime) {
+    sweep_stale_injected_sources_at(&store.entry_dir_path(&entry.slug), now);
 }
 
-fn new_injected_file(
+pub(crate) fn new_injected_file_with_allocator(
     entry_dir: &Path,
     suffix: &str,
     adjacent_to_modules: bool,
+    allocator: &dyn FileAllocator,
 ) -> Result<tempfile::NamedTempFile, RunError> {
     new_injected_file_with_ops(
         entry_dir,
-        suffix,
         adjacent_to_modules,
-        |builder, directory| builder.tempfile_in(directory),
-        |builder| builder.tempfile(),
+        || {
+            allocator.temporary_file(
+                TemporaryFilePurpose::InjectedSource,
+                TempLocation::Directory(entry_dir),
+                suffix,
+            )
+        },
+        || {
+            allocator.temporary_file(
+                TemporaryFilePurpose::InjectedSource,
+                TempLocation::System,
+                suffix,
+            )
+        },
     )
 }
 
 fn new_injected_file_with_ops<E, S>(
     entry_dir: &Path,
-    suffix: &str,
     adjacent_to_modules: bool,
     mut create_in_entry: E,
     mut create_in_system_temp: S,
 ) -> Result<tempfile::NamedTempFile, RunError>
 where
-    E: FnMut(&mut tempfile::Builder<'_, '_>, &Path) -> io::Result<tempfile::NamedTempFile>,
-    S: FnMut(&mut tempfile::Builder<'_, '_>) -> io::Result<tempfile::NamedTempFile>,
+    E: FnMut() -> io::Result<tempfile::NamedTempFile>,
+    S: FnMut() -> io::Result<tempfile::NamedTempFile>,
 {
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(".injected-").suffix(suffix);
     let file = if adjacent_to_modules {
-        create_in_entry(&mut builder, entry_dir).or_else(|_| create_in_system_temp(&mut builder))
+        create_in_entry().or_else(|_| create_in_system_temp())
     } else {
         // The OS temp directory is the normal home for a source that can contain plaintext secret
         // values. Keep the oracle's entry-directory fallback for a broken TMPDIR. A later
         // successful run removes an aged fallback after an abnormal process exit.
-        create_in_system_temp(&mut builder).or_else(|_| create_in_entry(&mut builder, entry_dir))
+        create_in_system_temp().or_else(|_| create_in_entry())
     };
     file.map_err(|source| RunError::Stage {
         path: entry_dir.display().to_string(),
@@ -1086,8 +1273,8 @@ fn write_and_sync_staged_source(file: &mut fs::File, bytes: &[u8]) -> io::Result
         let must_fail = STAGE_WRITE_FAULT
             .lock()
             .expect("stage-write fault mutex must not be poisoned")
-            .as_ref()
-            .is_some_and(|fault| fault.owner == current);
+            .iter()
+            .any(|fault| fault.owner == current);
         if must_fail {
             file.write_all(&bytes[..bytes.len().min(6)])?;
             return Err(io::Error::other("injected staged-source write failure"));
@@ -1102,22 +1289,26 @@ struct StageWriteFault {
 }
 
 #[cfg(test)]
-static STAGE_WRITE_FAULT: std::sync::Mutex<Option<StageWriteFault>> = std::sync::Mutex::new(None);
+static STAGE_WRITE_FAULT: std::sync::Mutex<Vec<StageWriteFault>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
-struct StageWriteFaultGuard {
+pub(crate) struct StageWriteFaultGuard {
     owner: std::thread::ThreadId,
 }
 
 #[cfg(test)]
 impl StageWriteFaultGuard {
-    fn for_current_thread() -> Self {
+    pub(crate) fn for_current_thread() -> Self {
         let owner = std::thread::current().id();
         let mut fault = STAGE_WRITE_FAULT
             .lock()
             .expect("stage-write fault mutex must not be poisoned");
-        assert!(fault.is_none(), "only one stage-write fault can be active");
-        *fault = Some(StageWriteFault { owner });
+        assert!(
+            !fault.iter().any(|fault| fault.owner == owner),
+            "one thread can own only one stage-write fault"
+        );
+        fault.push(StageWriteFault { owner });
         Self { owner }
     }
 }
@@ -1128,13 +1319,11 @@ impl Drop for StageWriteFaultGuard {
         let mut fault = STAGE_WRITE_FAULT
             .lock()
             .expect("stage-write fault mutex must not be poisoned");
-        assert!(
-            fault
-                .as_ref()
-                .is_some_and(|fault| fault.owner == self.owner),
-            "stage-write fault ownership changed"
-        );
-        *fault = None;
+        let index = fault
+            .iter()
+            .position(|fault| fault.owner == self.owner)
+            .expect("stage-write fault ownership changed");
+        fault.remove(index);
     }
 }
 
@@ -1145,36 +1334,43 @@ impl Drop for StageWriteFaultGuard {
 /// (`src/skit/uvman.py:251-256`), announces the download only after consent
 /// (`src/skit/uvman.py:259-265`), and reports the installed path when it finishes
 /// (`src/skit/uvman.py:284-287`).
+#[derive(Clone, Copy)]
+struct UvBootstrapInteraction<'a> {
+    consent: &'a dyn UvDownloadConsent,
+    output: &'a dyn HostOutput,
+    locale: Locale,
+}
+
 fn bootstrap_private_uv<F>(
     settings: &mut EntrySettings,
     entry: &mut Entry,
     data_dir: &Path,
     mirror_base: Option<&str>,
-    consent: &dyn UvDownloadConsent,
+    interaction: UvBootstrapInteraction<'_>,
     install: F,
 ) -> Result<(), RunError>
 where
     F: FnOnce(&Path, Option<&str>) -> Result<PathBuf, UvBootstrapError>,
 {
-    let locale = crate::cli::active_locale();
     let destination = skit_runtime::managed_uv_path(data_dir);
     let private_dir = destination.parent().unwrap_or(data_dir);
-    if !consent.allow_download(skit_runtime::UV_VERSION, private_dir) {
+    if !interaction
+        .consent
+        .allow_download(skit_runtime::UV_VERSION, private_dir)
+    {
         return Err(UvBootstrapError::Declined.into());
     }
-    eprintln!(
-        "{}",
-        skit_i18n::format_text(
-            locale,
-            "First run — downloading uv {}…",
-            &[&skit_runtime::UV_VERSION],
-        )
-    );
+    interaction.output.diagnostic(&skit_i18n::format_text(
+        interaction.locale,
+        "First run — downloading uv {}…",
+        &[&skit_runtime::UV_VERSION],
+    ));
     let installed = install(data_dir, mirror_base)?;
-    eprintln!(
-        "{}",
-        skit_i18n::format_text(locale, "uv installed at: {}", &[&installed.display()])
-    );
+    interaction.output.diagnostic(&skit_i18n::format_text(
+        interaction.locale,
+        "uv installed at: {}",
+        &[&installed.display()],
+    ));
     pin_interpreter(settings, entry, &installed);
     Ok(())
 }
@@ -1182,6 +1378,8 @@ where
 /// Ask the real terminal before skit downloads its private uv.
 #[derive(Clone, Copy, Debug)]
 struct TerminalUvConsent;
+
+static TERMINAL_UV_CONSENT: TerminalUvConsent = TerminalUvConsent;
 
 impl UvDownloadConsent for TerminalUvConsent {
     fn allow_download(&self, version: &str, destination: &Path) -> bool {
@@ -1221,33 +1419,6 @@ fn consent_from_answer(answer: Option<&str>) -> bool {
 fn pin_interpreter(settings: &mut EntrySettings, entry: &mut Entry, path: &Path) {
     settings.interpreter = path.display().to_string();
     settings.write_to_meta(&mut entry.meta);
-}
-
-fn sweep_stale_launch_snapshots(entry_dir: &Path, include_launch_snapshots: bool) {
-    if !include_launch_snapshots {
-        return;
-    }
-    // A directory skit cannot list holds nothing skit owns.
-    let items = fs::read_dir(entry_dir).into_iter().flatten();
-    let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(24 * 60 * 60))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    for item in items.flatten() {
-        let path = item.path();
-        let is_staged = item
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(".run-"));
-        let is_stale_file = item
-            .metadata()
-            .ok()
-            .filter(|metadata| metadata.is_file())
-            .and_then(|metadata| metadata.modified().ok())
-            .is_some_and(|modified| modified <= cutoff);
-        if is_staged && is_stale_file {
-            let _ = fs::remove_file(path);
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1641,23 +1812,10 @@ mod tests {
         fs::write(directory.join("script.sh"), "NAME=old\n").unwrap();
         let stale = directory.join(".injected-stale.sh");
         let live = directory.join(".injected-live.sh");
-        let stale_launch_snapshot = directory.join(".run-stale.sh");
         fs::write(&stale, "stale secret").unwrap();
         fs::write(&live, "live secret").unwrap();
-        fs::write(&stale_launch_snapshot, "stale launch bytes").unwrap();
         let stale_file = fs::File::options().write(true).open(&stale).unwrap();
         stale_file
-            .set_times(
-                fs::FileTimes::new()
-                    .set_modified(SystemTime::UNIX_EPOCH)
-                    .set_accessed(SystemTime::UNIX_EPOCH),
-            )
-            .unwrap();
-        let stale_launch_file = fs::File::options()
-            .write(true)
-            .open(&stale_launch_snapshot)
-            .unwrap();
-        stale_launch_file
             .set_times(
                 fs::FileTimes::new()
                     .set_modified(SystemTime::UNIX_EPOCH)
@@ -1668,8 +1826,8 @@ mod tests {
         let mut declaration = ParamDecl::new("NAME");
         declaration.binding = ParameterBinding::Const;
         declaration.delivery = ParameterDelivery::Inject;
-        sweep_injected_launch_sources(&store, &shell);
-        sweep_stale_launch_snapshots(&directory, true);
+        let cleanup_now = SystemTime::now();
+        sweep_injected_launch_sources(&store, &shell, cleanup_now);
         let staged = stage_injected_source(
             &store,
             &shell,
@@ -1683,7 +1841,6 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(!stale.exists());
-        assert!(!stale_launch_snapshot.exists());
         assert!(live.exists());
         assert!(!staged.path.starts_with(&directory));
         assert!(
@@ -1709,7 +1866,9 @@ mod tests {
 
         let not_a_directory = root.path().join("not-a-directory");
         fs::write(&not_a_directory, "occupied").unwrap();
-        let fallback = new_injected_file(&not_a_directory, ".js", true).unwrap();
+        let fallback =
+            new_injected_file_with_allocator(&not_a_directory, ".js", true, &SYSTEM_FILE_ALLOCATOR)
+                .unwrap();
         assert!(
             !fallback.path().starts_with(&not_a_directory),
             "an unavailable entry-directory target must fall back to the OS private temp directory"
@@ -1727,7 +1886,7 @@ mod tests {
                     .set_accessed(SystemTime::UNIX_EPOCH),
             )
             .unwrap();
-        sweep_injected_launch_sources(&store, &shell);
+        sweep_injected_launch_sources(&store, &shell, SystemTime::now());
         assert!(
             stage_injected_source(
                 &store,
@@ -1784,7 +1943,9 @@ mod tests {
         drop(staged);
 
         for fail_after_write in [false, true] {
-            let file = new_injected_file(&directory, ".sh", true).unwrap();
+            let file =
+                new_injected_file_with_allocator(&directory, ".sh", true, &SYSTEM_FILE_ALLOCATOR)
+                    .unwrap();
             let failed_path = file.path().to_path_buf();
             let result = finish_staged_source(file, b"SECRET='plaintext'\n", |file, bytes| {
                 if fail_after_write {
@@ -1856,13 +2017,12 @@ mod tests {
             events.borrow_mut().clear();
             let error = new_injected_file_with_ops(
                 root.path(),
-                ".js",
                 adjacent,
-                |_, _| {
+                || {
                     events.borrow_mut().push("entry");
                     Err(io::Error::other("entry temp failure"))
                 },
-                |_| {
+                || {
                     events.borrow_mut().push("system");
                     Err(io::Error::other("system temp failure"))
                 },
@@ -2017,7 +2177,7 @@ mod tests {
             .set_times(fs::FileTimes::new().set_modified(old))
             .unwrap();
 
-        sweep_injected_launch_sources(&store, &entry("js", "node"));
+        sweep_injected_launch_sources(&store, &entry("js", "node"), SystemTime::now());
 
         assert!(!aged.exists());
         assert!(fresh.exists());
@@ -2154,6 +2314,28 @@ mod tests {
         assert!(!context.today.is_empty());
         assert!(!context.now.is_empty());
     }
+
+    #[test]
+    fn cleanup_clock_conversion_preserves_both_sides_of_the_unix_epoch() {
+        assert_eq!(
+            system_time_from_utc(OffsetDateTime::UNIX_EPOCH),
+            SystemTime::UNIX_EPOCH
+        );
+        let after = OffsetDateTime::from_unix_timestamp_nanos(2_000_000_300).unwrap();
+        assert_eq!(
+            system_time_from_utc(after)
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap(),
+            Duration::new(2, 300)
+        );
+        let before = OffsetDateTime::from_unix_timestamp_nanos(-2_000_000_300).unwrap();
+        assert_eq!(
+            SystemTime::UNIX_EPOCH
+                .duration_since(system_time_from_utc(before))
+                .unwrap(),
+            Duration::new(2, 300)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2164,9 +2346,25 @@ mod bootstrap_tests {
     };
 
     use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
+    use skit_i18n::Locale;
     use skit_runtime::{AllowUvDownload, UvBootstrapError, UvDownloadConsent};
 
-    use super::{RunError, bootstrap_private_uv, consent_from_answer};
+    use super::{
+        HostOutput, RunError, UvBootstrapInteraction, bootstrap_private_uv, consent_from_answer,
+    };
+
+    #[derive(Debug)]
+    struct SinkOutput;
+
+    impl HostOutput for SinkOutput {
+        fn success(&self, _message: &str) {}
+        fn detail(&self, _message: &str) {}
+        fn plain(&self, _message: &str) {}
+        fn stdout(&self, _message: &str) {}
+        fn diagnostic(&self, _message: &str) {}
+    }
+
+    static SINK_OUTPUT: SinkOutput = SinkOutput;
 
     #[derive(Debug)]
     struct RecordedConsent {
@@ -2206,7 +2404,11 @@ mod bootstrap_tests {
             &mut entry,
             Path::new("/data"),
             Some("https://mirror.example/uv"),
-            &AllowUvDownload,
+            UvBootstrapInteraction {
+                consent: &AllowUvDownload,
+                output: &SINK_OUTPUT,
+                locale: Locale::En,
+            },
             |data_dir, mirror_base| {
                 assert_eq!(data_dir, Path::new("/data"));
                 assert_eq!(mirror_base, Some("https://mirror.example/uv"));
@@ -2235,7 +2437,11 @@ mod bootstrap_tests {
             &mut python_entry(),
             Path::new("/data"),
             None,
-            &consent,
+            UvBootstrapInteraction {
+                consent: &consent,
+                output: &SINK_OUTPUT,
+                locale: Locale::En,
+            },
             successful_test_uv_install,
         )
         .unwrap();
@@ -2278,7 +2484,11 @@ mod bootstrap_tests {
             &mut entry,
             Path::new("/data"),
             None,
-            &consent,
+            UvBootstrapInteraction {
+                consent: &consent,
+                output: &SINK_OUTPUT,
+                locale: Locale::En,
+            },
             successful_test_uv_install,
         )
         .expect_err("a refusal must fail the run");
@@ -2293,6 +2503,18 @@ mod bootstrap_tests {
         // Version 0.4 turns every uv bootstrap failure into a launch failure
         // (`src/skit/langs/launch.py:57-63`), which exits 125 (`src/skit/flows.py:868`).
         assert_eq!(error.exit_code(), 125);
+    }
+
+    /// The shared sink absorbs each message kind, so a bootstrap contract writes no process
+    /// stream. Every method must accept a message and return.
+    #[test]
+    fn the_shared_sink_absorbs_every_message_kind() {
+        let output: &dyn HostOutput = &SINK_OUTPUT;
+        output.success("installed");
+        output.detail("detail");
+        output.plain("plain");
+        output.stdout("stdout");
+        output.diagnostic("diagnostic");
     }
 }
 

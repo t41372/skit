@@ -5,7 +5,7 @@ use ratatui_core::{
     style::{Color, Style},
     terminal::Frame,
 };
-use ratatui_crossterm::crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui_crossterm::crossterm::event::{KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui_interact::components::{
     Button, ButtonState, ButtonStyle, ButtonVariant, ScrollableContentState,
 };
@@ -14,19 +14,39 @@ use ratatui_widgets::{
     borders::{BorderType, Borders},
     paragraph::Paragraph,
 };
-use skit_i18n::{Locale, format_text, render as localize, text};
-use skit_ui::{CommandContext, LibraryState, Screen, UiCommand, UiKey, command_specs};
+use skit_i18n::{Locale, catalog, format_text, text};
+use skit_ui::{
+    CommandContext, LibraryState, Screen, UiBinding, UiCommand, UiCommandSpec, UiKey, command_specs,
+};
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{HitRegion, HitTarget};
+use crate::{
+    HitRegion, HitTarget,
+    agent_review::{
+        AgentReviewNode, AgentReviewSnapshotError, clicks as snapshot_clicks, local_key_value,
+        node as snapshot_node, rect as snapshot_rect, scroll as snapshot_scroll,
+        value as snapshot_value,
+    },
+    layout::ViewportProfile,
+    local_action::LocalKey,
+    pointer::{ClickDispatch, ClickOutcome, ClickTracker},
+};
 
 const PILL_BACKGROUND: Color = Color::Rgb(0x2A, 0x21, 0x1C);
 const PILL_FOREGROUND: Color = Color::Rgb(0xD9, 0x77, 0x57);
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FooterInputOwnership {
+    pub(crate) vertical_navigation: bool,
+    pub(crate) run_submit: bool,
+    pub(crate) preferences_input: bool,
+    pub(crate) escape: bool,
+}
+
 /// One typed command in a responsive local action footer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionFooterItem<A> {
-    key: String,
+    key: LocalKey,
     label: String,
     action: A,
     starts_group: bool,
@@ -34,9 +54,9 @@ pub(crate) struct ActionFooterItem<A> {
 
 impl<A> ActionFooterItem<A> {
     /// Add an action after the preceding action, wrapping when necessary.
-    pub(crate) fn new(key: impl Into<String>, label: impl Into<String>, action: A) -> Self {
+    pub(crate) fn new(key: LocalKey, label: impl Into<String>, action: A) -> Self {
         Self {
-            key: key.into(),
+            key,
             label: label.into(),
             action,
             starts_group: false,
@@ -44,7 +64,7 @@ impl<A> ActionFooterItem<A> {
     }
 
     /// Add an action on a new row so related actions stay together.
-    pub(crate) fn new_group(key: impl Into<String>, label: impl Into<String>, action: A) -> Self {
+    pub(crate) fn new_group(key: LocalKey, label: impl Into<String>, action: A) -> Self {
         Self {
             starts_group: true,
             ..Self::new(key, label, action)
@@ -52,8 +72,8 @@ impl<A> ActionFooterItem<A> {
     }
 
     #[cfg(test)]
-    pub(crate) fn advertised_key(&self) -> &str {
-        &self.key
+    pub(crate) fn advertised_key(&self) -> String {
+        self.key.hint()
     }
 
     #[cfg(test)]
@@ -90,6 +110,8 @@ impl Default for ActionFooterStyle {
 pub(crate) enum ActionFooterMouse<A> {
     /// The user clicked a visible command chip.
     Action(A),
+    /// A primary press armed a command and needs a repaint-free consume.
+    Armed,
     /// The footer scrolled to another row of commands.
     Scrolled,
     /// The event was outside the footer or had no effect.
@@ -97,26 +119,45 @@ pub(crate) enum ActionFooterMouse<A> {
 }
 
 /// Persistent mature scroll and click state for a typed local action footer.
-#[derive(Debug)]
-pub(crate) struct ActionFooterSession<A: Clone> {
+#[derive(Clone, Debug)]
+pub(crate) struct ActionFooterSession<A: Clone + Eq> {
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
     clicks: ratatui_interact::traits::ClickRegionRegistry<A>,
+    click: ClickTracker<A>,
+    advertised: Vec<(Rect, LocalKey, A)>,
 }
 
-impl<A: Clone> Default for ActionFooterSession<A> {
+impl<A: Clone + Eq> Default for ActionFooterSession<A> {
     fn default() -> Self {
         Self {
             scroll: ScrollableContentState::default(),
             viewport: Rect::default(),
             visible_height: 0,
             clicks: ratatui_interact::traits::ClickRegionRegistry::default(),
+            click: ClickTracker::default(),
+            advertised: Vec::new(),
         }
     }
 }
 
-impl<A: Clone> ActionFooterSession<A> {
+impl<A: Clone + Eq> ActionFooterSession<A> {
+    /// Cancel an armed command before an owner or layout transition.
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+    }
+
+    pub(crate) fn handle_key(&self, key: &KeyEvent) -> Option<A> {
+        (key.kind != KeyEventKind::Release)
+            .then(|| {
+                self.advertised.iter().find_map(|(_, local_key, action)| {
+                    local_key.accepts(key).then(|| action.clone())
+                })
+            })
+            .flatten()
+    }
+
     /// Render all commands with wrapping and vertical scrolling.
     pub(crate) fn render(
         &mut self,
@@ -126,15 +167,15 @@ impl<A: Clone> ActionFooterSession<A> {
         style: ActionFooterStyle,
     ) {
         self.clicks.clear();
+        self.advertised.clear();
         self.visible_height = usize::from(area.height);
         let content_width = action_footer_content_width(area.width);
         self.viewport = Rect::new(area.x, area.y, content_width, area.height);
         let (chips, rows) = action_footer_chips(items, content_width);
         self.scroll.set_lines(vec![String::new(); rows]);
         let maximum_offset = rows.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum_offset {
-            self.scroll.set_scroll_offset(maximum_offset);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum_offset));
 
         let offset = self.scroll.scroll_offset();
         let end = offset.saturating_add(self.visible_height);
@@ -151,12 +192,17 @@ impl<A: Clone> ActionFooterSession<A> {
                 chip.width.min(content_width.saturating_sub(chip.x)),
                 1,
             );
+            let key_hint = chip.item.key.hint();
             let region = Button::new(&chip.item.label, &ButtonState::enabled())
-                .icon(&chip.item.key)
+                .icon(&key_hint)
                 .variant(ButtonVariant::SingleLine)
                 .style(style.button.clone())
                 .render_stateful(chip_area, frame.buffer_mut());
             self.clicks.register(region.area, chip.item.action.clone());
+            if region.area.width > 0 && region.area.height > 0 {
+                self.advertised
+                    .push((region.area, chip.item.key, chip.item.action.clone()));
+            }
         }
 
         let at_top = self.scroll.is_at_top();
@@ -178,17 +224,81 @@ impl<A: Clone> ActionFooterSession<A> {
 
     /// Dispatch a click or wheel event through the footer's mature state.
     pub(crate) fn handle_mouse(&mut self, mouse: &MouseEvent) -> ActionFooterMouse<A> {
-        if matches!(mouse.kind, MouseEventKind::Down(_)) {
-            return self
-                .clicks
-                .handle_click(mouse.column, mouse.row)
-                .cloned()
-                .map_or(ActionFooterMouse::Ignored, ActionFooterMouse::Action);
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.click.cancel();
+            return if handle_footer_scroll(
+                &mut self.scroll,
+                mouse,
+                self.viewport,
+                self.visible_height,
+            ) {
+                ActionFooterMouse::Scrolled
+            } else {
+                ActionFooterMouse::Ignored
+            };
         }
-        if handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height) {
-            return ActionFooterMouse::Scrolled;
+        let target = self.clicks.handle_click(mouse.column, mouse.row);
+        match self.click.dispatch(mouse, target) {
+            ClickDispatch::Captured(outcome) => match outcome {
+                ClickOutcome::Activated(action) => ActionFooterMouse::Action(action),
+                ClickOutcome::Armed => ActionFooterMouse::Armed,
+                ClickOutcome::Ignored => ActionFooterMouse::Ignored,
+            },
+            ClickDispatch::Unowned => ActionFooterMouse::Ignored,
         }
-        ActionFooterMouse::Ignored
+    }
+
+    pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, A)] {
+        &self.advertised
+    }
+}
+
+impl<A> ActionFooterSession<A>
+where
+    A: Clone + Eq + serde::Serialize,
+{
+    pub(crate) fn agent_review_snapshot(
+        &self,
+    ) -> Result<AgentReviewNode, AgentReviewSnapshotError> {
+        let Self {
+            scroll,
+            viewport,
+            visible_height,
+            clicks,
+            click,
+            advertised,
+        } = self;
+        let advertised = advertised
+            .iter()
+            .map(|(area, key, action)| {
+                Ok(serde_json::json!({
+                    "area": snapshot_rect(*area),
+                    "key": local_key_value(*key),
+                    "action": snapshot_value("action_footer.advertised.action", action)?,
+                }))
+            })
+            .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
+        Ok(snapshot_node(
+            "action_footer",
+            [
+                ("scroll", snapshot_scroll(scroll)),
+                ("viewport", snapshot_rect(*viewport)),
+                ("visible_height", serde_json::json!(visible_height)),
+                ("clicks", snapshot_clicks("action_footer.clicks", clicks)?),
+                (
+                    "pressed",
+                    click
+                        .pressed()
+                        .map_or(Ok(serde_json::Value::Null), |action| {
+                            snapshot_value("action_footer.pressed", action)
+                        })?,
+                ),
+                ("advertised", serde_json::json!(advertised)),
+            ],
+        ))
     }
 }
 
@@ -223,13 +333,14 @@ fn action_footer_chips<A>(
         }
         let chip_width = u16::try_from(
             item.key
+                .hint()
                 .width()
                 .saturating_add(item.label.width())
                 .saturating_add(3),
         )
         .unwrap_or(u16::MAX)
         .min(width);
-        if x > 0 && x.saturating_add(chip_width) > width {
+        if x.saturating_add(chip_width) > width {
             row = row.saturating_add(1);
             x = 0;
         }
@@ -252,7 +363,47 @@ fn action_footer_content_width(width: u16) -> u16 {
     }
 }
 
-#[derive(Debug, Default)]
+#[cfg(test)]
+mod agent_review_tests {
+    use skit_ui::HealthAction;
+
+    use super::*;
+
+    #[test]
+    fn action_footer_snapshot_keeps_scroll_click_and_advertised_order() {
+        let mut session = ActionFooterSession::<HealthAction>::default();
+        session.scroll.set_lines(vec![String::new(), String::new()]);
+        session.scroll.set_scroll_offset(1);
+        session.viewport = Rect::new(1, 2, 3, 4);
+        session.visible_height = 2;
+        session
+            .clicks
+            .register(Rect::new(1, 2, 1, 1), HealthAction::Back);
+        let _ = session.click.update(
+            &MouseEvent {
+                kind: ratatui_crossterm::crossterm::event::MouseEventKind::Down(
+                    ratatui_crossterm::crossterm::event::MouseButton::Left,
+                ),
+                column: 1,
+                row: 2,
+                modifiers: ratatui_crossterm::crossterm::event::KeyModifiers::NONE,
+            },
+            Some(&HealthAction::Back),
+        );
+        session.advertised.push((
+            Rect::new(1, 2, 1, 1),
+            LocalKey::Character('b'),
+            HealthAction::Back,
+        ));
+        let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
+        assert!(json.contains("advertised"));
+        assert!(json.contains("character"));
+        assert!(json.contains("back"));
+        assert!(json.contains("pressed"));
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct FooterSession {
     scroll: ScrollableContentState,
     viewport: Rect,
@@ -270,38 +421,73 @@ struct Chip {
 }
 
 pub(crate) fn required_height(
-    width: u16,
-    terminal_height: u16,
-    header_height: u16,
+    profile: ViewportProfile,
     state: &LibraryState,
     locale: Locale,
+    ownership: FooterInputOwnership,
 ) -> u16 {
-    if is_suppressed(state) {
+    if is_suppressed(state) || profile.width() == 0 || profile.height() == 0 {
         return 0;
     }
-    let available = terminal_height
-        .saturating_sub(header_height)
-        .saturating_sub(u16::from(terminal_height > header_height));
-    if available == 0 {
-        return 0;
-    }
-    let inner_width = width.saturating_sub(2);
+    let decorated = !profile.is_short_or_tiny();
+    let inner_width = profile
+        .width()
+        .saturating_sub(if decorated { 2 } else { 0 });
     if inner_width == 0 {
-        return 2.min(available);
+        return 0;
     }
-    let (_, rows) = chips(state, locale, inner_width);
-    let tiny = terminal_height <= 6;
-    let visible_rows = rows.min(if tiny {
-        1
-    } else {
-        row_budget(terminal_height, state.command_context())
-    });
-    let border_rows = if tiny || available <= 2 { 0 } else { 2 };
-    let desired = u16::try_from(visible_rows)
+    let (_, rows) = chips(state, locale, inner_width, ownership);
+    let library = matches!(
+        state.command_context(),
+        CommandContext::LibraryBrowse | CommandContext::LibrarySearch
+    );
+    let visible_rows = rows.min(profile.footer_row_budget(library));
+    u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
         .saturating_add(u16::from(has_note(state, inner_width)))
-        .saturating_add(border_rows);
-    desired.min(available).max(1)
+        .saturating_add(if decorated { 2 } else { 0 })
+        .max(1)
+}
+
+/// Return the smallest footer that can show one command row and its note without overlap.
+pub(crate) fn minimum_height(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+    ownership: FooterInputOwnership,
+) -> u16 {
+    if is_suppressed(state) || profile.width() == 0 || profile.height() == 0 {
+        return 0;
+    }
+    minimum_content_height(state, locale, profile.width(), ownership)
+}
+
+/// Return the smallest complete bordered footer, or zero when decoration is unavailable.
+pub(crate) fn decorated_minimum_height(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+    ownership: FooterInputOwnership,
+) -> u16 {
+    if is_suppressed(state)
+        || profile.is_short_or_tiny()
+        || profile.width() <= 2
+        || profile.height() == 0
+    {
+        return 0;
+    }
+    let inner_width = profile.width().saturating_sub(2);
+    minimum_content_height(state, locale, inner_width, ownership).saturating_add(2)
+}
+
+fn minimum_content_height(
+    state: &LibraryState,
+    locale: Locale,
+    inner_width: u16,
+    ownership: FooterInputOwnership,
+) -> u16 {
+    let (_, rows) = chips(state, locale, inner_width, ownership);
+    u16::from(rows > 0).saturating_add(u16::from(has_note(state, inner_width)))
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
@@ -309,20 +495,67 @@ pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
         state.screen(),
         Screen::Add(_) | Screen::Health(_) | Screen::Runners(_)
     ) || matches!(
+        state.screen(),
+        Screen::Preferences(view) if view.agent_skill_install().is_some()
+    ) || matches!(
         state.modal(),
-        Some(skit_ui::ModalState::RunnerEditor { .. })
+        Some(
+            skit_ui::ModalState::ConfirmRemove { .. }
+                | skit_ui::ModalState::ConfirmDiscardChanges
+                | skit_ui::ModalState::RunnerEditor { .. }
+        )
     )
 }
 
 impl FooterSession {
+    #[cfg(test)]
+    pub(crate) fn perturb_agent_review_state(&mut self) {
+        self.visible_height = self.visible_height.saturating_add(1);
+    }
+
+    pub(crate) fn agent_review_snapshot(&self) -> AgentReviewNode {
+        let Self {
+            scroll,
+            viewport,
+            visible_height,
+        } = self;
+        snapshot_node(
+            "footer",
+            [
+                ("scroll", snapshot_scroll(scroll)),
+                ("viewport", snapshot_rect(*viewport)),
+                ("visible_height", serde_json::json!(visible_height)),
+            ],
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn render(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &LibraryState,
         locale: Locale,
+        ownership: FooterInputOwnership,
     ) -> Vec<HitRegion> {
-        let compact = area.height <= 2;
+        self.render_with_decoration(frame, area, state, locale, area.height > 2, ownership)
+    }
+
+    pub(crate) fn render_with_decoration(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &LibraryState,
+        locale: Locale,
+        decorated: bool,
+        ownership: FooterInputOwnership,
+    ) -> Vec<HitRegion> {
+        if area.width == 0 || area.height == 0 {
+            self.viewport = area;
+            self.visible_height = 0;
+            return Vec::new();
+        }
+        let compact = !decorated;
         let base_block = Block::default()
             .borders(if compact { Borders::NONE } else { Borders::ALL })
             .border_type(BorderType::Rounded);
@@ -330,10 +563,10 @@ impl FooterSession {
         let note_rows = usize::from(has_note(state, inner.width));
         self.visible_height = usize::from(inner.height).saturating_sub(note_rows);
         let mut content_width = inner.width;
-        let (mut positioned, mut rows) = chips(state, locale, content_width);
+        let (mut positioned, mut rows) = chips(state, locale, content_width, ownership);
         if compact && rows > self.visible_height && content_width > 1 {
             content_width = content_width.saturating_sub(1);
-            (positioned, rows) = chips(state, locale, content_width);
+            (positioned, rows) = chips(state, locale, content_width, ownership);
         }
         self.viewport = Rect::new(
             inner.x,
@@ -343,9 +576,8 @@ impl FooterSession {
         );
         self.scroll.set_lines(vec![String::new(); rows]);
         let maximum_offset = rows.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum_offset {
-            self.scroll.set_scroll_offset(maximum_offset);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum_offset));
         let indicator = match (
             self.scroll.is_at_top(),
             self.scroll.is_at_bottom(self.visible_height),
@@ -401,7 +633,14 @@ impl FooterSession {
 
         if let Some(status) = state.status() {
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-            frame.render_widget(Paragraph::new(localize(locale, status)), status_area);
+            // Reducer refusals are complete catalog keys. Host receipts already contain
+            // localized text and user values; do not translate their fragments again.
+            let status = if catalog().iter().any(|row| row.english == status) {
+                text(locale, status)
+            } else {
+                std::borrow::Cow::Borrowed(status)
+            };
+            frame.render_widget(Paragraph::new(status), status_area);
         } else if matches!(state.screen(), Screen::Library) {
             let status = default_library_status(state, locale);
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
@@ -460,11 +699,16 @@ fn footer_button_style() -> ButtonStyle {
         .unfocused(PILL_FOREGROUND, PILL_BACKGROUND)
 }
 
-fn chips(state: &LibraryState, locale: Locale, inner_width: u16) -> (Vec<Chip>, usize) {
+fn chips(
+    state: &LibraryState,
+    locale: Locale,
+    inner_width: u16,
+    ownership: FooterInputOwnership,
+) -> (Vec<Chip>, usize) {
     let mut row = 0_usize;
     let mut x = 0_u16;
     let mut chips = Vec::new();
-    for group in footer_groups(state, locale) {
+    for group in footer_groups(state, locale, ownership) {
         if group.is_empty() {
             continue;
         }
@@ -476,7 +720,7 @@ fn chips(state: &LibraryState, locale: Locale, inner_width: u16) -> (Vec<Chip>, 
             let width = u16::try_from(key.width().saturating_add(label.width()).saturating_add(3))
                 .unwrap_or(u16::MAX)
                 .min(inner_width);
-            if x > 0 && x.saturating_add(width) > inner_width {
+            if x.saturating_add(width) > inner_width {
                 row = row.saturating_add(1);
                 x = 0;
             }
@@ -495,12 +739,17 @@ fn chips(state: &LibraryState, locale: Locale, inner_width: u16) -> (Vec<Chip>, 
     (chips, rows)
 }
 
-fn footer_groups(state: &LibraryState, locale: Locale) -> Vec<Vec<(String, String, UiCommand)>> {
+fn footer_groups(
+    state: &LibraryState,
+    locale: Locale,
+    ownership: FooterInputOwnership,
+) -> Vec<Vec<(String, String, UiCommand)>> {
     let labels = command_specs(state.command_context())
         .filter(|spec| spec.footer)
         .filter(|spec| state.command_enabled(spec.command))
         .filter_map(|spec| {
-            let binding = spec.bindings.first()?;
+            let bindings = displayed_bindings(*spec, ownership);
+            let binding = bindings.first()?;
             // Version 0.4's shared navigation hint is two key-only pills that name BOTH keys for
             // each direction (`src/skit/tui_footer.py:82-94`): the arrows already say which way,
             // and a footer that advertises only Tab strands anyone who tabs one field too far. The
@@ -508,12 +757,9 @@ fn footer_groups(state: &LibraryState, locale: Locale) -> Vec<Vec<(String, Strin
             if matches!(
                 spec.command,
                 UiCommand::FocusNext | UiCommand::FocusPrevious
-            ) && spec.bindings.len() > 1
-            {
-                let keys = spec
-                    .bindings
+            ) {
+                let keys = bindings
                     .iter()
-                    .filter(|binding| !matches!(binding.key, UiKey::Enter))
                     .map(|binding| match binding.key {
                         // The arrow reads as the direction; spelling it "Down" says nothing the
                         // glyph does not (`src/skit/tui_footer.py:88-89`).
@@ -549,22 +795,71 @@ fn footer_groups(state: &LibraryState, locale: Locale) -> Vec<Vec<(String, Strin
     vec![local, global]
 }
 
-fn has_note(state: &LibraryState, _inner_width: u16) -> bool {
-    matches!(state.screen(), Screen::Library) || state.status().is_some()
+pub(crate) fn advertised_bindings(
+    state: &LibraryState,
+    command: UiCommand,
+    ownership: FooterInputOwnership,
+) -> Vec<UiBinding> {
+    command_specs(state.command_context())
+        .find(|spec| spec.footer && spec.command == command && state.command_enabled(command))
+        .map_or_else(Vec::new, |spec| displayed_bindings(*spec, ownership))
 }
 
-fn row_budget(terminal_height: u16, context: CommandContext) -> usize {
-    let library = matches!(
-        context,
-        CommandContext::LibraryBrowse | CommandContext::LibrarySearch
-    );
-    match (terminal_height, library) {
-        (28.., _) => usize::MAX,
-        (16..=27, true) => 6,
-        (16..=27, false) => 3,
-        (10..=15, true) => 2,
-        _ => 1,
+fn displayed_bindings(spec: UiCommandSpec, ownership: FooterInputOwnership) -> Vec<UiBinding> {
+    if ownership.preferences_input
+        && matches!(
+            spec.command,
+            UiCommand::ManageAgents | UiCommand::InstallAgentSkill
+        )
+    {
+        return Vec::new();
     }
+    if ownership.escape {
+        let bindings = spec
+            .bindings
+            .iter()
+            .copied()
+            .filter(|binding| binding.key != UiKey::Escape)
+            .collect::<Vec<_>>();
+        if bindings.len() != spec.bindings.len() {
+            return bindings;
+        }
+    }
+    let owned_key = match spec.command {
+        UiCommand::Submit if ownership.run_submit && spec.context == CommandContext::RunForm => {
+            Some(UiKey::Character('r'))
+        }
+        UiCommand::FocusNext if ownership.vertical_navigation => Some(UiKey::Tab),
+        UiCommand::FocusPrevious if ownership.vertical_navigation => Some(UiKey::BackTab),
+        _ => None,
+    };
+    if let Some(key) = owned_key {
+        return spec
+            .bindings
+            .iter()
+            .copied()
+            .filter(|binding| {
+                binding.key == key
+                    && (spec.command != UiCommand::Submit || binding.modifiers.control)
+            })
+            .collect();
+    }
+    if matches!(
+        spec.command,
+        UiCommand::FocusNext | UiCommand::FocusPrevious
+    ) {
+        return spec
+            .bindings
+            .iter()
+            .copied()
+            .filter(|binding| !matches!(binding.key, UiKey::Enter))
+            .collect();
+    }
+    spec.bindings.first().copied().into_iter().collect()
+}
+
+fn has_note(state: &LibraryState, _inner_width: u16) -> bool {
+    matches!(state.screen(), Screen::Library) || state.status().is_some()
 }
 
 fn default_library_status(state: &LibraryState, locale: Locale) -> String {
@@ -591,8 +886,12 @@ mod tests {
     use ratatui_crossterm::crossterm::event::{
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
-    use skit_domain::parameters::{ParamDecl, ParameterValue};
-    use skit_ui::{Action, RunFormView};
+    use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
+    use skit_domain::{
+        EntryKind, EntrySummary, Slug, StorageMode,
+        parameters::{ParamDecl, ParameterValue},
+    };
+    use skit_ui::{Action, AddWorkflowState, RunFormView, Screen};
 
     use super::*;
     use crate::screens::management::{
@@ -617,6 +916,15 @@ mod tests {
         }
     }
 
+    fn release(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     fn scroll_down(column: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
@@ -626,12 +934,84 @@ mod tests {
         }
     }
 
+    fn command_library(diagnostics: Vec<Diagnostic>) -> LibraryState {
+        LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics,
+        })
+    }
+
+    fn row_text(terminal: &Terminal<TestBackend>, row: u16) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn zero_height_footer_clears_geometry_without_painting_a_status_row() {
+        let mut session = FooterSession {
+            viewport: Rect::new(2, 1, 8, 1),
+            visible_height: 1,
+            ..FooterSession::default()
+        };
+        session.scroll.set_lines(vec![String::new(); 3]);
+        session.scroll.set_scroll_offset(2);
+        let state = LibraryState::default();
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
+
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new("BODY-SENTINEL"),
+                    Rect::new(0, 0, frame.area().width, 1),
+                );
+                hits = session.render_with_decoration(
+                    frame,
+                    Rect::new(0, 1, 20, 0),
+                    &state,
+                    Locale::En,
+                    false,
+                    FooterInputOwnership::default(),
+                );
+            })
+            .unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(session.viewport, Rect::new(0, 1, 20, 0));
+        assert_eq!(session.visible_height, 0);
+        assert_eq!(session.scroll.scroll_offset(), 2);
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .starts_with("BODY-SENTINEL")
+        );
+        assert!(!session.handle_mouse(&scroll_down(2, 1)));
+    }
+
     #[test]
     fn action_footer_wraps_every_chip_and_keeps_each_visible_chip_clickable() {
         let items = [
-            ActionFooterItem::new("1", "First action", TestAction::First),
-            ActionFooterItem::new("2", "Second action", TestAction::Second),
-            ActionFooterItem::new("3", "Third action", TestAction::Third),
+            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
+            ActionFooterItem::new(
+                LocalKey::Character('2'),
+                "Second action",
+                TestAction::Second,
+            ),
+            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
         ];
         assert_eq!(action_footer_required_height(22, &items), 3);
 
@@ -648,8 +1028,12 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            assert_eq!(
+            assert_ne!(
                 session.handle_mouse(&click(1, u16::try_from(row).unwrap())),
+                ActionFooterMouse::Action(action.clone())
+            );
+            assert_eq!(
+                session.handle_mouse(&release(1, u16::try_from(row).unwrap())),
                 ActionFooterMouse::Action(action)
             );
         }
@@ -658,10 +1042,18 @@ mod tests {
     #[test]
     fn action_footer_scrolls_to_chips_that_do_not_fit_the_viewport() {
         let items = [
-            ActionFooterItem::new("1", "First action", TestAction::First),
-            ActionFooterItem::new("2", "Second action", TestAction::Second),
-            ActionFooterItem::new("3", "Third action", TestAction::Third),
-            ActionFooterItem::new("4", "Fourth action", TestAction::Fourth),
+            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
+            ActionFooterItem::new(
+                LocalKey::Character('2'),
+                "Second action",
+                TestAction::Second,
+            ),
+            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
+            ActionFooterItem::new(
+                LocalKey::Character('4'),
+                "Fourth action",
+                TestAction::Fourth,
+            ),
         ];
         let backend = TestBackend::new(22, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -726,8 +1118,12 @@ mod tests {
                 session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
-        assert_eq!(
+        assert_ne!(
             session.handle_mouse(&click(1, 0)),
+            ActionFooterMouse::Action(TestAction::Fourth)
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
             ActionFooterMouse::Action(TestAction::Fourth)
         );
 
@@ -740,10 +1136,154 @@ mod tests {
     }
 
     #[test]
+    fn action_footer_never_paints_or_owns_the_row_after_its_half_open_area() {
+        let items = [
+            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
+            ActionFooterItem::new(
+                LocalKey::Character('2'),
+                "Second action",
+                TestAction::Second,
+            ),
+        ];
+        assert_eq!(action_footer_required_height(22, &items), 2);
+
+        let mut terminal = Terminal::new(TestBackend::new(22, 2)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("BODY-SENTINEL"), Rect::new(0, 1, 22, 1));
+                session.render(
+                    frame,
+                    Rect::new(0, 0, 22, 1),
+                    &items,
+                    ActionFooterStyle::default(),
+                );
+            })
+            .unwrap();
+
+        assert!(row_text(&terminal, 1).starts_with("BODY-SENTINEL"));
+        assert_eq!(session.handle_mouse(&click(1, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
+            ActionFooterMouse::Action(TestAction::First)
+        );
+        assert_eq!(
+            session.handle_mouse(&click(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+    }
+
+    #[test]
+    fn action_footer_release_outside_cancels_the_arm_before_a_late_release() {
+        let items = [ActionFooterItem::new(
+            LocalKey::Character('1'),
+            "First action",
+            TestAction::First,
+        )];
+        let mut terminal = Terminal::new(TestBackend::new(22, 2)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                session.render(
+                    frame,
+                    Rect::new(0, 0, 22, 1),
+                    &items,
+                    ActionFooterStyle::default(),
+                );
+            })
+            .unwrap();
+
+        assert_eq!(session.handle_mouse(&click(1, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
+            ActionFooterMouse::Ignored,
+            "a late release resurrected an action cancelled outside the footer"
+        );
+    }
+
+    #[test]
+    fn action_footer_keeps_a_chip_that_ends_exactly_at_the_content_boundary() {
+        let items = [
+            ActionFooterItem::new(LocalKey::Character('1'), "A", TestAction::First),
+            ActionFooterItem::new(LocalKey::Character('2'), "B", TestAction::Second),
+        ];
+        assert_eq!(action_footer_required_height(14, &items), 1);
+
+        let mut terminal = Terminal::new(TestBackend::new(14, 1)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(session.handle_mouse(&click(8, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(8, 0)),
+            ActionFooterMouse::Action(TestAction::Second)
+        );
+    }
+
+    #[test]
+    fn action_footer_indicator_reports_top_middle_bottom_and_no_overflow() {
+        let items = [
+            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
+            ActionFooterItem::new(
+                LocalKey::Character('2'),
+                "Second action",
+                TestAction::Second,
+            ),
+            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
+            ActionFooterItem::new(
+                LocalKey::Character('4'),
+                "Fourth action",
+                TestAction::Fourth,
+            ),
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(22, 1)).unwrap();
+        let mut session = ActionFooterSession::default();
+        let mut render = |session: &mut ActionFooterSession<TestAction>| {
+            terminal
+                .draw(|frame| {
+                    session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+                })
+                .unwrap();
+            terminal.backend().buffer()[(20, 0)].symbol().to_owned()
+        };
+
+        assert_eq!(render(&mut session), "↓");
+        assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
+        assert_eq!(render(&mut session), "↕");
+        for _ in 0..8 {
+            let _ = session.handle_mouse(&scroll_down(1, 0));
+        }
+        assert_eq!(render(&mut session), "↑");
+
+        let mut grown = Terminal::new(TestBackend::new(22, 4)).unwrap();
+        grown
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
+        assert_eq!(grown.backend().buffer()[(20, 0)].symbol(), " ");
+    }
+
+    #[test]
     fn action_footer_group_starts_on_a_new_row() {
         let items = [
-            ActionFooterItem::new("1", "One", TestAction::First),
-            ActionFooterItem::new_group("2", "Two", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Character('1'), "One", TestAction::First),
+            ActionFooterItem::new_group(LocalKey::Character('2'), "Two", TestAction::Second),
         ];
         assert_eq!(action_footer_required_height(80, &items), 2);
         assert_eq!(action_footer_required_height(0, &items), 0);
@@ -773,8 +1313,10 @@ mod tests {
                     .unwrap();
                 for y in 0..height {
                     for x in 0..width {
-                        if let ActionFooterMouse::Action(action) =
-                            session.handle_mouse(&click(x, y))
+                        let pressed = session.handle_mouse(&click(x, y));
+                        if pressed == ActionFooterMouse::Armed
+                            && let ActionFooterMouse::Action(action) =
+                                session.handle_mouse(&release(x, y))
                             && !seen.contains(&action)
                         {
                             seen.push(action);
@@ -850,7 +1392,13 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
             terminal
                 .draw(|frame| {
-                    let _ = session.render(frame, frame.area(), &state, locale);
+                    let _ = session.render(
+                        frame,
+                        frame.area(),
+                        &state,
+                        locale,
+                        FooterInputOwnership::default(),
+                    );
                 })
                 .unwrap();
             let rendered = terminal
@@ -876,25 +1424,18 @@ mod tests {
 
     #[test]
     fn complete_footer_wheel_clamps_when_the_terminal_grows() {
-        use skit_application::LibraryScan;
-        use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
-
-        let state = LibraryState::from_scan(LibraryScan {
-            entries: vec![EntrySummary {
-                slug: Slug::parse("alpha").unwrap(),
-                name: "Alpha".to_owned(),
-                kind: EntryKind::parse("command").unwrap(),
-                mode: StorageMode::Copy,
-                description: String::new(),
-                target: None,
-            }],
-            diagnostics: Vec::new(),
-        });
+        let state = command_library(Vec::new());
         let mut session = FooterSession::default();
         let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
         terminal
             .draw(|frame| {
-                let _ = session.render(frame, frame.area(), &state, Locale::En);
+                let _ = session.render(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::En,
+                    FooterInputOwnership::default(),
+                );
             })
             .unwrap();
         for _ in 0..4 {
@@ -909,7 +1450,13 @@ mod tests {
         let mut grown = Terminal::new(TestBackend::new(100, 16)).unwrap();
         grown
             .draw(|frame| {
-                let hits = session.render(frame, frame.area(), &state, Locale::ZhCn);
+                let hits = session.render(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::ZhCn,
+                    FooterInputOwnership::default(),
+                );
                 assert!(!hits.is_empty());
             })
             .unwrap();
@@ -920,6 +1467,275 @@ mod tests {
             row: 1,
             modifiers: KeyModifiers::NONE,
         }));
+    }
+
+    #[test]
+    fn compact_footer_reserves_the_indicator_column_and_clips_wheel_ownership() {
+        let mut state = command_library(Vec::new());
+        state.update(Action::BeginSearch);
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(5, 2)).unwrap();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits = session.render_with_decoration(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::En,
+                    false,
+                    FooterInputOwnership::default(),
+                );
+            })
+            .unwrap();
+
+        assert_eq!(terminal.backend().buffer()[(4, 0)].symbol(), "↓");
+        assert!(hits.iter().all(|hit| hit.rect.right() <= 4));
+        assert!(session.handle_mouse(&scroll_down(3, 0)));
+        assert!(!session.handle_mouse(&scroll_down(4, 0)));
+    }
+
+    #[test]
+    fn compact_footer_keeps_a_global_chip_at_its_exact_width_boundary() {
+        let mut state = command_library(Vec::new());
+        state.update(Action::BeginSearch);
+        let (_, rows) = chips(&state, Locale::En, 31, FooterInputOwnership::default());
+        assert_eq!(rows, 1);
+
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(31, 2)).unwrap();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits = session.render_with_decoration(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::En,
+                    false,
+                    FooterInputOwnership::default(),
+                );
+            })
+            .unwrap();
+
+        assert!(hits.iter().any(|hit| {
+            matches!(hit.action, HitTarget::Command(UiCommand::LeaveSearch)) && hit.rect.y == 0
+        }));
+    }
+
+    #[test]
+    fn footer_diagnostic_note_uses_the_documented_strict_width_breakpoint() {
+        let diagnostic = Diagnostic::plain(
+            DiagnosticCode::CorruptMetadata,
+            Some("bad".to_owned()),
+            "bad TOML".to_owned(),
+        );
+        for (width, expected) in [(50, false), (51, true)] {
+            let state = command_library(vec![diagnostic.clone()]);
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render_with_decoration(
+                        frame,
+                        frame.area(),
+                        &state,
+                        Locale::En,
+                        false,
+                        FooterInputOwnership::default(),
+                    );
+                })
+                .unwrap();
+            assert_eq!(
+                row_text(&terminal, 1).contains("damaged entries hidden"),
+                expected
+            );
+        }
+
+        let state = command_library(Vec::new());
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(51, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render_with_decoration(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::En,
+                    false,
+                    FooterInputOwnership::default(),
+                );
+            })
+            .unwrap();
+        assert!(!row_text(&terminal, 1).contains("damaged entries hidden"));
+    }
+
+    #[test]
+    fn footer_scroll_owns_only_its_half_open_viewport() {
+        let mut scroll = ScrollableContentState::default();
+        scroll.set_lines(vec![String::new(); 10]);
+        scroll.set_scroll_offset(2);
+        let viewport = Rect::new(2, 3, 4, 2);
+
+        for (column, row) in [(1, 3), (6, 3), (2, 2), (2, 5)] {
+            assert!(!handle_footer_scroll(
+                &mut scroll,
+                &scroll_down(column, row),
+                viewport,
+                2
+            ));
+            assert_eq!(scroll.scroll_offset(), 2);
+        }
+        assert!(handle_footer_scroll(
+            &mut scroll,
+            &scroll_down(2, 3),
+            viewport,
+            2
+        ));
+        assert_eq!(scroll.scroll_offset(), 4);
+    }
+
+    #[test]
+    fn footer_minimums_distinguish_suppression_geometry_and_command_content() {
+        let state = command_library(Vec::new());
+        let normal = ViewportProfile::new(Rect::new(0, 0, 100, 16));
+        let ownership = FooterInputOwnership::default();
+        assert_eq!(minimum_height(normal, &state, Locale::En, ownership), 2);
+        assert_eq!(
+            decorated_minimum_height(normal, &state, Locale::En, ownership),
+            4
+        );
+        assert!(required_height(normal, &state, Locale::En, ownership) >= 4);
+
+        for area in [Rect::new(0, 0, 0, 16), Rect::new(0, 0, 100, 0)] {
+            let profile = ViewportProfile::new(area);
+            assert_eq!(required_height(profile, &state, Locale::En, ownership), 0);
+            assert_eq!(minimum_height(profile, &state, Locale::En, ownership), 0);
+            assert_eq!(
+                decorated_minimum_height(profile, &state, Locale::En, ownership),
+                0
+            );
+        }
+        for area in [
+            Rect::new(0, 0, 100, 15),
+            Rect::new(0, 0, 2, 16),
+            Rect::new(0, 0, 100, 0),
+        ] {
+            assert_eq!(
+                decorated_minimum_height(ViewportProfile::new(area), &state, Locale::En, ownership,),
+                0
+            );
+        }
+
+        let mut suppressed = LibraryState::default();
+        suppressed.update(Action::Present(Screen::Add(Box::new(
+            AddWorkflowState::new(Vec::new()),
+        ))));
+        for minimum in [
+            required_height(normal, &suppressed, Locale::En, ownership),
+            minimum_height(normal, &suppressed, Locale::En, ownership),
+            decorated_minimum_height(normal, &suppressed, Locale::En, ownership),
+        ] {
+            assert_eq!(minimum, 0);
+        }
+        assert_eq!(
+            minimum_content_height(&suppressed, Locale::En, 80, ownership),
+            0
+        );
+        suppressed.update(Action::SetStatus("Saved".to_owned()));
+        assert_eq!(
+            minimum_content_height(&suppressed, Locale::En, 80, ownership),
+            1
+        );
+    }
+
+    #[test]
+    fn normal_height_non_library_footer_uses_its_three_command_row_budget() {
+        let mut declaration = ParamDecl::new("name");
+        declaration.default = Some(ParameterValue::String("World".to_owned()));
+        let form = RunFormView::from_declarations(
+            "greet",
+            "greet",
+            &[declaration],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        );
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(form))));
+        let profile = ViewportProfile::new(Rect::new(0, 0, 20, 16));
+        let ownership = FooterInputOwnership::default();
+        assert_eq!(required_height(profile, &state, Locale::En, ownership), 5);
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        let mut session = FooterSession::default();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits = session.render_with_decoration(
+                    frame,
+                    frame.area(),
+                    &state,
+                    Locale::En,
+                    true,
+                    ownership,
+                );
+            })
+            .unwrap();
+        let rows = hits
+            .iter()
+            .map(|hit| hit.rect.y)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn status_translation_preserves_values_and_localizes_complete_catalog_keys() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+            let receipt = format_text(
+                locale,
+                "Installed the skit Agent Skill: {}",
+                &[&"/tmp/on/off/agent/SKILL.md"],
+            );
+            for (status, expected) in [
+                (receipt.clone(), receipt),
+                (
+                    "A name is required.".to_owned(),
+                    text(locale, "A name is required.").into_owned(),
+                ),
+            ] {
+                let mut state = LibraryState::default();
+                state.update(skit_ui::Action::SetStatus(status));
+                let mut session = FooterSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(120, 8)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        let _ = session.render(
+                            frame,
+                            frame.area(),
+                            &state,
+                            locale,
+                            FooterInputOwnership::default(),
+                        );
+                    })
+                    .unwrap();
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    rendered
+                        .replace(' ', "")
+                        .contains(&expected.replace(' ', "")),
+                    "{locale:?}: {rendered}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -947,7 +1763,13 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
             terminal
                 .draw(|frame| {
-                    let _ = session.render(frame, frame.area(), &state, locale);
+                    let _ = session.render(
+                        frame,
+                        frame.area(),
+                        &state,
+                        locale,
+                        FooterInputOwnership::default(),
+                    );
                 })
                 .unwrap();
             let rendered = terminal
@@ -964,5 +1786,64 @@ mod tests {
                 "{rendered}"
             );
         }
+    }
+}
+#[test]
+fn widget_owned_keys_are_removed_from_the_visible_shared_footer_contract() {
+    assert!(
+        advertised_bindings(
+            &LibraryState::default(),
+            UiCommand::Previous,
+            FooterInputOwnership::default(),
+        )
+        .is_empty(),
+        "a non-footer registry shortcut is not a printed footer binding"
+    );
+    let run = FooterInputOwnership {
+        vertical_navigation: true,
+        run_submit: true,
+        preferences_input: false,
+        escape: true,
+    };
+    let displayed = |context, command, ownership| {
+        let spec = command_specs(context)
+            .find(|spec| spec.command == command)
+            .unwrap();
+        displayed_bindings(*spec, ownership)
+    };
+    assert_eq!(
+        displayed(CommandContext::RunForm, UiCommand::Submit, run)
+            .iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>(),
+        [UiKey::Character('r')]
+    );
+    assert_eq!(
+        displayed(CommandContext::RunForm, UiCommand::FocusNext, run)
+            .iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>(),
+        [UiKey::Tab]
+    );
+    assert_eq!(
+        displayed(CommandContext::RunForm, UiCommand::FocusPrevious, run)
+            .iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>(),
+        [UiKey::BackTab]
+    );
+    assert!(displayed(CommandContext::RunForm, UiCommand::Back, run).is_empty());
+
+    let preferences = FooterInputOwnership {
+        vertical_navigation: false,
+        run_submit: false,
+        preferences_input: true,
+        escape: false,
+    };
+    for command in [UiCommand::ManageAgents, UiCommand::InstallAgentSkill] {
+        assert!(
+            displayed(CommandContext::Preferences, command, preferences).is_empty(),
+            "{command:?} must not advertise a chord that the input owns"
+        );
     }
 }

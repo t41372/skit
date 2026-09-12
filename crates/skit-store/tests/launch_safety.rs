@@ -57,30 +57,51 @@ fn launch_refuses_an_idless_replacement_with_identical_metadata_but_different_by
 }
 
 #[test]
-fn a_prepared_copy_keeps_the_verified_bytes_when_the_library_source_changes() {
+fn a_prepared_copy_keeps_its_stored_path_and_allows_source_edits() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let entry = store.create(copied_shell(b"printf OLD")).unwrap();
+    let source = store.payload_path(&entry).unwrap();
     let prepared = store
         .prepare_launch(&entry, Some(&entry.meta.source_hash))
         .unwrap();
     assert_eq!(prepared.entry().meta.id, entry.meta.id);
-    let snapshot = prepared.payload_path().unwrap().to_path_buf();
-
+    assert_eq!(prepared.payload_path(), Some(source.as_path()));
     let edited = store
         .commit_copy_edit(&entry, b"printf NEW", &entry.meta.source_hash)
         .unwrap();
-
     assert_eq!(
-        fs::read(prepared.payload_path().unwrap()).unwrap(),
-        b"printf OLD"
+        prepared.payload_path(),
+        Some(store.payload_path(&edited).unwrap().as_path())
     );
-    assert_eq!(
-        fs::read(store.payload_path(&edited).unwrap()).unwrap(),
-        b"printf NEW"
-    );
+    assert_eq!(fs::read(&source).unwrap(), b"printf NEW");
     drop(prepared);
-    assert!(!snapshot.exists());
+    assert_eq!(fs::read(&source).unwrap(), b"printf NEW");
+}
+
+#[cfg(windows)]
+#[test]
+fn prepared_copy_allows_readers_that_share_read_access_only() {
+    use std::io::Read as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store.create(copied_shell(b"printf READER")).unwrap();
+    let prepared = store
+        .prepare_launch(&entry, Some(&entry.meta.source_hash))
+        .unwrap();
+    let path = prepared.payload_path().unwrap().to_path_buf();
+    let mut reader = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"printf READER");
+    drop(reader);
+    drop(prepared);
+    assert_eq!(fs::read(path).unwrap(), b"printf READER");
 }
 
 #[test]
@@ -158,4 +179,25 @@ fn parallel_launches_share_the_remove_lease() {
     worker.join().unwrap();
 
     assert!(overlapped, "independent launches were serialized");
+}
+
+#[cfg(unix)]
+#[test]
+fn preparing_and_dropping_a_copy_keeps_its_source_mode_and_bytes() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store.create(copied_shell(b"printf STORED")).unwrap();
+    let source = store.payload_path(&entry).unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o640)).unwrap();
+    let prepared = store
+        .prepare_launch(&entry, Some(&entry.meta.source_hash))
+        .unwrap();
+    assert_eq!(prepared.payload_path(), Some(source.as_path()));
+    drop(prepared);
+    assert_eq!(fs::read(&source).unwrap(), b"printf STORED");
+    assert_eq!(
+        fs::metadata(source).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
 }
