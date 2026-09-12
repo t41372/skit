@@ -30,8 +30,20 @@ Commits on top of `6e27ce30`:
   transitions; the leave order is the reverse of the enter order. A PTY test in
   `crates/skit-tui/tests/terminal_pty.rs` asserts the toggles around the host effect on real
   output bytes, and a unit test pins the command set.
-- The final commit adds this checkpoint, the adjudication, and the guarantee boundary of the
-  parity probes in `MIGRATION-DESIGN.md`.
+- `b57cdcef` — the adjudication, the first form of this checkpoint, and the guarantee boundary of
+  the parity probes in `MIGRATION-DESIGN.md`.
+- `3e6042ae` — the coverage gate counts every line of a unit test inside a crate; the assertion
+  messages of the new terminal unit test built their text on lines that ran only on failure. The
+  test converts the bytes once and uses inline captures.
+- `201ba830` — a race that the CI coverage job exposed in
+  `different_profiles_can_initialize_and_run_in_parallel`: the Linux ticket scan in
+  `crates/skit-cli/src/cli/tui_real_sandbox_fs.rs` lists a directory and then opens every name, and
+  one profile's remove verification opened a sibling's transient cleanup directory at the moment
+  that sibling removed it. An entry that is absent at its open now gets no ticket; every other open
+  failure stays an error. A pure `present_tickets` takes the open as a parameter, so one test drives
+  every answer, and a second test pins the real `NotFound` mapping of `ticket_for_name`. Not
+  related to the focus fix; the walker's cleanup design is unchanged.
+- The final commit adds this checkpoint and the CI record.
 
 Decisions: F2 (a `String` status carries both catalog keys and rendered text) is a base-branch
 trade-off with no reachable wrong translation; deferred and recorded. A1 (walker introspection in
@@ -44,14 +56,24 @@ resume calls `Terminal::clear`, and ratatui asks for the cursor position there; 
 that question only inside a wait, so a wait that ends at `?1049h` can leave the question unanswered
 and the child fails after two seconds. The exit phase does not answer queries.
 
-An Opus reviewer verified the frozen commit in a scratch worktree: one blocker (that flake) and
-five nits, all repaired before the commit was rebuilt. The reviewer confirmed by hand-applied
-mutants that the tests kill an emptied helper and the two helpers swapped.
+Rule for unit tests inside a crate: the coverage gate counts every line of the test. Build an
+assertion message from values that exist before the assertion, and use inline captures; a value
+computed on a separate line inside `assert!` runs only on failure and the gate reports it.
+
+Opus reviewers verified both fixes in scratch worktrees. The focus fix: one blocker (that flake)
+and five nits, all repaired before the commit was rebuilt; the reviewer confirmed by hand-applied
+mutants that the tests kill an emptied helper and the two helpers swapped. The scan fix: zero
+blockers and four nits (a real-open test variant, this checkpoint, wording, and one line of
+rationale), all repaired. `cargo mutants` skips the `#[cfg(test)]` walker modules, so the mutant
+analysis of the scan fix is by hand and is in the adjudication.
 
 Gates on `3edd8058`: Linux fmt, workspace Clippy and Rustdoc with warnings denied, every
 `skit-tui` target, thirty consecutive PTY runs, the `skit-cli-rs` PTY tests (41), and the English
 check; macOS Clippy, Rustdoc, terminal unit tests (23), five PTY runs; `cargo xwin check` for
-`skit-tui` with zero errors and no new warning.
+`skit-tui` with zero errors and no new warning. Gates on `201ba830`: Linux Clippy for
+`skit-cli-rs`, the sandbox filesystem module tests (32), ten runs of the parallel-profiles test,
+and the English check; macOS Clippy; `cargo xwin check` for `skit-cli-rs` with the same warning
+set as before.
 
 Still open, for the owner: the 64-shard mutation gate; a pull request; the `skit-tui` publish
 decision. The dedicated `ui-walker.yml` workflow had never run on this branch; see the CI record

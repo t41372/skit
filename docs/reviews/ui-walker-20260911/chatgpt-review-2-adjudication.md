@@ -11,7 +11,7 @@ The input report remains unchanged and local. Its severities and proposed fixes 
 | Finding | Independent decision | Action |
 | --- | --- | --- |
 | F1: focus reporting stays on while a host effect owns the terminal | Valid. The defect is real, reachable on the primary product path, and this branch introduced it. The 2026-09-08 adjudication (F8) enabled focus reporting at the terminal claim and disabled it at the final restore. The suspend before a host effect and the resume after it kept the older two-mode set (alternate screen, mouse capture). Focus reporting is not part of the alternate screen, so a script rerun or an editor launched from the TUI received `CSI I` and `CSI O` as input on every window switch. The base branch had no focus reporting. | One shared command set for the four transitions (`enter_screen_modes`, `leave_screen_modes` in `crates/skit-tui/src/terminal.rs`). A PTY test in `crates/skit-tui/tests/terminal_pty.rs` fixes the order: the alternate screen, mouse capture, and focus reporting are all off before the host effect writes its first byte and all on again after it returns. A unit test pins the command set. See the commit below. |
-| F2: the status line guesses between a catalog key and rendered text | Valid as a type observation, not a defect of this branch. `LibraryState.status` is a `String` in the base as well, and the base localized it with `render`, a fragment replacement over the whole string. This branch narrowed that to "translate a complete catalog key once" (`2d090bbb`), which repaired receipts that carried user values and pseudo-locale text. A wrong translation needs a non-English locale and a host receipt that equals an English catalog key; host receipts in those locales are already translated, so only a receipt made of one user value could collide, and no producer builds one. The residual risk is a new reducer status literal that is missing from the catalog: it renders in English. The catalog tests cover named lists, not a scan of reducer literals. | Deferred. A typed status changes the serialized `LibraryState` that the walker invariants round-trip and every producer in three crates. That is not proportionate to a finding with no reachable instance. Recorded here for the next i18n change. |
+| F2: the status line guesses between a catalog key and rendered text | Valid as a type observation, not a defect of this branch. `LibraryState.status` is a `String` in the base as well, and the base localized it with `render`, a fragment replacement over the whole string. This branch narrowed that to "translate a complete catalog key once" (`2d090bbb`), which repaired receipts that carried user values and pseudo-locale text. A wrong translation needs a non-English locale and a host receipt that equals an English catalog key; host receipts in those locales are already translated, so only a receipt made of one user value could collide. Every host producer was enumerated: six pass a complete catalog key (`Entry added`, `Source saved`, `Entry removed`, `Preferences saved`, `Prompt runners saved`, `Entry renamed`), and the others pass a localized template with its values (`format_text`, `text`, `localize`) or a composed receipt that starts with a localized key. None passes a bare user value. The residual risk is a new reducer status literal that is missing from the catalog: it renders in English. The catalog tests cover named lists, not a scan of reducer literals. | Deferred. A typed status changes the serialized `LibraryState` that the walker invariants round-trip and every producer in three crates. That is not proportionate to a finding with no reachable instance. Recorded here for the next i18n change. |
 | A1: walker introspection is in the normal public surface of `skit-tui` | Fact, and a documented trade-off. `MIGRATION-DESIGN.md` moved the oracle into a dev-only crate so that mutation testing compiles it; the public seam is the price. Only `skit-benchmarks`, `skit-tui-walker-model`, and `skit-tui-walker-support` carry `publish = false`. No workflow or script runs `cargo publish`. The product ships as a PyPI wheel. `publish = false` on `skit-tui` alone would also make `skit-cli-rs` unpublishable, because a published crate needs published dependencies, so the honest form of that decision covers every product crate. | No change. The decision (never publish to crates.io, or gate the seam behind a non-default feature before a first publish) is the owner's and is recorded as open in `HANDOFF.md`. |
 | A2: the parity inventory cannot prove that every visible control is registered | Correct statement of the guarantee boundary. The probes prove parity for the targets that the live inventory holds. A control drawn without a hit region is absent from the geometry, the inventory, and every parity loop. The state-specific inventory tests hold that side today. | The boundary is now written into `MIGRATION-DESIGN.md` next to the `parity` family. The report's "mutation probe" (remove one hit registration, expect a failing test) is what the unrun workspace mutation gate provides in part. |
 | Section 9.2: no dedicated walker workflow run on the current head | Fact. `ui-walker.yml` ran on the old feature branch in August and never on this integration branch. | Dispatched on the fixed head; see the CI record below. |
@@ -79,4 +79,37 @@ The fix is commit `3edd8058` on top of `6e27ce30`.
 
 ## CI record
 
-FILL
+Head `b57cdcef` (the fix plus the first docs commit):
+
+- `ui-walker.yml`, run 34660689495: success. This is the first run of the dedicated walker
+  workflow on this branch (the earlier runs were on the August feature branch).
+- `ci.yml`, run 34660687050: six jobs passed; the coverage job failed twice for two different
+  reasons, both repaired below.
+  - First attempt: `different_profiles_can_initialize_and_run_in_parallel` failed with "could not
+    open directory entry ... sandboxes/.cleanup-parallel-b: No such file or directory". The Linux
+    ticket scan lists a directory and then opens every entry by name; the shared `sandboxes/`
+    directory holds every profile's transient cleanup directory, so one profile's verification
+    scan opened a sibling's cleanup directory at the moment the sibling removed it. That is a race
+    in the walker's Linux sandbox scan, not in the focus fix. Repaired in `201ba830`: an entry that
+    is absent when it is opened gets no ticket; every other open failure stays an error. The
+    Windows scan reads identities from the listing and has no such window. An Opus reviewer
+    verified that commit (zero blockers, four nits, all repaired): no absence or presence
+    postcondition of the scan's callers is weakened, the `NotFound` of the open cannot come from a
+    dangling link because the open uses `O_PATH` with `O_NOFOLLOW`, and every hand-applied mutant
+    of `present_tickets` and `is_not_found` is killed by the injected-open test. A second test pins
+    the real `NotFound` mapping of `ticket_for_name`. `cargo mutants` skips this `#[cfg(test)]`
+    module, so the mutant analysis is by hand.
+  - Rerun of the failed job: the race did not fire, and the gate reported four uncovered lines in
+    the new unit test of `terminal.rs`. The assertion messages built their text on separate lines
+    that run only on failure. Repaired in `3e6042ae`: the test converts the bytes once and uses
+    inline captures.
+
+Head `201ba830` (the focus fix, the two repairs above, and the docs before them):
+
+- `ci.yml`, run 34663434541: success, all seven jobs (format, lint, and documentation; Ubuntu,
+  macOS, and Windows tests; the complete line coverage gate; dependency and workflow audit; PyPI
+  and uv tool compatibility). <https://github.com/t41372/skit/actions/runs/34663434541>
+- `ui-walker.yml`, run 34663435759: success.
+  <https://github.com/t41372/skit/actions/runs/34663435759>
+
+The docs commit on top of `201ba830` adds this record and the checkpoint in `HANDOFF.md`.
