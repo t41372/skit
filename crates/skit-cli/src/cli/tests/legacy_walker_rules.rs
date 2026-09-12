@@ -127,8 +127,8 @@ fn every_entry_kind_pins_its_analyzer_schema_and_original_file_axes() {
 
 /// How many host effects one user action may need.
 ///
-/// This mirrors the private `EFFECT_LIMIT` of `tui_real_walker.rs:60`, which that file compiles
-/// only on Linux and Windows. No public seam carries the value, so the two constants stay equal
+/// This mirrors the private `EFFECT_LIMIT` of `tui_real_walker/corpus.rs`, which that file
+/// compiles only on Linux and Windows. No public seam carries the value, so the two constants stay equal
 /// by this comment.
 const LEGACY_EFFECT_LIMIT: usize = 16;
 

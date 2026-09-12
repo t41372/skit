@@ -146,50 +146,83 @@ fn a_bundle_that_reaches_its_place_keeps_the_staged_content() {
 }
 
 // --------------------------------------------------------------------------
+// the names of the environment variables
+// --------------------------------------------------------------------------
+
+#[test]
+fn the_variables_have_their_documented_names() {
+    assert_eq!(CASES_VARIABLE, "SKIT_WALKER_CASES");
+    assert_eq!(STEPS_VARIABLE, "SKIT_WALKER_STEPS");
+    assert_eq!(PROFILES_VARIABLE, "SKIT_WALKER_PROFILES");
+    assert_eq!(RECORD_SUCCESS_VARIABLE, "SKIT_WALKER_RECORD_SUCCESS");
+    assert_eq!(LIVENESS_EVERY_VARIABLE, "SKIT_WALKER_LIVENESS_EVERY");
+    assert_eq!(REPRO_VARIABLE, "SKIT_WALKER_REPRO");
+}
+
+// --------------------------------------------------------------------------
 // positive integer values
 // --------------------------------------------------------------------------
 
 #[test]
 fn a_positive_value_takes_the_environment_number() {
     assert_eq!(
-        positive(Some("5".to_owned()), 16_u32, "cases must be positive"),
+        positive(
+            Some("5".to_owned()),
+            16_u32,
+            "SKIT_WALKER_CASES must be a positive integer"
+        ),
         5
     );
     assert_eq!(
-        positive(Some("120".to_owned()), 100_usize, "steps must be positive"),
+        positive(
+            Some("120".to_owned()),
+            100_usize,
+            "SKIT_WALKER_STEPS must be a positive integer"
+        ),
         120
     );
 }
 
 #[test]
-fn a_zero_or_invalid_value_takes_the_default() {
+fn an_absent_value_takes_the_default() {
     assert_eq!(
-        positive(Some("0".to_owned()), 16_u32, "cases must be positive"),
+        positive(None, 16_u32, "SKIT_WALKER_CASES must be a positive integer"),
         16
     );
     assert_eq!(
-        positive(Some("many".to_owned()), 16_u32, "cases must be positive"),
-        16
+        positive(
+            None,
+            100_usize,
+            "SKIT_WALKER_STEPS must be a positive integer"
+        ),
+        100
     );
-    assert_eq!(positive(None, 16_u32, "cases must be positive"), 16);
 }
 
 #[test]
-#[should_panic(expected = "SKIT_WALKER_CASES must be greater than zero")]
+#[should_panic(expected = "SKIT_WALKER_CASES must be a positive integer")]
 fn a_zero_default_refuses_the_walk() {
+    let _ = positive(None, 0_u32, "SKIT_WALKER_CASES must be a positive integer");
+}
+
+#[test]
+#[should_panic(expected = "SKIT_WALKER_CASES must be a positive integer, not \"0\"")]
+fn a_zero_value_refuses_the_walk() {
     let _ = positive(
         Some("0".to_owned()),
-        0_u32,
-        "SKIT_WALKER_CASES must be greater than zero",
+        16_u32,
+        "SKIT_WALKER_CASES must be a positive integer",
     );
 }
 
 #[test]
-fn walk_cases_and_walk_steps_read_their_own_variables() {
-    assert_eq!(CASES_VARIABLE, "SKIT_WALKER_CASES");
-    assert_eq!(STEPS_VARIABLE, "SKIT_WALKER_STEPS");
-    assert_eq!(walk_cases(7), 7);
-    assert_eq!(walk_steps(13), 13);
+#[should_panic(expected = "SKIT_WALKER_CASES must be a positive integer, not \"many\"")]
+fn a_non_numeric_value_refuses_the_walk() {
+    let _ = positive(
+        Some("many".to_owned()),
+        16_u32,
+        "SKIT_WALKER_CASES must be a positive integer",
+    );
 }
 
 // --------------------------------------------------------------------------
@@ -235,29 +268,26 @@ fn a_named_choice_refuses_an_unknown_value() {
     );
 }
 
-#[test]
-fn walk_profiles_and_record_success_read_their_own_variables() {
-    assert_eq!(PROFILES_VARIABLE, "SKIT_WALKER_PROFILES");
-    assert_eq!(RECORD_SUCCESS_VARIABLE, "SKIT_WALKER_RECORD_SUCCESS");
-    assert_eq!(walk_profiles(), ProfileMode::Bounded);
-    assert_eq!(record_success(), SuccessRecording::Skip);
-}
-
 // --------------------------------------------------------------------------
 // liveness sampling and the stored replay
 // --------------------------------------------------------------------------
 
 #[test]
-fn liveness_sampling_reads_a_positive_interval_only() {
+fn liveness_sampling_treats_zero_and_absence_as_never() {
     assert_eq!(sampling(None), LivenessSampling::Never);
     assert_eq!(sampling(Some("0".to_owned())), LivenessSampling::Never);
-    assert_eq!(sampling(Some("often".to_owned())), LivenessSampling::Never);
     assert_eq!(
         sampling(Some("4".to_owned())),
         LivenessSampling::Every(NonZeroUsize::new(4).unwrap())
     );
-    assert_eq!(LIVENESS_EVERY_VARIABLE, "SKIT_WALKER_LIVENESS_EVERY");
-    assert_eq!(liveness_every(), LivenessSampling::Never);
+}
+
+#[test]
+#[should_panic(
+    expected = "SKIT_WALKER_LIVENESS_EVERY must be zero or a positive integer, not \"often\""
+)]
+fn liveness_sampling_refuses_a_non_integer() {
+    let _ = sampling(Some("often".to_owned()));
 }
 
 #[test]
@@ -267,8 +297,6 @@ fn a_stored_replay_names_one_file() {
         replay(Some("/tmp/repro.json".to_owned())),
         ReproSource::Replay(PathBuf::from("/tmp/repro.json"))
     );
-    assert_eq!(REPRO_VARIABLE, "SKIT_WALKER_REPRO");
-    assert_eq!(repro_source(), ReproSource::Fresh);
 }
 
 // --------------------------------------------------------------------------
@@ -276,7 +304,9 @@ fn a_stored_replay_names_one_file() {
 //
 // `std::env::set_var` is unsafe in edition 2024 and this crate forbids unsafe code. A child
 // process carries the values instead. The parent starts this test binary again and asks for one
-// ignored helper test by its exact name. The helper reads the variables that the parent set.
+// ignored helper test by its exact name. The helper reads the variables that the parent set. The
+// parent removes every walker variable first, so the environment of the developer cannot change
+// the result.
 // --------------------------------------------------------------------------
 
 const WALKER_VARIABLES: &[&str] = &[
@@ -305,6 +335,29 @@ fn walker_child(test: &str) -> Command {
     command
 }
 
+/// Start the helper with one invalid value and check that the child stops and names the reason.
+fn assert_child_refuses(variable: &str, value: &str, reason: &str) {
+    let output = walker_child("artifacts_tests::every_reader_reads_the_current_environment")
+        .env(variable, value)
+        .output()
+        .expect("the child test process starts");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the child accepted {variable}={value}: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains(reason),
+        "the child named another reason: stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("test result: FAILED. 0 passed; 1 failed"),
+        "the child ran another number of tests: {stdout}"
+    );
+}
+
 #[test]
 #[ignore = "the parent test starts this helper in a child process with the variables set"]
 fn every_reader_takes_its_environment_value() {
@@ -323,9 +376,27 @@ fn every_reader_takes_its_environment_value() {
 }
 
 #[test]
-#[ignore = "the parent test starts this helper in a child process with an invalid value"]
-fn record_success_reads_an_invalid_environment_value() {
-    assert_eq!(record_success(), SuccessRecording::Record);
+#[ignore = "the parent test starts this helper in a child process with no variable set"]
+fn every_reader_takes_its_default_without_a_variable() {
+    assert_eq!(walk_cases(16), 16);
+    assert_eq!(walk_steps(100), 100);
+    assert_eq!(walk_profiles(), ProfileMode::Bounded);
+    assert_eq!(record_success(), SuccessRecording::Skip);
+    assert_eq!(liveness_every(), LivenessSampling::Never);
+    assert_eq!(repro_source(), ReproSource::Fresh);
+}
+
+// The readers that the negative tests keep valid come first. Each negative test sets one variable
+// only, so the child reaches the reader of that variable and stops there.
+#[test]
+#[ignore = "the parent test starts this helper in a child process with one invalid value"]
+fn every_reader_reads_the_current_environment() {
+    let _ = repro_source();
+    let _ = walk_profiles();
+    let _ = walk_cases(16);
+    let _ = walk_steps(100);
+    let _ = record_success();
+    let _ = liveness_every();
 }
 
 #[test]
@@ -353,24 +424,55 @@ fn the_readers_take_the_values_of_a_set_environment() {
 }
 
 #[test]
-fn an_unknown_record_success_value_stops_the_walk() {
-    let output = walker_child("artifacts_tests::record_success_reads_an_invalid_environment_value")
-        .env(RECORD_SUCCESS_VARIABLE, "2")
+fn the_readers_take_their_defaults_in_a_clean_environment() {
+    let output = walker_child("artifacts_tests::every_reader_takes_its_default_without_a_variable")
         .output()
         .expect("the child test process starts");
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
-        !output.status.success(),
-        "the child accepted the value: stdout={stdout} stderr={stderr}"
+        output.status.success(),
+        "the child failed: stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stderr.contains("SKIT_WALKER_RECORD_SUCCESS must be 0 or 1"),
-        "the child named another reason: stderr={stderr}"
-    );
-    assert!(
-        stdout.contains("test result: FAILED. 0 passed; 1 failed"),
+        stdout.contains("test result: ok. 1 passed"),
         "the child ran another number of tests: {stdout}"
+    );
+}
+
+#[test]
+fn an_invalid_case_count_stops_the_walk() {
+    assert_child_refuses(
+        CASES_VARIABLE,
+        "many",
+        "SKIT_WALKER_CASES must be a positive integer, not \"many\"",
+    );
+}
+
+#[test]
+fn a_zero_step_count_stops_the_walk() {
+    assert_child_refuses(
+        STEPS_VARIABLE,
+        "0",
+        "SKIT_WALKER_STEPS must be a positive integer, not \"0\"",
+    );
+}
+
+#[test]
+fn a_non_integer_liveness_interval_stops_the_walk() {
+    assert_child_refuses(
+        LIVENESS_EVERY_VARIABLE,
+        "often",
+        "SKIT_WALKER_LIVENESS_EVERY must be zero or a positive integer, not \"often\"",
+    );
+}
+
+#[test]
+fn an_unknown_record_success_value_stops_the_walk() {
+    assert_child_refuses(
+        RECORD_SUCCESS_VARIABLE,
+        "2",
+        "SKIT_WALKER_RECORD_SUCCESS must be 0 or 1",
     );
 }

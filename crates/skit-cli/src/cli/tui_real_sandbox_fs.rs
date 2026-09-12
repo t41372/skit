@@ -59,6 +59,12 @@ impl SandboxFsError {
         }
     }
 
+    /// Tell if this error reports that the path is not found.
+    #[cfg(target_os = "linux")]
+    pub(super) fn is_not_found(&self) -> bool {
+        matches!(self, Self::Io { source, .. } if source.kind() == io::ErrorKind::NotFound)
+    }
+
     /// Tell if this error is a no-replace rename that refused because the destination name is in
     /// use. It does not tell the kind of the destination; the caller must open the destination to
     /// find out.
@@ -1012,7 +1018,7 @@ impl PinnedDirectory {
         let mut directory = rustix::fs::Dir::read_from(self.file())
             .map_err(io::Error::from)
             .map_err(|error| SandboxFsError::io("list directory", &self.display_path, error))?;
-        let mut tickets = Vec::new();
+        let mut names = Vec::new();
         while let Some(entry) = directory.read() {
             let entry = entry
                 .map_err(io::Error::from)
@@ -1021,8 +1027,29 @@ impl PinnedDirectory {
             if raw == b"." || raw == b".." {
                 continue;
             }
-            let name = ChildName::new(OsStr::from_bytes(raw).to_os_string())?;
-            tickets.push(self.ticket_for_name(&name)?);
+            names.push(ChildName::new(OsStr::from_bytes(raw).to_os_string())?);
+        }
+        Self::present_tickets(names, |name| self.ticket_for_name(name))
+    }
+
+    /// Keep the ticket of every listed child that still exists.
+    ///
+    /// The scan reads the complete listing first and opens each name after that. Another process
+    /// can remove a child after the listing and before its open. That child is absent from the
+    /// directory now. A listing taken one moment later would omit it, so it gets no ticket. Every
+    /// other open failure is an error.
+    #[cfg(target_os = "linux")]
+    fn present_tickets(
+        names: Vec<ChildName>,
+        mut open: impl FnMut(&ChildName) -> Result<EntryTicket, SandboxFsError>,
+    ) -> Result<Vec<EntryTicket>, SandboxFsError> {
+        let mut tickets = Vec::new();
+        for name in &names {
+            match open(name) {
+                Ok(ticket) => tickets.push(ticket),
+                Err(error) if error.is_not_found() => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(tickets)
     }
@@ -2678,6 +2705,91 @@ mod tests {
 
         assert!(directory.verify_handle().is_err());
         assert!(parent.open_directory(&child("special-mode")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn present_tickets_skips_an_absent_child_and_keeps_every_other_answer() {
+        fn unix_ticket(name: ChildName, inode: u64) -> EntryTicket {
+            EntryTicket {
+                name,
+                identity: NodeIdentity::Unix { device: 7, inode },
+                kind: NodeKind::Directory,
+                reparse_tag: None,
+            }
+        }
+        fn open_failure(name: &ChildName, kind: io::ErrorKind) -> SandboxFsError {
+            SandboxFsError::io(
+                "open directory entry",
+                &Path::new("sandboxes").join(name.as_os_str()),
+                io::Error::from(kind),
+            )
+        }
+
+        let names = || vec![child("a"), child("b"), child("c")];
+        let kept = PinnedDirectory::present_tickets(names(), |name| {
+            if name == &child("b") {
+                Err(open_failure(name, io::ErrorKind::NotFound))
+            } else if name == &child("a") {
+                Ok(unix_ticket(name.clone(), 10))
+            } else {
+                Ok(unix_ticket(name.clone(), 12))
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            kept,
+            vec![unix_ticket(child("a"), 10), unix_ticket(child("c"), 12)]
+        );
+
+        let error = PinnedDirectory::present_tickets(names(), |name| {
+            if name == &child("b") {
+                Err(open_failure(name, io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(unix_ticket(name.clone(), 10))
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(
+            &error,
+            SandboxFsError::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied
+        ));
+        assert!(error.to_string().contains("sandboxes/b"));
+        assert!(!error.is_not_found());
+
+        let none = PinnedDirectory::present_tickets(names(), |name| {
+            Err(open_failure(name, io::ErrorKind::NotFound))
+        })
+        .unwrap();
+        assert!(none.is_empty());
+        assert!(open_failure(&child("a"), io::ErrorKind::NotFound).is_not_found());
+        assert!(
+            !SandboxFsError::invalid(Path::new("sandboxes"), "the listing is not an error")
+                .is_not_found()
+        );
+    }
+
+    /// The real open of an absent name reports `NotFound`, and the scan omits that name.
+    ///
+    /// The injected test above pins the policy. This one pins the error mapping of the real open,
+    /// so a change that reports an absent entry through another error variant fails here.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_scan_omits_a_name_that_is_absent_at_its_open() {
+        let (_temporary, parent) = opened_temp_parent();
+        let present = child("present");
+        parent.create_file(&present).unwrap();
+        let absent = child("absent");
+        assert!(parent.ticket_for_name(&absent).unwrap_err().is_not_found());
+
+        let tickets = PinnedDirectory::present_tickets(vec![present.clone(), absent], |name| {
+            parent.ticket_for_name(name)
+        })
+        .unwrap();
+        assert_eq!(
+            tickets.iter().map(EntryTicket::name).collect::<Vec<_>>(),
+            vec![&present]
+        );
     }
 
     #[cfg(target_os = "linux")]

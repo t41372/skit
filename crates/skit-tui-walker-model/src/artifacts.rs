@@ -60,6 +60,8 @@ pub enum SuccessRecording {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LivenessSampling {
     /// Run liveness at the end of the case only.
+    ///
+    /// `SKIT_WALKER_LIVENESS_EVERY=0` selects this value.
     Never,
     /// Run liveness after this many operations.
     Every(NonZeroUsize),
@@ -139,22 +141,26 @@ pub(crate) fn publish_bundle(staged: &Path, destination: &Path) -> Result<(), St
 }
 
 /// Read the number of random cases in one walk.
+///
+/// A present value must be a positive integer, or the reader stops the walk.
 #[must_use]
 pub fn walk_cases(default: u32) -> u32 {
     positive(
         std::env::var(CASES_VARIABLE).ok(),
         default,
-        "SKIT_WALKER_CASES must be greater than zero",
+        "SKIT_WALKER_CASES must be a positive integer",
     )
 }
 
 /// Read the number of operations in one case.
+///
+/// A present value must be a positive integer, or the reader stops the walk.
 #[must_use]
 pub fn walk_steps(default: usize) -> usize {
     positive(
         std::env::var(STEPS_VARIABLE).ok(),
         default,
-        "SKIT_WALKER_STEPS must be greater than zero",
+        "SKIT_WALKER_STEPS must be a positive integer",
     )
 }
 
@@ -179,6 +185,9 @@ pub fn record_success() -> SuccessRecording {
 }
 
 /// Read how often one walk runs liveness inside a case.
+///
+/// The value `0` selects [`LivenessSampling::Never`]. Another present value must be a positive
+/// integer, or the reader stops the walk.
 #[must_use]
 pub fn liveness_every() -> LivenessSampling {
     sampling(std::env::var(LIVENESS_EVERY_VARIABLE).ok())
@@ -194,10 +203,13 @@ pub(crate) fn positive<T>(raw: Option<String>, default: T, requirement: &str) ->
 where
     T: Copy + Default + FromStr + PartialOrd,
 {
-    let value = raw
-        .and_then(|raw| raw.parse::<T>().ok())
-        .filter(|value| *value > T::default())
-        .unwrap_or(default);
+    let value = raw.map_or(default, |raw| {
+        raw.parse::<T>()
+            .ok()
+            .filter(|value| *value > T::default())
+            .unwrap_or_else(|| panic!("{requirement}, not {raw:?}"))
+    });
+    // The default is a code constant. A zero default is a defect of the caller, not of the user.
     assert!(value > T::default(), "{requirement}");
     value
 }
@@ -211,9 +223,12 @@ pub(crate) fn selected(values: &[&str], raw: Option<String>, requirement: &str) 
 }
 
 pub(crate) fn sampling(raw: Option<String>) -> LivenessSampling {
-    raw.and_then(|raw| raw.parse::<usize>().ok())
-        .and_then(NonZeroUsize::new)
-        .map_or(LivenessSampling::Never, LivenessSampling::Every)
+    raw.map_or(LivenessSampling::Never, |raw| {
+        let interval = raw.parse::<usize>().unwrap_or_else(|_| {
+            panic!("SKIT_WALKER_LIVENESS_EVERY must be zero or a positive integer, not {raw:?}")
+        });
+        NonZeroUsize::new(interval).map_or(LivenessSampling::Never, LivenessSampling::Every)
+    })
 }
 
 pub(crate) fn replay(raw: Option<String>) -> ReproSource {
