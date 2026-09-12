@@ -59,6 +59,11 @@ live in its own `tests/` directory (M4, M5). Modules:
   the `Err` arms covered and the mutants killable). The `try_fork` failure arm: `try_fork` returns
   `None` only while a path-completion worker owns a channel, which the walker never has; write the
   arm as a one-line `ok_or_else` and pin the reason in a comment.
+  The guarantee has a boundary. The probes prove parity for the targets that the live inventory
+  holds. They cannot prove that a render registered every visible control: a control that a
+  render draws without a hit region is absent from the geometry, from the inventory, and from
+  every parity loop. The state-specific inventory tests (screen targets, run pointer rules,
+  preferences focus) and the mutation gate hold that side.
 - `model`: the random operation model. The nine weighted families with late-bound ordinals
   (`AdvertisedKey`, `PublicHit`, `LocalAdvertisedKey`, `LocalHit`, `MouseCell`, `Resize`, `Paste`,
   `RawKey`, `Focus`), the ten resize shapes, the seven paste payloads, the 15-profile matrix
@@ -72,9 +77,12 @@ live in its own `tests/` directory (M4, M5). Modules:
   two failures never share a bundle), and the branch-free env readers for `SKIT_WALKER_CASES`,
   `SKIT_WALKER_STEPS`, `SKIT_WALKER_PROFILES` (`bounded`|`complete`), `SKIT_WALKER_RECORD_SUCCESS`
   (`0`|`1`), `SKIT_WALKER_LIVENESS_EVERY`, and `SKIT_WALKER_REPRO`. Strictness without branch lines:
-  `["0", "1"].iter().position(|v| *v == raw).expect("SKIT_WALKER_RECORD_SUCCESS must be 0 or 1") == 1`;
-  positive integers as `parse().ok().filter(positive).unwrap_or(default)` followed by
-  `assert!(value > 0)`; the workflow's shell guards refuse zero before cargo runs.
+  `["0", "1"].iter().position(|v| *v == raw).expect("SKIT_WALKER_RECORD_SUCCESS must be 0 or 1") == 1`.
+  `SKIT_WALKER_CASES` and `SKIT_WALKER_STEPS` read a present value as a positive integer. A zero, a
+  negative number, or a value that is not a number stops the walk with a message that names the
+  variable and the value. `SKIT_WALKER_LIVENESS_EVERY` takes `0` as never and refuses a negative
+  number or a value that is not a number. An absent variable takes its default. The workflow's shell guards stay as an
+  early check.
 
 ## M2. Per-checkpoint oracles in the real engine (skit-cli)
 
@@ -220,4 +228,4 @@ quota returns.
 - The 15-profile matrix runs nightly, not on every PR.
   **Stands.** `SKIT_WALKER_PROFILES=complete` selects the matrix; the default is `bounded`.
 - The random walk's effect limit is the real walker's 16, not the legacy 64.
-  **Stands.** `EFFECT_LIMIT` is 16 at `crates/skit-cli/src/cli/tui_real_walker.rs:61`.
+  **Stands.** `EFFECT_LIMIT` is 16 in `crates/skit-cli/src/cli/tui_real_walker/corpus.rs`.

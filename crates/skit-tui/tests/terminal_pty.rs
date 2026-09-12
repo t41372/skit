@@ -33,6 +33,12 @@ impl Localize for HostError {
     }
 }
 
+/// The sign that a host effect owns the terminal.
+///
+/// The child writes it while the terminal is suspended, so the capture keeps one exact boundary
+/// between the suspend and the resume.
+const HOST_EFFECT_MARKER: &[u8] = b"HOST EFFECT RUNNING";
+
 #[test]
 #[ignore = "runs only as the child of the PTY lifecycle owner"]
 fn collect_form_child() {
@@ -85,6 +91,18 @@ fn public_terminal_wrapper_child() {
             )
             .unwrap();
         }
+        "suspend-modes" => run(
+            LibraryState::default(),
+            |_effect: Effect| -> Result<Action, HostError> {
+                let mut out = std::io::stdout();
+                out.write_all(HOST_EFFECT_MARKER).unwrap();
+                out.write_all(b"\n").unwrap();
+                out.flush().unwrap();
+                Ok(Action::ClearStatus)
+            },
+            Locale::En,
+        )
+        .unwrap(),
         "collect-run" => {
             let form = RunFormView::from_declarations(
                 "demo",
@@ -133,7 +151,7 @@ fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
 
 #[test]
 fn generic_form_outer_terminal_lifecycle_uses_a_real_pty() {
-    run_child_in_pty("collect_form_child", None, "Name", None);
+    run_child_in_pty("collect_form_child", None, "Name", &[]);
 }
 
 #[test]
@@ -144,24 +162,164 @@ fn every_public_terminal_wrapper_owns_a_real_terminal_lifecycle() {
         ("collect-run", "Extra arguments"),
         ("collect-run-with-path", "Extra arguments"),
     ] {
-        run_child_in_pty("public_terminal_wrapper_child", Some(mode), marker, None);
+        run_child_in_pty("public_terminal_wrapper_child", Some(mode), marker, &[]);
     }
     let marker = tempfile::NamedTempFile::new().unwrap();
     run_child_in_pty(
         "public_terminal_wrapper_child",
         Some("preflight-refuse"),
         "Library",
-        Some((b"\x12", marker.path())),
+        &[Exchange {
+            input: b"\x12",
+            wait: Wait::File(marker.path()),
+        }],
     );
     assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "preflight");
+}
+
+/// A host effect must leave and re-enter every screen mode.
+///
+/// Mouse capture and focus reporting are not part of the alternate screen. If the suspend keeps
+/// focus reporting on, the process that owns the terminal receives `ESC [ I` and `ESC [ O` as input
+/// at every window change.
+///
+/// ConPTY re-renders its own screen and does not pass every control sequence through the master, so
+/// this byte contract is a Unix contract.
+#[cfg(unix)]
+#[test]
+fn a_host_effect_leaves_and_re_enters_every_screen_mode() {
+    let output = run_child_in_pty(
+        "public_terminal_wrapper_child",
+        Some("suspend-modes"),
+        "Library",
+        &[
+            // Ctrl+R on the library is Reload, the same key the refused preflight above uses to
+            // reach the host boundary.
+            Exchange {
+                input: b"\x12",
+                wait: Wait::Output(HOST_EFFECT_MARKER),
+            },
+            // Raw mode is off while the host effect runs, so Ctrl+C would be a signal. Wait for the
+            // resumed library frame before the harness sends it. The resume clears the terminal,
+            // and that clear asks for the cursor position; only a wait answers the question, so
+            // the frame that follows the answer is the sign that the resume is complete.
+            Exchange {
+                input: b"",
+                wait: Wait::Output(b"Library"),
+            },
+        ],
+    );
+
+    let library_index = find_bytes(&output, b"Library").expect("the library never rendered");
+    let marker_index =
+        find_bytes(&output, HOST_EFFECT_MARKER).expect("the host effect never reported itself");
+    let suspended = &output[library_index..marker_index];
+    for disabled in [
+        b"\x1b[?1049l".as_slice(),
+        b"\x1b[?1003l".as_slice(),
+        b"\x1b[?1004l".as_slice(),
+    ] {
+        assert!(
+            find_bytes(suspended, disabled).is_some(),
+            "the terminal did not write {} before the host effect: {}",
+            String::from_utf8_lossy(disabled),
+            String::from_utf8_lossy(suspended)
+        );
+    }
+
+    let resumed = &output[marker_index..];
+    for enabled in [
+        b"\x1b[?1049h".as_slice(),
+        b"\x1b[?1003h".as_slice(),
+        b"\x1b[?1004h".as_slice(),
+    ] {
+        assert!(
+            find_bytes(resumed, enabled).is_some(),
+            "the terminal did not write {} after the host effect: {}",
+            String::from_utf8_lossy(enabled),
+            String::from_utf8_lossy(resumed)
+        );
+    }
+}
+
+/// One exchange after the first marker: keys to send, then the sign to wait for.
+struct Exchange<'a> {
+    input: &'a [u8],
+    wait: Wait<'a>,
+}
+
+enum Wait<'a> {
+    /// The child writes this file.
+    File(&'a std::path::Path),
+    /// The child writes these bytes to the terminal, after every earlier wait.
+    #[cfg(unix)]
+    Output(&'a [u8]),
+}
+
+/// Report where the bytes occur in the capture, if they occur.
+fn find_bytes(capture: &[u8], wanted: &[u8]) -> Option<usize> {
+    capture
+        .windows(wanted.len())
+        .position(|window| window == wanted)
+}
+
+/// The terminal side of one PTY child: its capture, its answers, and how far the waits have read.
+struct PtyWatch<W>
+where
+    W: std::io::Write,
+{
+    chunks: mpsc::Receiver<Vec<u8>>,
+    writer: W,
+    output: Vec<u8>,
+    read_through: usize,
+    answered_cursor_query: usize,
+}
+
+impl<W> PtyWatch<W>
+where
+    W: std::io::Write,
+{
+    /// Take the next chunk of terminal output, and answer every cursor query it completes.
+    ///
+    /// Every wait uses this one step. A wait that does not answer a query leaves the child waiting
+    /// for an answer that never arrives.
+    fn receive(&mut self, remaining: Duration) -> Result<(), mpsc::RecvTimeoutError> {
+        let chunk = self
+            .chunks
+            .recv_timeout(remaining.min(Duration::from_millis(100)))?;
+        self.output.extend_from_slice(&chunk);
+        let queries = self
+            .output
+            .windows(b"\x1b[6n".len())
+            .filter(|window| *window == b"\x1b[6n")
+            .count();
+        while self.answered_cursor_query < queries {
+            self.writer.write_all(b"\x1b[1;1R").unwrap();
+            self.writer.flush().unwrap();
+            self.answered_cursor_query += 1;
+        }
+        Ok(())
+    }
+
+    /// Report whether the bytes arrived after every earlier wait, and read through them.
+    ///
+    /// A resume can share one chunk with the marker before it, so the read position moves to the
+    /// end of the match and not to the end of the capture.
+    fn arrived(&mut self, wanted: &[u8]) -> bool {
+        let Some(found) = find_bytes(&self.output[self.read_through..], wanted) else {
+            return false;
+        };
+        self.read_through = self.read_through + found + wanted.len();
+        true
+    }
 }
 
 fn run_child_in_pty(
     test_name: &str,
     mode: Option<&str>,
     marker: &str,
-    after_marker: Option<(&[u8], &std::path::Path)>,
-) {
+    exchanges: &[Exchange<'_>],
+) -> Vec<u8> {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 20,
@@ -175,8 +333,16 @@ fn run_child_in_pty(
     if let Some(mode) = mode {
         command.env("SKIT_TUI_WRAPPER", mode);
     }
-    if let Some((_, marker)) = after_marker {
-        command.env("SKIT_TUI_PREFLIGHT_MARKER", marker);
+    for exchange in exchanges {
+        // A `match` names every arm. On a host without `Wait::Output` an `if let` on this enum is
+        // irrefutable, and the lint for that is an error under the quality gate.
+        match exchange.wait {
+            Wait::File(marker) => {
+                command.env("SKIT_TUI_PREFLIGHT_MARKER", marker);
+            }
+            #[cfg(unix)]
+            Wait::Output(_) => {}
+        }
     }
     command.env("TERM", "xterm-256color");
     command.env("NO_COLOR", "1");
@@ -184,7 +350,7 @@ fn run_child_in_pty(
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().unwrap();
-    let mut writer = pair.master.take_writer().unwrap();
+    let writer = pair.master.take_writer().unwrap();
     let (sender, chunks) = mpsc::channel();
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
@@ -200,65 +366,64 @@ fn run_child_in_pty(
         }
     });
 
+    let mut watch = PtyWatch {
+        chunks,
+        writer,
+        output: Vec::new(),
+        read_through: 0,
+        answered_cursor_query: 0,
+    };
+
     let deadline = Instant::now() + Duration::from_secs(6);
-    let mut output = Vec::new();
-    let mut answered_cursor_query = 0;
     loop {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .expect("timed out waiting for the generic form");
-        let chunk = chunks
-            .recv_timeout(remaining.min(Duration::from_millis(100)))
+        watch
+            .receive(remaining)
             .expect("PTY output closed before the generic form appeared");
-        output.extend_from_slice(&chunk);
-        let queries = output
-            .windows(b"\x1b[6n".len())
-            .filter(|window| *window == b"\x1b[6n")
-            .count();
-        while answered_cursor_query < queries {
-            writer.write_all(b"\x1b[1;1R").unwrap();
-            writer.flush().unwrap();
-            answered_cursor_query += 1;
-        }
-        if output
-            .windows(marker.len())
-            .any(|window| window == marker.as_bytes())
-        {
+        if watch.arrived(marker.as_bytes()) {
             break;
         }
         assert!(
             child.try_wait().unwrap().is_none(),
             "child exited before rendering the generic form: {}",
-            String::from_utf8_lossy(&output)
+            String::from_utf8_lossy(&watch.output)
         );
     }
 
-    if let Some((input, marker)) = after_marker {
-        writer.write_all(&keystrokes(input)).unwrap();
-        writer.flush().unwrap();
+    for exchange in exchanges {
+        watch.writer.write_all(&keystrokes(exchange.input)).unwrap();
+        watch.writer.flush().unwrap();
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
-            if std::fs::metadata(marker).is_ok_and(|metadata| metadata.len() > 0) {
+            let arrived = match exchange.wait {
+                Wait::File(marker) => {
+                    std::fs::metadata(marker).is_ok_and(|metadata| metadata.len() > 0)
+                }
+                #[cfg(unix)]
+                Wait::Output(wanted) => watch.arrived(wanted),
+            };
+            if arrived {
                 break;
             }
             assert!(
                 child.try_wait().unwrap().is_none(),
-                "child exited before the preflight checkpoint: {}",
-                String::from_utf8_lossy(&output)
+                "child exited before the next checkpoint: {}",
+                String::from_utf8_lossy(&watch.output)
             );
             let remaining = deadline
                 .checked_duration_since(Instant::now())
-                .expect("timed out waiting for the preflight checkpoint");
-            match chunks.recv_timeout(remaining.min(Duration::from_millis(100))) {
-                Ok(chunk) => output.extend_from_slice(&chunk),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                .expect("timed out waiting for the next checkpoint");
+            match watch.receive(remaining) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => thread::yield_now(),
             }
         }
     }
 
-    writer.write_all(b"\x03\x03").unwrap();
-    writer.flush().unwrap();
+    watch.writer.write_all(b"\x03\x03").unwrap();
+    watch.writer.flush().unwrap();
     // An instrumented child writes its coverage profile as it exits, and parallel load makes that
     // take more than six seconds. This deadline only stops a hung child from holding the suite.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -271,11 +436,14 @@ fn run_child_in_pty(
             Instant::now() < deadline,
             "timed out waiting for the generic form to exit"
         );
-        match chunks.recv_timeout(Duration::from_millis(100)) {
-            Ok(chunk) => output.extend_from_slice(&chunk),
+        // The child exits, so this only keeps the capture complete. It does not answer a cursor
+        // query: every wait above answered the queries of the frames it waited for.
+        match watch.chunks.recv_timeout(Duration::from_millis(100)) {
+            Ok(chunk) => watch.output.extend_from_slice(&chunk),
             Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
         }
     }
+    watch.output
 }
 
 // This crate deliberately keeps its own compliant harness instead of sharing
