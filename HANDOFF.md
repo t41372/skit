@@ -1,6 +1,6 @@
 # UI Walker Real-Host Migration Handoff
 
-Updated: 2026-09-11 (Claude: second ChatGPT report adjudication and the walker module split).
+Updated: 2026-09-11 (Claude: third ChatGPT report adjudication and the focus-reporting fix).
 
 Read this file completely before changing source. This handoff and both phase plans are tracked.
 `PHASE3D-PLAN.md` is the approved Phase3d specification, and **`PHASE4-PLAN.md` revision 30 is the
@@ -13,7 +13,51 @@ remaining gates. The current checkpoint supersedes the retired normal-launch sna
 This handoff summarizes state; that file
 holds the design.
 
-## Current checkpoint: 2026-09-11 review adjudication and module split (Claude)
+## Current checkpoint: 2026-09-11 third review adjudication and the focus-reporting fix (Claude)
+
+The user supplied a second report dated 2026-09-11 (`skit-ui-walker-deep-review-2026-09-11 (1).md`,
+target `49e94911`). The input stays unchanged and local. See
+[the adjudication](docs/reviews/ui-walker-20260911/chatgpt-review-2-adjudication.md) for the four
+findings, the decisions, the independent review, and the validation.
+
+Commits on top of `6e27ce30`:
+
+- `3edd8058` — F1: the suspend before a host effect and the resume after it now toggle the same
+  screen modes as the claim and the restore (alternate screen, mouse capture, focus reporting).
+  The 2026-09-08 F8 repair had enabled focus reporting at the claim only, so a script or editor
+  launched from the TUI received focus reports as input on a window switch. One shared command set
+  (`enter_screen_modes`, `leave_screen_modes` in `crates/skit-tui/src/terminal.rs`) serves the four
+  transitions; the leave order is the reverse of the enter order. A PTY test in
+  `crates/skit-tui/tests/terminal_pty.rs` asserts the toggles around the host effect on real
+  output bytes, and a unit test pins the command set.
+- The final commit adds this checkpoint, the adjudication, and the guarantee boundary of the
+  parity probes in `MIGRATION-DESIGN.md`.
+
+Decisions: F2 (a `String` status carries both catalog keys and rendered text) is a base-branch
+trade-off with no reachable wrong translation; deferred and recorded. A1 (walker introspection in
+the public surface of `skit-tui`) needs one owner decision: never publish to crates.io, or gate the
+seam behind a non-default feature before a first publish. No workflow publishes a crate today, and
+`publish = false` on `skit-tui` alone would also block `skit-cli-rs`. A2 is documented.
+
+Rules for later PTY tests in `skit-tui`: end a wait at drawn text, not at a control sequence. The
+resume calls `Terminal::clear`, and ratatui asks for the cursor position there; the harness answers
+that question only inside a wait, so a wait that ends at `?1049h` can leave the question unanswered
+and the child fails after two seconds. The exit phase does not answer queries.
+
+An Opus reviewer verified the frozen commit in a scratch worktree: one blocker (that flake) and
+five nits, all repaired before the commit was rebuilt. The reviewer confirmed by hand-applied
+mutants that the tests kill an emptied helper and the two helpers swapped.
+
+Gates on `3edd8058`: Linux fmt, workspace Clippy and Rustdoc with warnings denied, every
+`skit-tui` target, thirty consecutive PTY runs, the `skit-cli-rs` PTY tests (41), and the English
+check; macOS Clippy, Rustdoc, terminal unit tests (23), five PTY runs; `cargo xwin check` for
+`skit-tui` with zero errors and no new warning.
+
+Still open, for the owner: the 64-shard mutation gate; a pull request; the `skit-tui` publish
+decision. The dedicated `ui-walker.yml` workflow had never run on this branch; see the CI record
+in the adjudication.
+
+## Previous checkpoint: 2026-09-11 review adjudication and module split (Claude)
 
 The user supplied `skit-ui-walker-deep-review-2026-09-11.md` for independent verification
 against `42f9767f`. The input stays unchanged and local. See

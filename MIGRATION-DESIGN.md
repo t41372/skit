@@ -59,6 +59,11 @@ live in its own `tests/` directory (M4, M5). Modules:
   the `Err` arms covered and the mutants killable). The `try_fork` failure arm: `try_fork` returns
   `None` only while a path-completion worker owns a channel, which the walker never has; write the
   arm as a one-line `ok_or_else` and pin the reason in a comment.
+  The guarantee has a boundary. The probes prove parity for the targets that the live inventory
+  holds. They cannot prove that a render registered every visible control: a control that a
+  render draws without a hit region is absent from the geometry, from the inventory, and from
+  every parity loop. The state-specific inventory tests (screen targets, run pointer rules,
+  preferences focus) and the mutation gate hold that side.
 - `model`: the random operation model. The nine weighted families with late-bound ordinals
   (`AdvertisedKey`, `PublicHit`, `LocalAdvertisedKey`, `LocalHit`, `MouseCell`, `Resize`, `Paste`,
   `RawKey`, `Focus`), the ten resize shapes, the seven paste payloads, the 15-profile matrix
