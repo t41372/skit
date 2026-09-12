@@ -29,7 +29,7 @@ between types:
 
 - **Rewritten values.** For Python, shell, and JS/TS, skit can rewrite a detected
   constant (like `WIDTH = 800`) in its stored copy at launch. This is what makes
-  "hard-coded constants become fields" possible — and it's why those three types
+  "hard-coded constants become fields" possible — and it is why those three types
   are the deepest.
 - **Environment variables.** Env-default idioms — shell's `${VAR:-default}` and
   fish's `set -q NAME; or set NAME default` — read the environment first, so skit
@@ -39,8 +39,8 @@ between types:
   PowerShell's `param()`), values are passed as ordinary arguments and the script
   parses them itself. Hand-declared parameters travel the same way.
 
-That's the whole story behind, say, fish vs Python: a fish script's hard-coded
-`set width 800` won't appear in the launch menu (skit doesn't rewrite fish code),
+That is the whole story behind, say, fish vs Python: a fish script's hard-coded
+`set width 800` will not appear in the launch menu (skit does not rewrite fish code),
 but its `argparse` flags and `set -q` env-defaults will.
 
 ## Declared parameters
@@ -55,7 +55,7 @@ skit params my_tool --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=
 ## External commands ("needs")
 
 Any entry can list the external commands it depends on (`ffmpeg`, `jq`, …). skit
-checks they're on your `PATH` before each run — for every type.
+checks they are on your `PATH` before each run — for every type.
 
 ## Per-script package dependencies
 
@@ -75,7 +75,7 @@ Two safety/consistency details:
 - When deno is the runner skit picks, it passes `--allow-all`, so the same
   script behaves the same under deno, bun, and node.
 
-skit bootstraps uv for Python if you don't have it, but never a JS runtime — you
+skit bootstraps uv for Python if you do not have it, but never a JS runtime — you
 supply node, bun, or deno.
 
 ## Pinning the runtime
@@ -85,7 +85,7 @@ supply node, bun, or deno.
 - Interpreted kinds record their interpreter at add time from the shebang or
   extension — a `#!/bin/zsh` script keeps running under zsh. Pin or reset it
   with `skit params NAME --interpreter BINARY` (empty returns to auto; refused
-  for python and prompt entries, which don't run through a pinnable
+  for python and prompt entries, which do not run through a pinnable
   interpreter).
 
 ## Platform notes

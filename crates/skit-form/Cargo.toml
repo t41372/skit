@@ -1,0 +1,21 @@
+[package]
+name = "skit-form"
+description = "Frontend-neutral form planning for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+skit-domain.workspace = true
+skit-application.workspace = true
+skit-language.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

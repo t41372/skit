@@ -1,0 +1,4570 @@
+//! Application-preference widgets.
+
+use std::{cmp::Ordering, collections::HashMap, fmt::Display};
+
+use ratatui_core::{
+    layout::{Constraint, Flex, Layout, Rect},
+    style::{Color, Modifier, Style},
+    terminal::Frame,
+    text::{Line, Span},
+};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+};
+use ratatui_interact::{
+    components::{
+        Button, ButtonState, ButtonVariant, ListPicker, ListPickerState, ListPickerStyle,
+        ScrollableContentState, Select, SelectAction, SelectState, handle_scrollable_content_key,
+        handle_scrollable_content_mouse, handle_select_key,
+    },
+    state::FocusManager,
+    traits::{ClickRegion, ClickRegionRegistry},
+};
+use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
+use skit_application::preferences::{
+    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesField,
+};
+use skit_application::{AgentScope, AgentTarget};
+use skit_i18n::{Locale, Localize, format_text, text};
+use skit_ui::{
+    ChoicePresentation, PreferencesAction, PreferencesControl, PreferencesControlId,
+    PreferencesControlKind, PreferencesDisplayText, PreferencesOption, PreferencesTextPlacement,
+    PreferencesView,
+};
+use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
+use unicode_width::UnicodeWidthStr as _;
+
+use crate::{
+    ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit, ScreenTargetInventory,
+    agent_review::{
+        AgentReviewNode, AgentReviewSnapshotError, button as snapshot_button,
+        focus as snapshot_focus, list_picker as snapshot_list_picker, node as snapshot_node,
+        path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
+        select as snapshot_select, value as snapshot_value,
+    },
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
+    rowclip::RowClip,
+    session::{radio_style, render_line_input_band, select_style},
+    theme::{ACCENT, BOX_DIM, BOX_INDIGO, padded_panel},
+    viewport::AlignmentSignature,
+};
+
+/// Result of one Preferences widget event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PreferencesEventHandling {
+    /// Dispatch a semantic action through the Preferences reducer.
+    Action(PreferencesAction),
+    /// The widget changed ephemeral state such as a cursor or scroll offset.
+    Consumed,
+    /// No Preferences control accepted the event.
+    Ignored,
+}
+
+/// Result from the blocking agent-install overlay, which accepts every event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AgentSkillOverlayEventHandling {
+    /// Dispatch a semantic action through the Preferences reducer.
+    Action(PreferencesAction),
+    /// Keep the event inside the modal overlay.
+    Consumed,
+}
+
+#[cfg(test)]
+mod agent_review_tests {
+    use super::*;
+
+    #[test]
+    fn widget_hashmap_insertion_order_does_not_change_snapshot_bytes() {
+        let mut first = PreferencesWidgetSession::default();
+        first.widgets.insert(
+            PreferencesControlId::Language,
+            PreferencesWidget::Button(ButtonState::enabled()),
+        );
+        first.widgets.insert(
+            PreferencesControlId::Editor,
+            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+        );
+        first.editables.insert(
+            PreferencesControlId::Language,
+            EditableGeometry::new(Rect::new(0, 0, 4, 1), 0, false),
+        );
+        first.editables.insert(
+            PreferencesControlId::Editor,
+            EditableGeometry::new(Rect::new(0, 1, 4, 1), 1, false),
+        );
+
+        let mut second = PreferencesWidgetSession::default();
+        second.widgets.insert(
+            PreferencesControlId::Editor,
+            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+        );
+        second.widgets.insert(
+            PreferencesControlId::Language,
+            PreferencesWidget::Button(ButtonState::enabled()),
+        );
+        second.editables.insert(
+            PreferencesControlId::Editor,
+            EditableGeometry::new(Rect::new(0, 1, 4, 1), 1, false),
+        );
+        second.editables.insert(
+            PreferencesControlId::Language,
+            EditableGeometry::new(Rect::new(0, 0, 4, 1), 0, false),
+        );
+
+        let first = serde_json::to_vec(&first.agent_review_snapshot().unwrap()).unwrap();
+        let second = serde_json::to_vec(&second.agent_review_snapshot().unwrap()).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn preference_snapshot_covers_every_widget_signature_and_hit_variant() {
+        let mut session = PreferencesWidgetSession {
+            signature: Some(PreferencesSignature(vec![
+                (PreferencesControlId::Editor, PreferencesControlShape::Text),
+                (
+                    PreferencesControlId::Language,
+                    PreferencesControlShape::Choice {
+                        options: vec!["en".to_owned()],
+                        presentation: ChoicePresentation::Picker,
+                    },
+                ),
+                (
+                    PreferencesControlId::ManageAgents,
+                    PreferencesControlShape::Button,
+                ),
+            ])),
+            ..PreferencesWidgetSession::default()
+        };
+        session.widgets.insert(
+            PreferencesControlId::Language,
+            PreferencesWidget::Choice {
+                state: SelectState::with_selected(1, 0),
+                values: vec!["en".to_owned()],
+                labels: vec!["English".to_owned()],
+                presentation: ChoicePresentation::Radio,
+                buttons: vec![ButtonState::toggled(true)],
+                select_area: Some(Rect::new(0, 0, 4, 1)),
+                dropdown_panel: Some(Rect::new(0, 1, 4, 2)),
+                dropdown_regions: vec![
+                    ClickRegion::new(Rect::new(0, 0, 1, 1), SelectAction::Focus),
+                    ClickRegion::new(Rect::new(1, 0, 1, 1), SelectAction::Open),
+                    ClickRegion::new(Rect::new(2, 0, 1, 1), SelectAction::Close),
+                    ClickRegion::new(Rect::new(3, 0, 1, 1), SelectAction::Select(0)),
+                ],
+            },
+        );
+        session
+            .focus
+            .register_all([PreferencesControlId::Editor, PreferencesControlId::Language]);
+        session
+            .control_areas
+            .push((PreferencesControlId::Language, Rect::new(0, 0, 4, 1)));
+        session.clicks.register(
+            Rect::new(0, 0, 1, 1),
+            PreferencesHit::Control(PreferencesControlId::Language),
+        );
+        session.clicks.register(
+            Rect::new(1, 0, 1, 1),
+            PreferencesHit::Radio {
+                id: PreferencesControlId::Language,
+                option: 0,
+            },
+        );
+        session.clicks.register(
+            Rect::new(2, 0, 1, 1),
+            PreferencesHit::Dropdown {
+                id: PreferencesControlId::Language,
+                option: 0,
+            },
+        );
+        session
+            .agent_clicks
+            .register(Rect::new(0, 1, 1, 1), AgentSkillHit::Target(0));
+        session
+            .agent_clicks
+            .register(Rect::new(1, 1, 1, 1), AgentSkillHit::Cancel);
+        session.agent_target_areas.push((0, Rect::new(0, 1, 1, 1)));
+        session.agent_list_area = Rect::new(0, 1, 4, 2);
+        session.agent_cancel_area = Some(Rect::new(1, 1, 1, 1));
+        session.agent_signature = Some(vec![AgentTarget {
+            name: "codex".to_owned(),
+            scope: AgentScope::User,
+            base: std::path::PathBuf::from("/agent"),
+        }]);
+        session.editables.insert(
+            PreferencesControlId::Editor,
+            EditableGeometry::new(Rect::new(0, 2, 4, 1), 2, false),
+        );
+        assert!(AlignmentSignature::update(
+            &mut session.alignment,
+            PreferencesControlId::Language,
+            Rect::new(0, 0, 80, 24),
+            (5, 1, 2),
+        ));
+        let press = ratatui_crossterm::crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(ratatui_crossterm::crossterm::event::MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            session.click.update(
+                &press,
+                Some(&PreferencesHit::Dropdown {
+                    id: PreferencesControlId::Language,
+                    option: 0,
+                }),
+            ),
+            ClickOutcome::Armed,
+        );
+        assert_eq!(
+            session
+                .agent_click
+                .update(&press, Some(&AgentSkillHit::Target(0))),
+            ClickOutcome::Armed,
+        );
+        session.pending_ensure_focus = true;
+        let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
+        for expected in [
+            "choice",
+            "radio",
+            "dropdown",
+            "dropdown_panel",
+            "dropdown_regions",
+            "agent_clicks",
+            "agent_signature",
+            "alignment",
+            "editables",
+        ] {
+            assert!(json.contains(expected), "missing {expected}");
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct PreferencesSignature(Vec<(PreferencesControlId, PreferencesControlShape)>);
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+enum PreferencesControlShape {
+    Text,
+    Choice {
+        options: Vec<String>,
+        presentation: ChoicePresentation,
+    },
+    Button,
+}
+
+#[derive(Clone, Debug)]
+enum PreferencesWidget {
+    Input(LineInput),
+    Choice {
+        state: SelectState,
+        values: Vec<String>,
+        labels: Vec<String>,
+        presentation: ChoicePresentation,
+        buttons: Vec<ButtonState>,
+        select_area: Option<Rect>,
+        dropdown_panel: Option<Rect>,
+        dropdown_regions: Vec<ClickRegion<SelectAction>>,
+    },
+    Button(ButtonState),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+enum PreferencesHit {
+    Control(PreferencesControlId),
+    Radio {
+        id: PreferencesControlId,
+        option: usize,
+    },
+    Dropdown {
+        id: PreferencesControlId,
+        option: usize,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+enum AgentSkillHit {
+    Target(usize),
+    Cancel,
+}
+
+#[derive(Clone, Debug)]
+enum RenderItem {
+    Spacer,
+    Heading(String),
+    Copy(String),
+    Control(PreferencesControl),
+}
+
+#[derive(Clone, Debug)]
+struct PositionedItem {
+    start: usize,
+    height: usize,
+    item: RenderItem,
+}
+
+/// Ephemeral state for mature Preferences widgets.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PreferencesWidgetSession {
+    signature: Option<PreferencesSignature>,
+    widgets: HashMap<PreferencesControlId, PreferencesWidget>,
+    focus: FocusManager<PreferencesControlId>,
+    scroll: ScrollableContentState,
+    viewport: Rect,
+    visible_height: usize,
+    content_height: usize,
+    control_areas: Vec<(PreferencesControlId, Rect)>,
+    editables: HashMap<PreferencesControlId, EditableGeometry>,
+    clicks: ClickRegionRegistry<PreferencesHit>,
+    click: ClickTracker<PreferencesHit>,
+    agent_picker: ListPickerState,
+    agent_picker_height: usize,
+    agent_list_area: Rect,
+    agent_cancel: ButtonState,
+    agent_clicks: ClickRegionRegistry<AgentSkillHit>,
+    agent_click: ClickTracker<AgentSkillHit>,
+    agent_signature: Option<Vec<AgentTarget>>,
+    agent_target_areas: Vec<(usize, Rect)>,
+    agent_cancel_area: Option<Rect>,
+    pending_ensure_focus: bool,
+    alignment: Option<AlignmentSignature<PreferencesControlId, (usize, usize, usize)>>,
+}
+
+impl PreferencesWidgetSession {
+    pub(crate) fn screen_target_inventory(
+        &self,
+        view: &PreferencesView,
+    ) -> Result<ScreenTargetInventory, ScreenTargetError> {
+        if let Some(picker) = view.agent_skill_install() {
+            if self.agent_signature.as_deref() != Some(picker.targets()) {
+                return Err(ScreenTargetError::StaleSession);
+            }
+            let available = picker
+                .targets()
+                .iter()
+                .map(|target| ScreenTarget::AgentSkill {
+                    name: target.name.clone(),
+                    scope: target.scope,
+                })
+                .collect::<Vec<_>>();
+            let hits = self
+                .agent_target_areas
+                .iter()
+                .filter(|(_, rect)| !rect.is_empty())
+                .map(|(index, rect)| {
+                    let target = picker
+                        .targets()
+                        .get(*index)
+                        .ok_or(ScreenTargetError::StaleSession)?;
+                    Ok(ScreenTargetHit {
+                        target: ScreenTarget::AgentSkill {
+                            name: target.name.clone(),
+                            scope: target.scope,
+                        },
+                        rect: *rect,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(ScreenTargetInventory {
+                available,
+                focus: None,
+                hits,
+            });
+        }
+
+        let controls = view.controls();
+        let signature = PreferencesSignature(
+            controls
+                .iter()
+                .map(|control| (control.id, control_shape(control)))
+                .collect(),
+        );
+        if self.signature.as_ref() != Some(&signature) {
+            return Err(ScreenTargetError::StaleSession);
+        }
+        let order = self
+            .focus
+            .elements()
+            .iter()
+            .copied()
+            .map(ScreenTarget::Preferences)
+            .collect::<Vec<_>>();
+        let current = self.focus.current().copied().map(ScreenTarget::Preferences);
+        let dropdowns = self
+            .widgets
+            .values()
+            .filter_map(|widget| match widget {
+                PreferencesWidget::Choice {
+                    state,
+                    presentation: ChoicePresentation::Picker,
+                    dropdown_panel,
+                    ..
+                } if state.is_open => *dropdown_panel,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let hits = self
+            .control_areas
+            .iter()
+            .filter(|(_, rect)| {
+                !rect.is_empty()
+                    && dropdowns
+                        .iter()
+                        .all(|dropdown| rect.intersection(*dropdown).is_empty())
+            })
+            .map(|(id, rect)| ScreenTargetHit {
+                target: ScreenTarget::Preferences(*id),
+                rect: *rect,
+            })
+            .collect();
+        Ok(ScreenTargetInventory {
+            available: order.clone(),
+            focus: Some(ScreenFocusInventory { current, order }),
+            hits,
+        })
+    }
+
+    pub(crate) fn cancel_underlay_click(&mut self) {
+        self.click.cancel();
+    }
+
+    pub(crate) fn cancel_click(&mut self) {
+        self.cancel_underlay_click();
+        self.agent_click.cancel();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn perturb_agent_review_state(&mut self) {
+        self.visible_height = self.visible_height.saturating_add(1);
+    }
+
+    pub(crate) fn agent_review_snapshot(
+        &self,
+    ) -> Result<AgentReviewNode, AgentReviewSnapshotError> {
+        let Self {
+            signature,
+            widgets,
+            focus,
+            scroll,
+            viewport,
+            visible_height,
+            content_height,
+            control_areas,
+            editables,
+            clicks,
+            click,
+            agent_picker,
+            agent_picker_height,
+            agent_list_area,
+            agent_cancel,
+            agent_clicks,
+            agent_click,
+            agent_signature,
+            agent_target_areas,
+            agent_cancel_area,
+            pending_ensure_focus,
+            alignment,
+        } = self;
+        let mut widgets = widgets
+            .iter()
+            .map(|(id, widget)| {
+                let id_value = snapshot_value("preferences.widget.id", id)?;
+                let state = match widget {
+                    PreferencesWidget::Input(input) => serde_json::json!({
+                        "kind": "input",
+                        "state": snapshot_value("preferences.widget.input", input)?,
+                    }),
+                    PreferencesWidget::Choice {
+                        state,
+                        values,
+                        labels,
+                        presentation,
+                        buttons,
+                        select_area,
+                        dropdown_panel,
+                        dropdown_regions,
+                    } => {
+                        let presentation =
+                            snapshot_value("preferences.widget.presentation", presentation)?;
+                        let dropdown_regions = dropdown_regions
+                            .iter()
+                            .map(|region| {
+                                let action = match region.data {
+                                    SelectAction::Focus => serde_json::json!("focus"),
+                                    SelectAction::Open => serde_json::json!("open"),
+                                    SelectAction::Close => serde_json::json!("close"),
+                                    SelectAction::Select(index) => {
+                                        serde_json::json!({"select": index})
+                                    }
+                                };
+                                serde_json::json!({
+                                    "area": snapshot_rect(region.area),
+                                    "action": action,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "kind": "choice",
+                            "state": snapshot_select(state),
+                            "values": values,
+                            "labels": labels,
+                            "presentation": presentation,
+                            "buttons": buttons.iter().map(snapshot_button).collect::<Vec<_>>(),
+                            "select_area": select_area
+                                .map(snapshot_rect)
+                                .unwrap_or(serde_json::Value::Null),
+                            "dropdown_panel": dropdown_panel
+                                .map(snapshot_rect)
+                                .unwrap_or(serde_json::Value::Null),
+                            "dropdown_regions": dropdown_regions,
+                        })
+                    }
+                    PreferencesWidget::Button(state) => serde_json::json!({
+                        "kind": "button",
+                        "state": snapshot_button(state),
+                    }),
+                };
+                Ok((
+                    id_value.to_string(),
+                    serde_json::json!({"id": id_value, "state": state}),
+                ))
+            })
+            .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
+        widgets.sort_by(|left, right| left.0.cmp(&right.0));
+        let widgets = widgets
+            .into_iter()
+            .map(|(_, widget)| widget)
+            .collect::<Vec<_>>();
+        let control_areas = control_areas
+            .iter()
+            .map(|(id, area)| {
+                Ok(serde_json::json!({
+                    "id": snapshot_value("preferences.control_area.id", id)?,
+                    "area": snapshot_rect(*area),
+                }))
+            })
+            .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
+        let mut editables = editables
+            .iter()
+            .map(|(id, geometry)| {
+                let id_value = snapshot_value("preferences.editable.id", id)?;
+                Ok((
+                    id_value.to_string(),
+                    serde_json::json!({
+                        "id": id_value,
+                        "geometry": editable_geometry_snapshot(*geometry),
+                    }),
+                ))
+            })
+            .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
+        editables.sort_by(|left, right| left.0.cmp(&right.0));
+        let editables = editables
+            .into_iter()
+            .map(|(_, editable)| editable)
+            .collect::<Vec<_>>();
+        let click = click
+            .pressed()
+            .map(preferences_hit_snapshot)
+            .transpose()?
+            .unwrap_or(serde_json::Value::Null);
+        let agent_click = agent_click
+            .pressed()
+            .map(agent_hit_snapshot)
+            .unwrap_or(serde_json::Value::Null);
+        let agent_signature = agent_signature
+            .as_ref()
+            .map(|targets| {
+                targets
+                    .iter()
+                    .map(agent_target_snapshot)
+                    .collect::<Vec<_>>()
+            })
+            .map(serde_json::Value::Array)
+            .unwrap_or(serde_json::Value::Null);
+        let alignment = alignment
+            .as_ref()
+            .map(|alignment| {
+                Ok(serde_json::json!({
+                    "focus": snapshot_value(
+                        "preferences.alignment.focus",
+                        alignment.focus(),
+                    )?,
+                    "viewport_width": alignment.viewport_width(),
+                    "viewport_height": alignment.viewport_height(),
+                    "reflow": snapshot_value(
+                        "preferences.alignment.reflow",
+                        alignment.reflow(),
+                    )?,
+                }))
+            })
+            .transpose()?
+            .unwrap_or(serde_json::Value::Null);
+        let agent_target_areas = agent_target_areas
+            .iter()
+            .map(|(index, area)| serde_json::json!({"index": index, "area": snapshot_rect(*area)}))
+            .collect::<Vec<_>>();
+        Ok(snapshot_node(
+            "preferences",
+            [
+                (
+                    "signature",
+                    signature
+                        .as_ref()
+                        .map(preferences_signature_snapshot)
+                        .transpose()?
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                ("widgets", serde_json::json!(widgets)),
+                ("focus", snapshot_focus("preferences.focus", focus)?),
+                ("scroll", snapshot_scroll(scroll)),
+                ("viewport", snapshot_rect(*viewport)),
+                ("visible_height", serde_json::json!(visible_height)),
+                ("content_height", serde_json::json!(content_height)),
+                ("control_areas", serde_json::json!(control_areas)),
+                ("editables", serde_json::json!(editables)),
+                ("clicks", preferences_clicks_snapshot(clicks)?),
+                ("click", click),
+                ("agent_picker", snapshot_list_picker(agent_picker)),
+                (
+                    "agent_picker_height",
+                    serde_json::json!(agent_picker_height),
+                ),
+                ("agent_list_area", snapshot_rect(*agent_list_area)),
+                ("agent_cancel", snapshot_button(agent_cancel)),
+                ("agent_clicks", agent_clicks_snapshot(agent_clicks)),
+                ("agent_click", agent_click),
+                ("agent_signature", agent_signature),
+                ("agent_target_areas", serde_json::json!(agent_target_areas)),
+                (
+                    "agent_cancel_area",
+                    agent_cancel_area
+                        .map(snapshot_rect)
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                (
+                    "pending_ensure_focus",
+                    serde_json::json!(pending_ensure_focus),
+                ),
+                ("alignment", alignment),
+            ],
+        ))
+    }
+
+    pub(crate) fn focused_owns_vertical_navigation(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Choice { .. })
+        )
+    }
+
+    pub(crate) fn focused_is_input(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Input(_))
+        )
+    }
+
+    pub(crate) fn focused_dropdown_is_open(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Choice {
+                state,
+                presentation: ChoicePresentation::Picker,
+                ..
+            }) if state.is_open
+        )
+    }
+
+    /// Render the complete Preferences workflow.
+    pub(crate) fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        view: &PreferencesView,
+        locale: Locale,
+    ) {
+        self.sync(view, locale);
+        self.clicks.clear();
+        self.editables.clear();
+        self.control_areas.clear();
+        for widget in self.widgets.values_mut() {
+            if let PreferencesWidget::Choice {
+                presentation: ChoicePresentation::Picker,
+                select_area,
+                dropdown_panel,
+                dropdown_regions,
+                ..
+            } = widget
+            {
+                *select_area = None;
+                *dropdown_panel = None;
+                dropdown_regions.clear();
+            }
+        }
+
+        let block = padded_panel(text(locale, "Preferences").into_owned(), BOX_INDIGO);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        self.viewport = inner;
+        self.visible_height = usize::from(inner.height);
+
+        let items = layout_items(view, locale, inner.width);
+        self.content_height = items
+            .last()
+            .map_or(0, |item| item.start.saturating_add(item.height));
+        self.scroll
+            .set_lines(vec![String::new(); self.content_height]);
+        let maximum = self.maximum_scroll_offset();
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum));
+        let focused_item = items.iter().find(|item| {
+            matches!(&item.item, RenderItem::Control(control) if control.id == view.focused())
+        });
+        let reflow = focused_item.map_or((self.content_height, 0, 0), |item| {
+            (self.content_height, item.start, item.height)
+        });
+        let alignment_changed =
+            AlignmentSignature::update(&mut self.alignment, view.focused(), inner, reflow);
+        if (self.pending_ensure_focus || alignment_changed)
+            && let Some(item) = focused_item
+        {
+            self.ensure_visible(item.start, item.height);
+            self.pending_ensure_focus = false;
+        }
+
+        for item in &items {
+            let Some(clip) = self.visible_band(item.start, item.height) else {
+                continue;
+            };
+            match &item.item {
+                RenderItem::Spacer => {}
+                RenderItem::Heading(value) => clip.paint_paragraph(
+                    frame.buffer_mut(),
+                    Paragraph::new(value.as_str())
+                        .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                ),
+                RenderItem::Copy(value) => clip.paint_paragraph(
+                    frame.buffer_mut(),
+                    Paragraph::new(value.as_str())
+                        .wrap(Wrap { trim: false })
+                        .style(Style::default().fg(Color::DarkGray)),
+                ),
+                RenderItem::Control(control) => {
+                    self.render_control(frame, clip, control, view, locale);
+                }
+            }
+        }
+        self.render_open_dropdowns(frame);
+        if let Some(picker) = view.agent_skill_install() {
+            self.render_agent_skill_picker(frame, area, picker, locale);
+        } else {
+            if self.agent_signature.take().is_some() {
+                self.agent_click.cancel();
+            }
+            self.agent_clicks.clear();
+            self.agent_target_areas.clear();
+            self.agent_cancel_area = None;
+        }
+    }
+
+    /// Dispatch one terminal event through the active Preferences widget.
+    #[must_use]
+    pub(crate) fn handle_event(
+        &mut self,
+        event: Event,
+        view: &PreferencesView,
+    ) -> PreferencesEventHandling {
+        if let Some(picker) = view.agent_skill_install() {
+            return match self.handle_agent_skill_overlay_event(event, view, picker) {
+                AgentSkillOverlayEventHandling::Action(action) => {
+                    PreferencesEventHandling::Action(action)
+                }
+                AgentSkillOverlayEventHandling::Consumed => PreferencesEventHandling::Consumed,
+            };
+        }
+        self.sync(view, Locale::En);
+        if matches!(event, Event::FocusGained | Event::FocusLost) {
+            self.cancel_click();
+        }
+        let focused = view.focused();
+
+        if let Event::Key(key) = &event
+            && key.kind != KeyEventKind::Release
+            && let Some(handling) = self.handle_open_select_key(focused, key)
+        {
+            return handling;
+        }
+        if let Event::Mouse(mouse) = &event {
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) {
+                self.click.cancel();
+                for widget in self.widgets.values_mut() {
+                    let PreferencesWidget::Choice {
+                        state,
+                        presentation: ChoicePresentation::Picker,
+                        dropdown_regions,
+                        ..
+                    } = widget
+                    else {
+                        continue;
+                    };
+                    if state.is_open
+                        && dropdown_regions
+                            .iter()
+                            .any(|region| region.contains(mouse.column, mouse.row))
+                    {
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            state.highlight_prev();
+                        } else {
+                            state.highlight_next();
+                        }
+                        state.ensure_visible(dropdown_regions.len().max(1));
+                        return PreferencesEventHandling::Consumed;
+                    }
+                }
+            }
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) && handle_scrollable_content_mouse(
+                &mut self.scroll,
+                mouse,
+                self.viewport,
+                self.visible_height,
+            )
+            .is_some()
+            {
+                return PreferencesEventHandling::Consumed;
+            }
+            let dropdown = self.widgets.iter().find_map(|(id, widget)| {
+                let PreferencesWidget::Choice {
+                    state,
+                    presentation: ChoicePresentation::Picker,
+                    dropdown_regions,
+                    dropdown_panel,
+                    ..
+                } = widget
+                else {
+                    return None;
+                };
+                state.is_open.then_some(())?;
+                dropdown_regions
+                    .iter()
+                    .rev()
+                    .find(|region| region.contains(mouse.column, mouse.row))
+                    .and_then(|region| match region.data {
+                        SelectAction::Select(option) => {
+                            Some(PreferencesHit::Dropdown { id: *id, option })
+                        }
+                        SelectAction::Focus | SelectAction::Open | SelectAction::Close => None,
+                    })
+                    .or_else(|| {
+                        let in_panel = dropdown_panel
+                            .is_some_and(|panel| panel.contains((mouse.column, mouse.row).into()));
+                        (in_panel || self.clicks.handle_click(mouse.column, mouse.row).is_none())
+                            .then_some(PreferencesHit::Control(*id))
+                    })
+            });
+            let target =
+                dropdown.or_else(|| self.clicks.handle_click(mouse.column, mouse.row).cloned());
+            if is_primary_down(mouse)
+                && let Some(PreferencesHit::Control(id)) = target.as_ref()
+                && let Some(editable) = self.editables.get(id).copied()
+                && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(id)
+            {
+                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+            }
+            return match self.click.update(mouse, target.as_ref()) {
+                ClickOutcome::Armed => PreferencesEventHandling::Consumed,
+                ClickOutcome::Activated(PreferencesHit::Dropdown { id, option }) => self
+                    .widgets
+                    .get_mut(&id)
+                    .and_then(|widget| match widget {
+                        PreferencesWidget::Choice { state, values, .. } => {
+                            state.close();
+                            values.get(option)
+                        }
+                        PreferencesWidget::Input(_) | PreferencesWidget::Button(_) => None,
+                    })
+                    .map_or(PreferencesEventHandling::Consumed, |value| {
+                        choice_action(id, value)
+                    }),
+                ClickOutcome::Activated(hit) => self.activate_hit(hit, view),
+                ClickOutcome::Ignored => PreferencesEventHandling::Ignored,
+            };
+        }
+        if let Event::Paste(value) = event {
+            return self.handle_paste(focused, &value);
+        }
+        let Event::Key(key) = event else {
+            return PreferencesEventHandling::Ignored;
+        };
+        if key.kind == KeyEventKind::Release {
+            return PreferencesEventHandling::Ignored;
+        }
+
+        if let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) {
+            let before = state.value().to_owned();
+            if state.handle_event(&Event::Key(key)).is_some() {
+                return if before == state.value() {
+                    PreferencesEventHandling::Consumed
+                } else {
+                    input_action(focused, state.value().to_owned())
+                };
+            }
+        }
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('s'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                return PreferencesEventHandling::Action(PreferencesAction::Save);
+            }
+            (KeyCode::Esc, _) => {
+                return PreferencesEventHandling::Action(PreferencesAction::Close);
+            }
+            (KeyCode::Tab, _) => return self.move_focus(true),
+            (KeyCode::BackTab, _) => return self.move_focus(false),
+            (KeyCode::PageUp | KeyCode::PageDown, _) => {
+                let _ = handle_scrollable_content_key(&mut self.scroll, &key, self.visible_height);
+                return PreferencesEventHandling::Consumed;
+            }
+            (KeyCode::Char('o'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && !matches!(
+                        self.widgets.get(&focused),
+                        Some(PreferencesWidget::Input(_))
+                    ) =>
+            {
+                return PreferencesEventHandling::Action(PreferencesAction::ManageAgents);
+            }
+            (KeyCode::Char('k'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && !matches!(
+                        self.widgets.get(&focused),
+                        Some(PreferencesWidget::Input(_))
+                    ) =>
+            {
+                return PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill);
+            }
+            _ => {}
+        }
+
+        match self.widgets.get_mut(&focused) {
+            Some(PreferencesWidget::Choice {
+                state,
+                values,
+                presentation: ChoicePresentation::Radio,
+                ..
+            }) => {
+                let next = match key.code {
+                    KeyCode::Right | KeyCode::Down => Some(true),
+                    KeyCode::Left | KeyCode::Up => Some(false),
+                    _ => None,
+                };
+                if let Some(forward) = next {
+                    let current = state.selected_index.unwrap_or_default();
+                    let selected = if forward {
+                        current
+                            .saturating_add(1)
+                            .min(values.len().saturating_sub(1))
+                    } else {
+                        current.saturating_sub(1)
+                    };
+                    state.select(selected);
+                    return values
+                        .get(selected)
+                        .map_or(PreferencesEventHandling::Consumed, |value| {
+                            choice_action(focused, value)
+                        });
+                }
+            }
+            Some(PreferencesWidget::Button(_))
+                if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) =>
+            {
+                return button_action(focused);
+            }
+            Some(PreferencesWidget::Input(_))
+                if matches!(key.code, KeyCode::Down | KeyCode::Up) =>
+            {
+                return self.move_focus(key.code == KeyCode::Down);
+            }
+            Some(PreferencesWidget::Choice { .. })
+            | Some(PreferencesWidget::Button(_))
+            | Some(PreferencesWidget::Input(_))
+            | None => {}
+        }
+        PreferencesEventHandling::Ignored
+    }
+
+    #[cfg(test)]
+    fn control_area(&self, id: PreferencesControlId) -> Option<Rect> {
+        self.control_areas
+            .iter()
+            .find_map(|(candidate, area)| (*candidate == id).then_some(*area))
+    }
+
+    #[cfg(test)]
+    const fn agent_cancel_area(&self) -> Option<Rect> {
+        self.agent_cancel_area
+    }
+
+    #[cfg(test)]
+    fn agent_target_area(&self, index: usize) -> Option<Rect> {
+        self.agent_target_areas
+            .iter()
+            .find_map(|(candidate, area)| (*candidate == index).then_some(*area))
+    }
+
+    #[cfg(test)]
+    fn scroll_offset(&self) -> usize {
+        self.scroll.scroll_offset()
+    }
+
+    fn maximum_scroll_offset(&self) -> usize {
+        self.content_height.saturating_sub(self.visible_height)
+    }
+
+    fn render_agent_skill_picker(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        picker: &skit_ui::AgentSkillInstallView,
+        locale: Locale,
+    ) {
+        if self.agent_signature.as_deref() != Some(picker.targets()) {
+            self.agent_click.cancel();
+            self.agent_signature = Some(picker.targets().to_vec());
+        }
+        self.agent_clicks.clear();
+        self.agent_target_areas.clear();
+        self.agent_cancel_area = None;
+        self.agent_picker.set_total(picker.targets().len());
+        if let Some(selected) = picker.selected() {
+            self.agent_picker.select(selected);
+        }
+
+        let list_rows = picker.targets().len().clamp(1, 8);
+        let desired_height = u16::try_from(list_rows.saturating_add(4)).unwrap_or(u16::MAX);
+        let panel = centered(area, 76, desired_height.max(5));
+        frame.render_widget(Clear, panel);
+        let block = padded_panel(
+            text(locale, "Teach an AI agent to use skit").into_owned(),
+            BOX_INDIGO,
+        );
+        let inner = block.inner(panel);
+        frame.render_widget(block, panel);
+
+        let preview_height = u16::from(!picker.targets().is_empty() && inner.height >= 3);
+        let cancel_height = inner.height.min(1);
+        let [list_area, preview_area, cancel_area] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(preview_height),
+            Constraint::Length(cancel_height),
+        ])
+        .areas(inner);
+        self.agent_list_area = list_area;
+        self.agent_picker_height = usize::from(list_area.height);
+        self.agent_picker
+            .ensure_visible(self.agent_picker_height.max(1));
+
+        if picker.targets().is_empty() {
+            frame.render_widget(
+                Paragraph::new(text(
+                    locale,
+                    "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Install by hand with: skit agent install --to DIR",
+                ))
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::DarkGray)),
+                list_area,
+            );
+        } else {
+            let labels = picker
+                .targets()
+                .iter()
+                .map(|target| {
+                    let scope = match target.scope {
+                        AgentScope::User => text(locale, "user"),
+                        AgentScope::Project => text(locale, "project"),
+                    };
+                    format!("{} ({scope})", target.name)
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(
+                ListPicker::new(&labels, &self.agent_picker).style(ListPickerStyle {
+                    selected_style: Style::default()
+                        .fg(Color::Black)
+                        .bg(ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                    normal_style: Style::default().fg(Color::White),
+                    indicator_style: Style::default().fg(ACCENT),
+                    border_style: Style::default(),
+                    indicator: "▶ ",
+                    indicator_empty: "  ",
+                    bordered: false,
+                }),
+                list_area,
+            );
+            for visible in 0..self.agent_picker_height.min(picker.targets().len()) {
+                let index = usize::from(self.agent_picker.scroll).saturating_add(visible);
+                let target_area = Rect::new(
+                    list_area.x,
+                    list_area
+                        .y
+                        .saturating_add(u16::try_from(visible).unwrap_or(u16::MAX)),
+                    list_area.width,
+                    1,
+                );
+                self.agent_clicks
+                    .register(target_area, AgentSkillHit::Target(index));
+                self.agent_target_areas.push((index, target_area));
+            }
+            if let Some(target) = picker.selected_target() {
+                frame.render_widget(
+                    Paragraph::new(target.skills_dir().display().to_string())
+                        .style(Style::default().fg(Color::DarkGray)),
+                    preview_area,
+                );
+            }
+        }
+
+        if !cancel_area.is_empty() {
+            let label = text(locale, "Cancel");
+            let width = u16::try_from(label.as_ref().width().saturating_add(2))
+                .unwrap_or(u16::MAX)
+                .min(cancel_area.width);
+            let button_area = Rect::new(cancel_area.x, cancel_area.y, width, 1);
+            let region = Button::new(&label, &self.agent_cancel)
+                .variant(ButtonVariant::SingleLine)
+                .style(
+                    ratatui_interact::components::ButtonStyle::new(ButtonVariant::SingleLine)
+                        .focused(Color::White, ACCENT)
+                        .unfocused(Color::White, BOX_DIM),
+                )
+                .render_stateful(button_area, frame.buffer_mut());
+            self.agent_cancel_area = Some(region.area);
+            self.agent_clicks
+                .register(region.area, AgentSkillHit::Cancel);
+        }
+    }
+
+    pub(crate) fn handle_agent_skill_overlay_event(
+        &mut self,
+        event: Event,
+        view: &PreferencesView,
+        picker: &skit_ui::AgentSkillInstallView,
+    ) -> AgentSkillOverlayEventHandling {
+        self.sync(view, Locale::En);
+        if matches!(event, Event::FocusGained | Event::FocusLost) {
+            self.cancel_click();
+        }
+        self.handle_agent_skill_event(event, picker)
+    }
+
+    fn handle_agent_skill_event(
+        &mut self,
+        event: Event,
+        picker: &skit_ui::AgentSkillInstallView,
+    ) -> AgentSkillOverlayEventHandling {
+        let selected = picker.selected().unwrap_or_default();
+        let selection = match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                KeyCode::Esc => {
+                    return AgentSkillOverlayEventHandling::Action(
+                        PreferencesAction::CloseAgentSkillTargets,
+                    );
+                }
+                KeyCode::Enter if picker.selected().is_some() => {
+                    return AgentSkillOverlayEventHandling::Action(
+                        PreferencesAction::ConfirmAgentSkillTarget,
+                    );
+                }
+                KeyCode::Up => Some(selected.saturating_sub(1)),
+                KeyCode::Down => Some(
+                    selected
+                        .saturating_add(1)
+                        .min(picker.targets().len().saturating_sub(1)),
+                ),
+                KeyCode::Home => Some(0),
+                KeyCode::End => Some(picker.targets().len().saturating_sub(1)),
+                KeyCode::PageUp => Some(selected.saturating_sub(self.agent_picker_height.max(1))),
+                KeyCode::PageDown => Some(
+                    selected
+                        .saturating_add(self.agent_picker_height.max(1))
+                        .min(picker.targets().len().saturating_sub(1)),
+                ),
+                _ => return AgentSkillOverlayEventHandling::Consumed,
+            },
+            Event::Mouse(mouse)
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) && self
+                    .agent_list_area
+                    .contains((mouse.column, mouse.row).into()) =>
+            {
+                self.agent_click.cancel();
+                Some(if mouse.kind == MouseEventKind::ScrollUp {
+                    selected.saturating_sub(1)
+                } else {
+                    selected
+                        .saturating_add(1)
+                        .min(picker.targets().len().saturating_sub(1))
+                })
+            }
+            Event::Mouse(mouse) => {
+                let target = self.agent_clicks.handle_click(mouse.column, mouse.row);
+                return match self.agent_click.update(&mouse, target) {
+                    ClickOutcome::Activated(AgentSkillHit::Target(index)) => {
+                        AgentSkillOverlayEventHandling::Action(
+                            PreferencesAction::ActivateAgentSkillTarget(index),
+                        )
+                    }
+                    ClickOutcome::Activated(AgentSkillHit::Cancel) => {
+                        AgentSkillOverlayEventHandling::Action(
+                            PreferencesAction::CloseAgentSkillTargets,
+                        )
+                    }
+                    ClickOutcome::Armed | ClickOutcome::Ignored => {
+                        AgentSkillOverlayEventHandling::Consumed
+                    }
+                };
+            }
+            Event::FocusGained
+            | Event::FocusLost
+            | Event::Paste(_)
+            | Event::Key(_)
+            | Event::Resize(_, _) => return AgentSkillOverlayEventHandling::Consumed,
+        };
+        selection.filter(|_| !picker.targets().is_empty()).map_or(
+            AgentSkillOverlayEventHandling::Consumed,
+            |index| {
+                AgentSkillOverlayEventHandling::Action(PreferencesAction::SelectAgentSkillTarget(
+                    index,
+                ))
+            },
+        )
+    }
+
+    pub(crate) fn sync(&mut self, view: &PreferencesView, locale: Locale) {
+        let controls = view.controls();
+        let signature = PreferencesSignature(
+            controls
+                .iter()
+                .map(|control| (control.id, control_shape(control)))
+                .collect(),
+        );
+        if self.signature.as_ref() != Some(&signature) {
+            self.click.cancel();
+            self.widgets = controls
+                .iter()
+                .map(|control| (control.id, widget(control, locale)))
+                .collect();
+            self.focus.clear();
+            self.focus
+                .register_all(controls.iter().map(|control| control.id));
+            self.signature = Some(signature);
+            self.pending_ensure_focus = true;
+        } else {
+            for control in &controls {
+                if let Some(widget) = self.widgets.get_mut(&control.id) {
+                    sync_widget(widget, control, locale);
+                }
+            }
+        }
+        if self.focus.current() != Some(&view.focused()) {
+            self.focus.set(view.focused());
+            self.pending_ensure_focus = true;
+        }
+        for (id, widget) in &mut self.widgets {
+            set_widget_focus(widget, self.focus.is_focused(id));
+        }
+    }
+
+    fn render_control(
+        &mut self,
+        frame: &mut Frame,
+        clip: RowClip,
+        control: &PreferencesControl,
+        view: &PreferencesView,
+        locale: Locale,
+    ) {
+        let area = clip.area();
+        self.control_areas.push((control.id, area));
+        let focused = view.focused() == control.id;
+        let label = text(locale, &control.label);
+        let Some(widget) = self.widgets.get_mut(&control.id) else {
+            return;
+        };
+        match widget {
+            PreferencesWidget::Input(state) => {
+                if let Some(editable) =
+                    render_line_input_band(frame, clip, state, false, focused, &label, None)
+                {
+                    self.editables.insert(control.id, editable);
+                }
+                if state.value().is_empty()
+                    && let PreferencesControlKind::Text(model) = &control.kind
+                    && let Some(content) = clip.row(1)
+                {
+                    let inner = Rect::new(
+                        content.x.saturating_add(1),
+                        content.y,
+                        content.width.saturating_sub(2),
+                        1,
+                    );
+                    frame.render_widget(
+                        Paragraph::new(text(locale, &model.placeholder))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        inner,
+                    );
+                }
+                self.clicks
+                    .register(area, PreferencesHit::Control(control.id));
+            }
+            PreferencesWidget::Choice {
+                state,
+                labels,
+                presentation: ChoicePresentation::Picker,
+                select_area,
+                ..
+            } => {
+                let placeholder = text(locale, "Select");
+                if clip.is_full() {
+                    let region = Select::new(labels, state)
+                        .label(&label)
+                        .placeholder(&placeholder)
+                        .style(select_style())
+                        .render_stateful(frame, area);
+                    *select_area = Some(region.area);
+                } else {
+                    let style = select_style();
+                    let display = state
+                        .selected_index
+                        .and_then(|index| labels.get(index))
+                        .map_or(placeholder.as_ref(), String::as_str);
+                    let display_style = if state.selected_index.is_some() {
+                        Style::default().fg(style.text_fg)
+                    } else {
+                        Style::default().fg(style.placeholder_fg)
+                    };
+                    let border = if state.focused {
+                        style.focused_border
+                    } else {
+                        style.unfocused_border
+                    };
+                    clip.paint_bordered_paragraph(
+                        frame.buffer_mut(),
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(display, display_style),
+                            Span::styled(
+                                format!(" {}", style.dropdown_indicator),
+                                Style::default().fg(border),
+                            ),
+                        ])),
+                        Line::from(format!(" {label} ")),
+                        Style::default().fg(border),
+                        0,
+                    );
+                    *select_area = Some(area);
+                }
+                if let Some(select_area) = *select_area {
+                    self.clicks
+                        .register(select_area, PreferencesHit::Control(control.id));
+                }
+            }
+            PreferencesWidget::Choice {
+                state,
+                labels,
+                presentation: ChoicePresentation::Radio,
+                buttons,
+                ..
+            } => {
+                render_radio_band(
+                    frame,
+                    clip,
+                    control,
+                    &label,
+                    labels,
+                    buttons,
+                    &mut self.clicks,
+                );
+                state.ensure_visible(1);
+            }
+            PreferencesWidget::Button(state) => {
+                let shown = text(locale, &control.label);
+                let region = Button::new(&shown, state)
+                    .variant(ButtonVariant::SingleLine)
+                    .style(
+                        ratatui_interact::components::ButtonStyle::new(ButtonVariant::SingleLine)
+                            .focused(Color::White, ACCENT)
+                            .unfocused(Color::White, BOX_DIM),
+                    )
+                    .render_stateful(area, frame.buffer_mut());
+                self.clicks
+                    .register(region.area, PreferencesHit::Control(control.id));
+                self.control_areas
+                    .last_mut()
+                    .expect("control area was inserted")
+                    .1 = region.area;
+            }
+        }
+    }
+
+    fn render_open_dropdowns(&mut self, frame: &mut Frame) {
+        let screen = frame.area();
+        for widget in self.widgets.values_mut() {
+            let PreferencesWidget::Choice {
+                state,
+                labels,
+                presentation: ChoicePresentation::Picker,
+                select_area,
+                dropdown_panel,
+                dropdown_regions,
+                ..
+            } = widget
+            else {
+                continue;
+            };
+            if state.is_open {
+                let Some(anchor) = *select_area else {
+                    *dropdown_panel = None;
+                    dropdown_regions.clear();
+                    continue;
+                };
+                let style = select_style();
+                *dropdown_panel =
+                    select_dropdown_panel(anchor, screen, labels.len(), style.max_visible_options);
+                *dropdown_regions = Select::new(labels, state)
+                    .style(style)
+                    .render_dropdown(frame, anchor, screen);
+            } else {
+                *dropdown_panel = None;
+                dropdown_regions.clear();
+            }
+        }
+    }
+
+    fn handle_open_select_key(
+        &mut self,
+        focused: PreferencesControlId,
+        key: &KeyEvent,
+    ) -> Option<PreferencesEventHandling> {
+        let PreferencesWidget::Choice {
+            state,
+            values,
+            presentation: ChoicePresentation::Picker,
+            ..
+        } = self.widgets.get_mut(&focused)?
+        else {
+            return None;
+        };
+        let relevant = if state.is_open {
+            is_open_select_key(key.code)
+        } else {
+            is_closed_select_key(key.code)
+        };
+        if !relevant {
+            return None;
+        }
+        Some(match handle_select_key(key, state) {
+            Some(SelectAction::Select(index)) => values
+                .get(index)
+                .map_or(PreferencesEventHandling::Consumed, |value| {
+                    choice_action(focused, value)
+                }),
+            Some(SelectAction::Focus | SelectAction::Open | SelectAction::Close) | None => {
+                PreferencesEventHandling::Consumed
+            }
+        })
+    }
+
+    fn handle_paste(
+        &mut self,
+        focused: PreferencesControlId,
+        value: &str,
+    ) -> PreferencesEventHandling {
+        let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) else {
+            return PreferencesEventHandling::Ignored;
+        };
+        for character in value.chars() {
+            let _ = state.handle(tui_input::InputRequest::InsertChar(character));
+        }
+        input_action(focused, state.value().to_owned())
+    }
+
+    fn activate_hit(
+        &mut self,
+        hit: PreferencesHit,
+        view: &PreferencesView,
+    ) -> PreferencesEventHandling {
+        match hit {
+            PreferencesHit::Control(id) => match self.widgets.get_mut(&id) {
+                Some(PreferencesWidget::Button(_)) => button_action(id),
+                Some(PreferencesWidget::Choice {
+                    state,
+                    presentation: ChoicePresentation::Picker,
+                    ..
+                }) => {
+                    state.toggle();
+                    if view.focused() == id {
+                        PreferencesEventHandling::Consumed
+                    } else {
+                        PreferencesEventHandling::Action(PreferencesAction::Focus(id))
+                    }
+                }
+                Some(PreferencesWidget::Input(_))
+                | Some(PreferencesWidget::Choice {
+                    presentation: ChoicePresentation::Radio,
+                    ..
+                }) => PreferencesEventHandling::Action(PreferencesAction::Focus(id)),
+                None => PreferencesEventHandling::Ignored,
+            },
+            PreferencesHit::Radio { id, option } => self
+                .widgets
+                .get(&id)
+                .and_then(|widget| match widget {
+                    PreferencesWidget::Choice { values, .. } => values.get(option),
+                    PreferencesWidget::Input(_) | PreferencesWidget::Button(_) => None,
+                })
+                .map_or(PreferencesEventHandling::Ignored, |value| {
+                    choice_action(id, value)
+                }),
+            PreferencesHit::Dropdown { .. } => PreferencesEventHandling::Consumed,
+        }
+    }
+
+    fn move_focus(&mut self, forward: bool) -> PreferencesEventHandling {
+        PreferencesEventHandling::Action(self.move_focus_action(forward))
+    }
+
+    pub(crate) fn move_focus_action(&mut self, forward: bool) -> PreferencesAction {
+        if forward {
+            self.focus.next();
+        } else {
+            self.focus.prev();
+        }
+        // The session moves its own cursor here, so the next sync sees no change and would never
+        // scroll. Without this the keyboard can focus a control that is never drawn at all.
+        self.pending_ensure_focus = true;
+        PreferencesAction::Focus(
+            self.focus
+                .current()
+                .copied()
+                .expect("the Preferences focus ring is empty"),
+        )
+    }
+
+    fn ensure_visible(&mut self, start: usize, height: usize) {
+        let offset = self.scroll.scroll_offset();
+        let end = start.saturating_add(height);
+        let next = match start.cmp(&offset) {
+            Ordering::Less => start,
+            Ordering::Equal | Ordering::Greater => {
+                offset.max(end.saturating_sub(self.visible_height))
+            }
+        };
+        self.scroll.set_scroll_offset(next);
+    }
+
+    fn visible_band(&self, start: usize, height: usize) -> Option<RowClip> {
+        let offset = self.scroll.scroll_offset();
+        let viewport_end = offset.saturating_add(self.visible_height);
+        let end = start.saturating_add(height);
+        if end <= offset || start >= viewport_end {
+            return None;
+        }
+        let clipped_start = start.max(offset);
+        let clipped_end = end.min(viewport_end);
+        Some(RowClip::new(
+            height,
+            clipped_start.saturating_sub(start),
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y.saturating_add(
+                    u16::try_from(clipped_start.saturating_sub(offset))
+                        .expect("the Preferences band starts inside its viewport"),
+                ),
+                self.viewport.width,
+                u16::try_from(clipped_end.saturating_sub(clipped_start))
+                    .expect("the Preferences band height fits its viewport"),
+            ),
+        ))
+    }
+}
+
+fn editable_geometry_snapshot(geometry: EditableGeometry) -> serde_json::Value {
+    serde_json::json!({
+        "content": snapshot_rect(geometry.content()),
+        "visual_scroll": geometry.visual_scroll(),
+        "secret": geometry.secret(),
+    })
+}
+
+fn agent_target_snapshot(target: &AgentTarget) -> serde_json::Value {
+    let AgentTarget { name, scope, base } = target;
+    serde_json::json!({
+        "name": name,
+        "scope": scope,
+        "base": snapshot_path(base),
+    })
+}
+
+fn preferences_signature_snapshot(
+    signature: &PreferencesSignature,
+) -> Result<serde_json::Value, AgentReviewSnapshotError> {
+    let PreferencesSignature(controls) = signature;
+    controls
+        .iter()
+        .map(|(id, shape)| {
+            let shape = match shape {
+                PreferencesControlShape::Text => serde_json::json!("text"),
+                PreferencesControlShape::Choice {
+                    options,
+                    presentation,
+                } => {
+                    let presentation =
+                        snapshot_value("preferences.signature.presentation", presentation)?;
+                    serde_json::json!({
+                        "choice": {
+                            "options": options,
+                            "presentation": presentation,
+                        }
+                    })
+                }
+                PreferencesControlShape::Button => serde_json::json!("button"),
+            };
+            Ok(serde_json::json!({
+                "id": snapshot_value("preferences.signature.id", id)?,
+                "shape": shape,
+            }))
+        })
+        .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()
+        .map(serde_json::Value::Array)
+}
+
+fn preferences_hit_snapshot(
+    hit: &PreferencesHit,
+) -> Result<serde_json::Value, AgentReviewSnapshotError> {
+    match hit {
+        PreferencesHit::Control(id) => Ok(serde_json::json!({
+            "control": snapshot_value("preferences.hit.control", id)?,
+        })),
+        PreferencesHit::Radio { id, option } => Ok(serde_json::json!({
+            "radio": {
+                "id": snapshot_value("preferences.hit.radio.id", id)?,
+                "option": option,
+            }
+        })),
+        PreferencesHit::Dropdown { id, option } => Ok(serde_json::json!({
+            "dropdown": {
+                "id": snapshot_value("preferences.hit.dropdown.id", id)?,
+                "option": option,
+            }
+        })),
+    }
+}
+
+fn preferences_clicks_snapshot(
+    clicks: &ClickRegionRegistry<PreferencesHit>,
+) -> Result<serde_json::Value, AgentReviewSnapshotError> {
+    clicks
+        .regions()
+        .iter()
+        .map(|region| {
+            let target = preferences_hit_snapshot(&region.data)?;
+            Ok(serde_json::json!({
+                "area": snapshot_rect(region.area),
+                "target": target,
+            }))
+        })
+        .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()
+        .map(serde_json::Value::Array)
+}
+
+fn agent_hit_snapshot(hit: &AgentSkillHit) -> serde_json::Value {
+    match hit {
+        AgentSkillHit::Target(index) => serde_json::json!({"target": index}),
+        AgentSkillHit::Cancel => serde_json::json!("cancel"),
+    }
+}
+
+fn agent_clicks_snapshot(clicks: &ClickRegionRegistry<AgentSkillHit>) -> serde_json::Value {
+    serde_json::Value::Array(
+        clicks
+            .regions()
+            .iter()
+            .map(|region| {
+                let target = agent_hit_snapshot(&region.data);
+                serde_json::json!({
+                    "area": snapshot_rect(region.area),
+                    "target": target,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn render_radio_band(
+    frame: &mut Frame,
+    clip: RowClip,
+    control: &PreferencesControl,
+    label: &str,
+    labels: &[String],
+    buttons: &[ButtonState],
+    clicks: &mut ClickRegionRegistry<PreferencesHit>,
+) {
+    let label_rows = usize::from(!label.is_empty());
+    let stacked = radio_options_stack(control.id, clip.area().width);
+    for (source, row) in clip.rows() {
+        if source < label_rows {
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(Color::White)),
+                row,
+            );
+            continue;
+        }
+        let target_row = source.saturating_sub(label_rows);
+        let mut option_row = 0_usize;
+        let mut x = row.x;
+        for (index, (option_label, button)) in labels.iter().zip(buttons.iter()).enumerate() {
+            let wanted = u16::try_from(option_label.width().saturating_add(2))
+                .unwrap_or(u16::MAX)
+                .min(row.width.max(1));
+            if x > row.x && (stacked || x.saturating_add(wanted) > row.right()) {
+                x = row.x;
+                option_row = option_row.saturating_add(1);
+            }
+            if option_row == target_row {
+                let option_area = Rect::new(x, row.y, wanted, 1);
+                let region = Button::new(option_label, button)
+                    .variant(ButtonVariant::Toggle)
+                    .style(radio_style())
+                    .render_stateful(option_area, frame.buffer_mut());
+                clicks.register(
+                    region.area,
+                    PreferencesHit::Radio {
+                        id: control.id,
+                        option: index,
+                    },
+                );
+            }
+            x = x.saturating_add(wanted).saturating_add(1);
+        }
+    }
+}
+
+fn is_open_select_key(code: KeyCode) -> bool {
+    [
+        KeyCode::Esc,
+        KeyCode::Enter,
+        KeyCode::Char(' '),
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+    ]
+    .contains(&code)
+}
+
+fn is_closed_select_key(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Down)
+}
+
+fn layout_items(view: &PreferencesView, locale: Locale, width: u16) -> Vec<PositionedItem> {
+    let mut positioned = Vec::new();
+    let mut start = 0_usize;
+    for (index, section) in view.sections().into_iter().enumerate() {
+        if index > 0 {
+            push_item(&mut positioned, &mut start, RenderItem::Spacer, 1);
+        }
+        push_item(
+            &mut positioned,
+            &mut start,
+            RenderItem::Heading(format_display(locale, &section.title)),
+            1,
+        );
+        if section.help_placement == PreferencesTextPlacement::BeforeControls {
+            push_copy(&mut positioned, &mut start, locale, &section.help, width);
+        }
+        if section.status_placement == PreferencesTextPlacement::BeforeControls {
+            for status in &section.status {
+                push_copy(&mut positioned, &mut start, locale, status, width);
+            }
+        }
+        for control in section.controls {
+            let height = control_height(&control, locale, width);
+            push_item(
+                &mut positioned,
+                &mut start,
+                RenderItem::Control(control),
+                height,
+            );
+            if view.error().is_some() && positioned.last().is_some_and(|item| {
+                matches!(&item.item, RenderItem::Control(control) if control.id == view.focused())
+            }) {
+                let error = view
+                    .error()
+                    .expect("validation error was checked")
+                    .message()
+                    .localize(locale);
+                push_item(
+                    &mut positioned,
+                    &mut start,
+                    RenderItem::Copy(error),
+                    1,
+                );
+            }
+        }
+        if section.status_placement == PreferencesTextPlacement::AfterControls {
+            for status in &section.status {
+                push_copy(&mut positioned, &mut start, locale, status, width);
+            }
+        }
+        if section.help_placement == PreferencesTextPlacement::AfterControls {
+            push_copy(&mut positioned, &mut start, locale, &section.help, width);
+        }
+    }
+    positioned
+}
+
+fn push_copy(
+    positioned: &mut Vec<PositionedItem>,
+    start: &mut usize,
+    locale: Locale,
+    value: &PreferencesDisplayText,
+    width: u16,
+) {
+    if value.key.is_empty() {
+        return;
+    }
+    let shown = format_display(locale, value);
+    let height = Paragraph::new(shown.as_str())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
+        .max(1);
+    push_item(positioned, start, RenderItem::Copy(shown), height);
+}
+
+fn push_item(
+    positioned: &mut Vec<PositionedItem>,
+    start: &mut usize,
+    item: RenderItem,
+    height: usize,
+) {
+    positioned.push(PositionedItem {
+        start: *start,
+        height,
+        item,
+    });
+    *start = start.saturating_add(height);
+}
+
+fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> usize {
+    match &control.kind {
+        PreferencesControlKind::Text(_) => 3,
+        PreferencesControlKind::Choice(choice)
+            if choice.presentation == ChoicePresentation::Picker =>
+        {
+            3
+        }
+        PreferencesControlKind::Choice(choice) => usize::from(!control.label.is_empty())
+            .saturating_add(
+                if radio_options_stack(control.id, width) {
+                    choice.options.len()
+                } else {
+                    radio_rows(&choice.options, locale, width)
+                }
+                .max(1),
+            ),
+        PreferencesControlKind::Button => 1,
+    }
+}
+
+fn radio_options_stack(id: PreferencesControlId, width: u16) -> bool {
+    !matches!(
+        id,
+        PreferencesControlId::MirrorMaster
+            | PreferencesControlId::PypiChoice
+            | PreferencesControlId::GithubChoice
+            | PreferencesControlId::NpmChoice
+    ) || crate::layout::is_narrow(width)
+}
+
+fn select_dropdown_panel(
+    anchor: Rect,
+    screen: Rect,
+    option_count: usize,
+    maximum_visible: u16,
+) -> Option<Rect> {
+    if option_count == 0 {
+        return None;
+    }
+    let visible_count = (option_count as u16).min(maximum_visible);
+    let desired_height = visible_count.saturating_add(2);
+    let space_below = screen.height.saturating_sub(anchor.y + anchor.height);
+    let space_above = anchor.y.saturating_sub(screen.y);
+    let (dropdown_y, available) = if space_below >= desired_height {
+        (anchor.y + anchor.height, space_below)
+    } else if space_above >= desired_height {
+        (anchor.y.saturating_sub(desired_height), space_above)
+    } else {
+        (anchor.y + anchor.height, space_below)
+    };
+    let panel = Rect::new(
+        anchor.x,
+        dropdown_y,
+        anchor.width,
+        desired_height.min(available),
+    );
+    (!panel.is_empty()).then_some(panel)
+}
+
+fn radio_rows(options: &[PreferencesOption], locale: Locale, width: u16) -> usize {
+    let mut rows = 1_usize;
+    let mut used = 0_u16;
+    for option in options {
+        let label = text(locale, &option.label);
+        let item = u16::try_from(label.as_ref().width().saturating_add(2))
+            .unwrap_or(u16::MAX)
+            .min(width.max(1));
+        if used.saturating_add(item) > width {
+            rows = rows.saturating_add(1);
+            used = 0;
+        }
+        used = used.saturating_add(item).saturating_add(1);
+    }
+    rows
+}
+
+fn centered(area: Rect, maximum_width: u16, desired_height: u16) -> Rect {
+    let [column] = Layout::horizontal([Constraint::Length(maximum_width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [panel] = Layout::vertical([Constraint::Length(desired_height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(column);
+    panel
+}
+
+fn format_display(locale: Locale, value: &PreferencesDisplayText) -> String {
+    if value.arguments.is_empty() {
+        return text(locale, &value.key).into_owned();
+    }
+    let arguments = value
+        .arguments
+        .iter()
+        .map(|argument| argument as &dyn Display)
+        .collect::<Vec<_>>();
+    format_text(locale, &value.key, &arguments)
+}
+
+fn control_shape(control: &PreferencesControl) -> PreferencesControlShape {
+    match &control.kind {
+        PreferencesControlKind::Text(_) => PreferencesControlShape::Text,
+        PreferencesControlKind::Choice(choice) => PreferencesControlShape::Choice {
+            options: choice
+                .options
+                .iter()
+                .map(|option| option.value.clone())
+                .collect(),
+            presentation: choice.presentation,
+        },
+        PreferencesControlKind::Button => PreferencesControlShape::Button,
+    }
+}
+
+fn widget(control: &PreferencesControl, locale: Locale) -> PreferencesWidget {
+    match &control.kind {
+        PreferencesControlKind::Text(model) => {
+            PreferencesWidget::Input(LineInput::new(model.value.clone()))
+        }
+        PreferencesControlKind::Choice(choice) => {
+            let selected = choice
+                .options
+                .iter()
+                .position(|option| option.value == choice.selected);
+            let mut state = selected.map_or_else(
+                || SelectState::new(choice.options.len()),
+                |index| SelectState::with_selected(choice.options.len(), index),
+            );
+            state.focused = false;
+            PreferencesWidget::Choice {
+                state,
+                values: choice
+                    .options
+                    .iter()
+                    .map(|option| option.value.clone())
+                    .collect(),
+                labels: choice
+                    .options
+                    .iter()
+                    .map(|option| text(locale, &option.label).into_owned())
+                    .collect(),
+                presentation: choice.presentation,
+                buttons: (0..choice.options.len())
+                    .map(|index| ButtonState::toggled(selected == Some(index)))
+                    .collect(),
+                select_area: None,
+                dropdown_panel: None,
+                dropdown_regions: Vec::new(),
+            }
+        }
+        PreferencesControlKind::Button => PreferencesWidget::Button(ButtonState::enabled()),
+    }
+}
+
+fn sync_widget(widget: &mut PreferencesWidget, control: &PreferencesControl, locale: Locale) {
+    match (widget, &control.kind) {
+        (PreferencesWidget::Input(state), PreferencesControlKind::Text(model))
+            if state.value() != model.value =>
+        {
+            *state = LineInput::new(model.value.clone());
+        }
+        (
+            PreferencesWidget::Choice {
+                state,
+                labels,
+                buttons,
+                ..
+            },
+            PreferencesControlKind::Choice(choice),
+        ) => {
+            let selected = choice
+                .options
+                .iter()
+                .position(|option| option.value == choice.selected);
+            if state.selected_index != selected {
+                state.selected_index = selected;
+                state.highlighted_index = selected.unwrap_or_default();
+            }
+            for (index, button) in buttons.iter_mut().enumerate() {
+                button.toggled = selected == Some(index);
+            }
+            *labels = choice
+                .options
+                .iter()
+                .map(|option| text(locale, &option.label).into_owned())
+                .collect();
+        }
+        (PreferencesWidget::Input(_), _)
+        | (PreferencesWidget::Choice { .. }, _)
+        | (PreferencesWidget::Button(_), _) => {}
+    }
+}
+
+fn set_widget_focus(widget: &mut PreferencesWidget, focused: bool) {
+    match widget {
+        PreferencesWidget::Input(_) => {}
+        PreferencesWidget::Choice { state, buttons, .. } => {
+            state.focused = focused;
+            let active = state.selected_index.unwrap_or(state.highlighted_index);
+            for (index, button) in buttons.iter_mut().enumerate() {
+                button.set_focused(focused && index == active);
+            }
+            if !focused {
+                state.close();
+            }
+        }
+        PreferencesWidget::Button(state) => state.set_focused(focused),
+    }
+}
+
+fn input_action(id: PreferencesControlId, value: String) -> PreferencesEventHandling {
+    let action = match id {
+        PreferencesControlId::Editor => PreferencesAction::SetEditor(value),
+        PreferencesControlId::BashPath => PreferencesAction::SetBashPath(value),
+        PreferencesControlId::PypiUrl => PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::PypiMirror,
+            value,
+        },
+        PreferencesControlId::GithubUrl => PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::GithubMirror,
+            value,
+        },
+        PreferencesControlId::NpmUrl => PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::NpmMirror,
+            value,
+        },
+        PreferencesControlId::Language
+        | PreferencesControlId::InteractiveForm
+        | PreferencesControlId::AfterRun
+        | PreferencesControlId::Javascript
+        | PreferencesControlId::ManageAgents
+        | PreferencesControlId::InstallAgentSkill
+        | PreferencesControlId::MirrorMaster
+        | PreferencesControlId::PypiChoice
+        | PreferencesControlId::GithubChoice
+        | PreferencesControlId::NpmChoice => return PreferencesEventHandling::Ignored,
+    };
+    PreferencesEventHandling::Action(action)
+}
+
+fn choice_action(id: PreferencesControlId, value: &str) -> PreferencesEventHandling {
+    let action = match id {
+        PreferencesControlId::Language => PreferencesAction::SetLanguage(value.to_owned()),
+        PreferencesControlId::InteractiveForm => {
+            PreferencesAction::SetInteractiveForm(if value == "plain" {
+                InteractiveFormChoice::Plain
+            } else {
+                InteractiveFormChoice::Tui
+            })
+        }
+        PreferencesControlId::AfterRun => PreferencesAction::SetAfterRun(if value == "stay" {
+            AfterRunChoice::Stay
+        } else {
+            AfterRunChoice::Exit
+        }),
+        PreferencesControlId::Javascript => PreferencesAction::SetJavascript(match value {
+            "deno" => JavascriptChoice::Deno,
+            "bun" => JavascriptChoice::Bun,
+            "node" => JavascriptChoice::Node,
+            _ => JavascriptChoice::Automatic,
+        }),
+        PreferencesControlId::MirrorMaster => PreferencesAction::SetMirrorMaster(value == "on"),
+        PreferencesControlId::PypiChoice => PreferencesAction::ChooseMirror {
+            field: PreferencesField::PypiMirror,
+            choice: mirror_choice(value),
+        },
+        PreferencesControlId::GithubChoice => PreferencesAction::ChooseMirror {
+            field: PreferencesField::GithubMirror,
+            choice: mirror_choice(value),
+        },
+        PreferencesControlId::NpmChoice => PreferencesAction::ChooseMirror {
+            field: PreferencesField::NpmMirror,
+            choice: mirror_choice(value),
+        },
+        PreferencesControlId::Editor
+        | PreferencesControlId::BashPath
+        | PreferencesControlId::ManageAgents
+        | PreferencesControlId::InstallAgentSkill
+        | PreferencesControlId::PypiUrl
+        | PreferencesControlId::GithubUrl
+        | PreferencesControlId::NpmUrl => return PreferencesEventHandling::Ignored,
+    };
+    PreferencesEventHandling::Action(action)
+}
+
+fn mirror_choice(value: &str) -> MirrorChoice {
+    match value {
+        "custom" => MirrorChoice::Custom,
+        "off" => MirrorChoice::Off,
+        preset => MirrorChoice::Preset(preset.to_owned()),
+    }
+}
+
+fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
+    match id {
+        PreferencesControlId::ManageAgents => {
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        }
+        PreferencesControlId::InstallAgentSkill => {
+            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+        }
+        PreferencesControlId::Language
+        | PreferencesControlId::Editor
+        | PreferencesControlId::InteractiveForm
+        | PreferencesControlId::AfterRun
+        | PreferencesControlId::Javascript
+        | PreferencesControlId::BashPath
+        | PreferencesControlId::MirrorMaster
+        | PreferencesControlId::PypiChoice
+        | PreferencesControlId::PypiUrl
+        | PreferencesControlId::GithubChoice
+        | PreferencesControlId::GithubUrl
+        | PreferencesControlId::NpmChoice
+        | PreferencesControlId::NpmUrl => PreferencesEventHandling::Ignored,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+    use ratatui_crossterm::crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    };
+    use skit_application::preferences::{
+        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
+        PreferencesDraft, PreferencesField, PreferencesSnapshot,
+    };
+    use skit_application::{AgentScope, AgentTarget};
+    use skit_i18n::Locale;
+    use skit_ui::{
+        FormInputKind, PreferencesAction, PreferencesChoiceControl, PreferencesControlId,
+        PreferencesTextControl, PreferencesView,
+    };
+
+    use super::*;
+
+    #[test]
+    fn dropdown_panel_prefers_available_space_and_has_no_empty_panel() {
+        let screen = Rect::new(0, 0, 40, 12);
+        let anchor = Rect::new(3, 8, 12, 1);
+        assert_eq!(select_dropdown_panel(anchor, screen, 0, 8), None);
+        assert_eq!(
+            select_dropdown_panel(anchor, screen, 3, 8),
+            Some(Rect::new(3, 3, 12, 5))
+        );
+    }
+    use crate::theme::{ACCENT, BOX_INDIGO, SELECT_BG};
+
+    fn view() -> PreferencesView {
+        PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned(), "zh-CN".to_owned(), "zh-TW".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: Some("vim".to_owned()),
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+            mirror: MirrorConfiguration::default(),
+        }))
+    }
+
+    fn complete_view() -> PreferencesView {
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned(), "zh-CN".to_owned(), "zh-TW".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: Some("vim".to_owned()),
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: Some(String::new()),
+            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+            mirror: MirrorConfiguration::default(),
+        }));
+        for field in [
+            PreferencesField::PypiMirror,
+            PreferencesField::GithubMirror,
+            PreferencesField::NpmMirror,
+        ] {
+            view.update(PreferencesAction::ChooseMirror {
+                field,
+                choice: MirrorChoice::Custom,
+            });
+        }
+        view
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn mouse(area: Rect, kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    const fn control_id(hit: &PreferencesHit) -> PreferencesControlId {
+        match hit {
+            PreferencesHit::Control(id)
+            | PreferencesHit::Radio { id, .. }
+            | PreferencesHit::Dropdown { id, .. } => *id,
+        }
+    }
+
+    fn draw(
+        session: &mut PreferencesWidgetSession,
+        view: &PreferencesView,
+        width: u16,
+        height: u16,
+        locale: Locale,
+    ) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), view, locale))
+            .unwrap();
+        terminal
+    }
+
+    fn text(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn language_picker_mouse_dismissal_owns_the_anchor_panel_and_outside() {
+        for target in ["anchor", "panel", "outside"] {
+            let mut session = PreferencesWidgetSession::default();
+            let view = view();
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            let anchor = session
+                .control_area(PreferencesControlId::Language)
+                .unwrap();
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                assert_eq!(
+                    session.handle_event(mouse(anchor, kind), &view),
+                    PreferencesEventHandling::Consumed
+                );
+            }
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(!language_picker_snapshot(&session).0.is_empty());
+            let area = match target {
+                "anchor" => anchor,
+                "panel" => language_picker_panel(&session),
+                _ => Rect::new(79, 29, 1, 1),
+            };
+            assert_eq!(
+                session.handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(
+                !language_picker_snapshot(&session).0.is_empty(),
+                "press alone must not close the picker"
+            );
+            assert_eq!(
+                session.handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(
+                language_picker_snapshot(&session).0.is_empty(),
+                "{target} must dismiss the picker without activating another control"
+            );
+        }
+    }
+
+    fn open_language_picker(session: &mut PreferencesWidgetSession) {
+        let widget = session
+            .widgets
+            .get_mut(&PreferencesControlId::Language)
+            .expect("the language control exists");
+        assert!(matches!(widget, PreferencesWidget::Choice { .. }));
+        if let PreferencesWidget::Choice { state, .. } = widget {
+            state.open();
+        }
+    }
+
+    fn language_picker_snapshot(
+        session: &PreferencesWidgetSession,
+    ) -> (Vec<ClickRegion<SelectAction>>, usize, Vec<String>) {
+        let widget = session
+            .widgets
+            .get(&PreferencesControlId::Language)
+            .expect("the language control exists");
+        assert!(matches!(widget, PreferencesWidget::Choice { .. }));
+        let mut snapshot = None;
+        if let PreferencesWidget::Choice {
+            state,
+            dropdown_regions,
+            values,
+            ..
+        } = widget
+        {
+            snapshot = Some((
+                dropdown_regions.clone(),
+                state.highlighted_index,
+                values.clone(),
+            ));
+        }
+        snapshot.expect("the language control is a picker")
+    }
+
+    fn language_picker_panel(session: &PreferencesWidgetSession) -> Rect {
+        let widget = session
+            .widgets
+            .get(&PreferencesControlId::Language)
+            .unwrap();
+        let mut panel = None;
+        if let PreferencesWidget::Choice { dropdown_panel, .. } = widget {
+            panel = *dropdown_panel;
+        }
+        panel.expect("the rendered language picker has a panel")
+    }
+
+    #[test]
+    fn screen_target_inventory_refuses_stale_control_and_agent_shapes() {
+        let preferences = view();
+        assert_eq!(
+            PreferencesWidgetSession::default().screen_target_inventory(&preferences),
+            Err(ScreenTargetError::StaleSession)
+        );
+
+        let target = AgentTarget {
+            name: "codex".to_owned(),
+            scope: AgentScope::User,
+            base: PathBuf::from("/tmp/codex"),
+        };
+        let mut agent_view = view();
+        agent_view.update(PreferencesAction::PresentAgentSkillTargets(vec![
+            target.clone(),
+        ]));
+        assert_eq!(
+            PreferencesWidgetSession::default().screen_target_inventory(&agent_view),
+            Err(ScreenTargetError::StaleSession)
+        );
+
+        let mut stale_index = PreferencesWidgetSession {
+            agent_signature: Some(vec![target]),
+            ..PreferencesWidgetSession::default()
+        };
+        stale_index
+            .agent_target_areas
+            .push((1, Rect::new(0, 0, 1, 1)));
+        assert_eq!(
+            stale_index.screen_target_inventory(&agent_view),
+            Err(ScreenTargetError::StaleSession)
+        );
+    }
+
+    #[test]
+    fn an_open_preferences_select_drops_its_anchor_when_scrolled_out() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        open_language_picker(&mut session);
+        session
+            .scroll
+            .set_scroll_offset(session.maximum_scroll_offset());
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        let (dropdown_regions, _, _) = language_picker_snapshot(&session);
+        assert!(
+            dropdown_regions.is_empty(),
+            "a clipped Preferences select reused its stale on-screen anchor"
+        );
+    }
+
+    #[test]
+    fn open_dropdown_omits_every_underlay_hit_behind_its_full_panel() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let screen = Rect::new(0, 0, 40, 15);
+        let _ = draw(&mut session, &view, screen.width, screen.height, Locale::En);
+        open_language_picker(&mut session);
+        let terminal = draw(&mut session, &view, screen.width, screen.height, Locale::En);
+
+        let (option_regions, _, _) = language_picker_snapshot(&session);
+        let panel = language_picker_panel(&session);
+        assert!(!panel.is_empty(), "the dropdown paints a panel");
+        for (x, y, symbol) in [
+            (panel.x, panel.y, "┌"),
+            (panel.right() - 1, panel.y, "┐"),
+            (panel.x, panel.bottom() - 1, "└"),
+            (panel.right() - 1, panel.bottom() - 1, "┘"),
+        ] {
+            assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), symbol);
+        }
+        assert!(
+            !option_regions.is_empty(),
+            "the open dropdown paints options"
+        );
+        let covered = session
+            .control_areas
+            .iter()
+            .filter(|(_, area)| !area.intersection(panel).is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            !covered.is_empty(),
+            "the real dropdown panel {panel:?} covers at least one underlay control: {:?}",
+            session.control_areas
+        );
+        session.control_areas.push((
+            PreferencesControlId::ManageAgents,
+            Rect::new(panel.x, panel.bottom().saturating_sub(1), 1, 1),
+        ));
+
+        let inventory = session.screen_target_inventory(&view).unwrap();
+        assert!(
+            inventory
+                .hits
+                .iter()
+                .all(|hit| hit.rect.intersection(panel).is_empty()),
+            "the full dropdown panel must occlude every intersecting underlay hit"
+        );
+    }
+
+    #[test]
+    fn clipped_open_dropdown_keeps_its_panel_when_no_option_row_fits() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let screen = Rect::new(0, 0, 40, 7);
+        let _ = draw(&mut session, &view, screen.width, screen.height, Locale::En);
+        open_language_picker(&mut session);
+        let terminal = draw(&mut session, &view, screen.width, screen.height, Locale::En);
+
+        let (option_regions, _, _) = language_picker_snapshot(&session);
+        let panel = language_picker_panel(&session);
+        assert!(!panel.is_empty(), "the clipped dropdown paints its border");
+        let buffer = terminal.backend().buffer();
+        let corners = (
+            buffer[(panel.x, panel.y)].symbol(),
+            buffer[(panel.right() - 1, panel.y)].symbol(),
+        );
+        assert!([("┌", "┐"), ("└", "┘")].contains(&corners));
+        assert!(
+            option_regions.is_empty(),
+            "no option row fits inside the clipped panel"
+        );
+        session
+            .control_areas
+            .push((PreferencesControlId::ManageAgents, panel));
+
+        let inventory = session.screen_target_inventory(&view).unwrap();
+        assert!(
+            inventory
+                .hits
+                .iter()
+                .all(|hit| hit.rect.intersection(panel).is_empty()),
+            "the panel must occlude underlay hits even without option regions"
+        );
+    }
+
+    #[test]
+    fn moving_focus_closes_the_previous_picker_and_removes_its_option_hits() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Language));
+        let _ = draw(&mut session, &view, 80, 30, Locale::En);
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &view, 80, 30, Locale::En);
+        assert!(!language_picker_snapshot(&session).0.is_empty());
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 80, 30, Locale::En);
+        assert!(language_picker_snapshot(&session).0.is_empty());
+    }
+
+    #[test]
+    fn preferences_picker_preserves_equal_identity_and_cancels_changed_option_shapes() {
+        let make_view = |languages: Vec<String>| {
+            let mut view =
+                PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+                    language: String::new(),
+                    available_languages: languages,
+                    effective_language: "en".to_owned(),
+                    editor: String::new(),
+                    editor_fallback: Some("vim".to_owned()),
+                    form: InteractiveFormChoice::Tui,
+                    after_run: AfterRunChoice::Exit,
+                    javascript: JavascriptChoice::Automatic,
+                    bash_path: None,
+                    runner_names: Vec::new(),
+                    mirror: MirrorConfiguration::default(),
+                }));
+            view.update(PreferencesAction::Focus(PreferencesControlId::Language));
+            view
+        };
+        let old = make_view(vec!["en".to_owned(), "zh-CN".to_owned()]);
+        let replacement = make_view(vec!["en".to_owned(), "zh-TW".to_owned()]);
+        let mut session = PreferencesWidgetSession::default();
+        let _ = draw(&mut session, &old, 80, 30, Locale::En);
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &old, 80, 30, Locale::En);
+        let routed_option_point = |regions: &[ClickRegion<SelectAction>], option: usize| {
+            (0..30)
+                .flat_map(|row| (0..80).map(move |column| (column, row)))
+                .find(|(column, row)| {
+                    regions
+                        .iter()
+                        .rev()
+                        .find(|region| region.contains(*column, *row))
+                        .is_some_and(|region| region.data == SelectAction::Select(option))
+                })
+                .map(|(column, row)| Rect::new(column, row, 1, 1))
+                .expect("the requested option owns one topmost cell")
+        };
+        let (old_regions, _, old_values) = language_picker_snapshot(&session);
+        let old_option = old_values
+            .iter()
+            .position(|value| value == "zh-CN")
+            .expect("zh-CN value exists");
+        let old_area = routed_option_point(&old_regions, old_option);
+
+        assert_eq!(
+            session.handle_event(
+                mouse(old_area, MouseEventKind::Down(MouseButton::Left)),
+                &old,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &old, 80, 30, Locale::En);
+        assert_eq!(
+            session.handle_event(mouse(old_area, MouseEventKind::Up(MouseButton::Left)), &old,),
+            PreferencesEventHandling::Action(PreferencesAction::SetLanguage("zh-CN".to_owned()))
+        );
+
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &old, 80, 30, Locale::En);
+        assert_eq!(
+            session.handle_event(
+                mouse(old_area, MouseEventKind::Down(MouseButton::Left)),
+                &old,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &replacement, 80, 30, Locale::En);
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &replacement, 80, 30, Locale::En);
+        let (replacement_regions, _, replacement_values) = language_picker_snapshot(&session);
+        let replacement_option = replacement_values
+            .iter()
+            .position(|value| value == "zh-TW")
+            .expect("zh-TW value exists");
+        assert_eq!(replacement_option, old_option);
+        let replacement_area = routed_option_point(&replacement_regions, replacement_option);
+        assert_eq!(replacement_area, old_area);
+        assert_eq!(
+            session.handle_event(
+                mouse(replacement_area, MouseEventKind::Up(MouseButton::Left),),
+                &replacement,
+            ),
+            PreferencesEventHandling::Ignored,
+            "a new option identity reused an armed index",
+        );
+    }
+
+    #[test]
+    fn open_preferences_select_owns_wheel_before_the_underlay() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        let (dropdown_regions, before_highlight, _) = language_picker_snapshot(&session);
+        let option = dropdown_regions
+            .first()
+            .expect("a language option must be visible")
+            .area;
+        let before_underlay = session.scroll_offset();
+
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: option.x,
+                    row: option.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(session.scroll_offset(), before_underlay);
+        assert_eq!(
+            language_picker_snapshot(&session).1,
+            before_highlight.saturating_add(1)
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: option.x,
+                    row: option.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(session.scroll_offset(), before_underlay);
+        assert_eq!(language_picker_snapshot(&session).1, before_highlight);
+    }
+
+    #[test]
+    fn an_open_preferences_select_does_not_steal_outside_wheel_or_unrelated_keys() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        open_language_picker(&mut session);
+        let _ = draw(&mut session, &view, 40, 8, Locale::En);
+        let (regions, before_highlight, _) = language_picker_snapshot(&session);
+        let outside = (session.viewport.y..session.viewport.bottom())
+            .flat_map(|row| {
+                (session.viewport.x..session.viewport.right()).map(move |column| (column, row))
+            })
+            .find(|(column, row)| !regions.iter().any(|region| region.contains(*column, *row)))
+            .expect("the short viewport has a cell outside the dropdown");
+        let before_scroll = session.scroll_offset();
+
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: outside.0,
+                    row: outside.1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert!(session.scroll_offset() > before_scroll);
+        assert_eq!(language_picker_snapshot(&session).1, before_highlight);
+        assert_eq!(
+            session.handle_event(key(KeyCode::F(2), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn nonoption_and_stale_dropdown_hits_are_inert() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 80, 30, Locale::En);
+        let area = Rect::new(0, 0, 1, 1);
+
+        let language = session
+            .widgets
+            .get_mut(&PreferencesControlId::Language)
+            .expect("the language control exists");
+        assert!(matches!(language, PreferencesWidget::Choice { .. }));
+        if let PreferencesWidget::Choice {
+            state,
+            dropdown_regions,
+            ..
+        } = language
+        {
+            state.open();
+            dropdown_regions.clear();
+            dropdown_regions.push(ClickRegion::new(area, SelectAction::Focus));
+        }
+        session.clicks.clear();
+        assert_eq!(
+            session.handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Consumed
+        );
+
+        assert_eq!(
+            session.handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view),
+            PreferencesEventHandling::Consumed
+        );
+
+        if let Some(PreferencesWidget::Choice {
+            dropdown_regions, ..
+        }) = session.widgets.get_mut(&PreferencesControlId::Language)
+        {
+            dropdown_regions.clear();
+        }
+        session.clicks.register(
+            area,
+            PreferencesHit::Dropdown {
+                id: PreferencesControlId::Editor,
+                option: 0,
+            },
+        );
+        assert_eq!(
+            session.handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.activate_hit(
+                PreferencesHit::Dropdown {
+                    id: PreferencesControlId::Language,
+                    option: 0,
+                },
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+    }
+
+    /// A wrapped Preferences sentence keeps its later rows when its top is above the viewport.
+    #[test]
+    fn a_top_clipped_preferences_copy_shows_its_surviving_later_rows() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 24, 4, Locale::En);
+        let copy = layout_items(&view, Locale::En, session.viewport.width)
+            .into_iter()
+            .find(|item| matches!(&item.item, RenderItem::Copy(value) if value.contains("$VISUAL")))
+            .expect("the editor fallback copy is present");
+        assert!(copy.height >= 3, "the copy must wrap across later rows");
+        session
+            .scroll
+            .set_scroll_offset(copy.start.saturating_add(1));
+
+        let terminal = draw(&mut session, &view, 24, 4, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("$EDITOR)"),
+            "the surviving final copy row is missing:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Empty means: vim"),
+            "the clipped first row restarted inside the band:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_top_clipped_focused_preferences_picker_shows_its_placeholder_row() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        session.sync(&view, Locale::En);
+        let control = view
+            .control(PreferencesControlId::Language)
+            .expect("the language picker is present");
+        if let Some(PreferencesWidget::Choice { state, .. }) =
+            session.widgets.get_mut(&PreferencesControlId::Language)
+        {
+            state.selected_index = None;
+        }
+        let mut terminal = Terminal::new(TestBackend::new(24, 2)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render_control(
+                    frame,
+                    RowClip::new(3, 1, frame.area()),
+                    &control,
+                    &view,
+                    Locale::En,
+                );
+            })
+            .unwrap();
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("Select"),
+            "the surviving picker placeholder is missing:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_backend_renders_the_complete_colored_preferences_surface() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let terminal = draw(&mut session, &view, 120, 44, Locale::En);
+        let buffer = terminal.backend().buffer();
+        let rendered = text(buffer);
+
+        for expected in [
+            "Preferences",
+            "Interface language",
+            "Currently in effect: en",
+            "Empty means: vim (from $VISUAL / $EDITOR)",
+            "Mini form — opens in place, fully clickable",
+            "Quit skit — leave the run's output in the terminal",
+            "2 agents configured: claude, codex",
+            "Download mirrors (mainland-China acceleration)",
+            "PyPI index (Python packages)",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?}\n{rendered}"
+            );
+        }
+        assert!(buffer.content().iter().any(|cell| cell.fg == BOX_INDIGO));
+        assert!(buffer.content().iter().any(|cell| cell.fg == ACCENT));
+    }
+
+    #[test]
+    fn rendered_preference_sections_keep_spacers_and_declared_help_order() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = complete_view();
+        let terminal = draw(&mut session, &view, 120, 120, Locale::En);
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let find_row = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("missing rendered Preferences text {needle:?}"))
+        };
+
+        for heading in [
+            "Editor",
+            "Interactive form",
+            "After a run (from this menu)",
+            "JavaScript runtime",
+            "Shell on Windows",
+            "Agents (prompt runners)",
+            "Download mirrors (mainland-China acceleration)",
+        ] {
+            let heading_row = find_row(heading);
+            assert!(heading_row > 0);
+            assert!(
+                rows[heading_row - 1]
+                    .trim_matches(|character| matches!(character, ' ' | '│'))
+                    .is_empty(),
+                "section {heading:?} has no blank spacer before it",
+            );
+        }
+
+        let interactive_control = find_row("Mini form — opens in place, fully clickable");
+        let interactive_help = find_row(
+            "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel.",
+        );
+        assert!(interactive_control < interactive_help);
+
+        let mirror_heading = find_row("Download mirrors (mainland-China acceleration)");
+        let mirror_help =
+            find_row("Each ecosystem is its own choice — mirror vendors differ per axis.");
+        let mirror_control = find_row("Master switch — \"off\" pauses mirrors");
+        assert!(mirror_heading < mirror_help && mirror_help < mirror_control);
+    }
+
+    #[test]
+    fn input_uses_a_real_cursor_and_emits_complete_unicode_values() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 80, 24, Locale::En);
+
+        for character in ['a', '\u{301}', '🧑'] {
+            let handling = session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+                &view,
+            );
+            assert!(matches!(handling, PreferencesEventHandling::Action(_)));
+            if let PreferencesEventHandling::Action(action) = handling {
+                view.update(action);
+            }
+        }
+        let terminal = draw(&mut session, &view, 80, 24, Locale::En);
+
+        assert_eq!(view.draft().editor, "a\u{301}🧑");
+        assert!(
+            session
+                .control_area(PreferencesControlId::Editor)
+                .expect("visible editor")
+                .contains(terminal.backend().cursor_position())
+        );
+    }
+
+    #[test]
+    fn an_equal_model_render_preserves_the_mouse_selected_input_caret() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::SetEditor("abcdef".to_owned()));
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 80, 24, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Editor)
+            .expect("visible editor input");
+        let point = Rect::new(area.x.saturating_add(3), area.y.saturating_add(1), 1, 1);
+        assert_eq!(
+            session.handle_event(mouse(point, MouseEventKind::Down(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Consumed
+        );
+        assert!(matches!(
+            session.handle_event(mouse(point, MouseEventKind::Up(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Action(PreferencesAction::Focus(
+                PreferencesControlId::Editor
+            ))
+        ));
+
+        let _ = draw(&mut session, &view, 80, 24, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('X'), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Action(PreferencesAction::SetEditor("abXcdef".to_owned()))
+        );
+    }
+
+    #[test]
+    fn mouse_buttons_and_keyboard_navigation_share_typed_actions() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let _ = draw(&mut session, &view, 120, 44, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::ManageAgents)
+            .expect("visible Manage agents button");
+        let handling = session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+        );
+        assert_eq!(handling, PreferencesEventHandling::Consumed);
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+
+        view.update(PreferencesAction::Focus(
+            PreferencesControlId::InteractiveForm,
+        ));
+        let _ = draw(&mut session, &view, 120, 44, Locale::En);
+        let handling = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &view,
+        );
+        assert_eq!(
+            handling,
+            PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
+                InteractiveFormChoice::Plain,
+            ))
+        );
+    }
+
+    #[test]
+    fn preference_hits_require_a_mouse_button_press() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 120, 44, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::ManageAgents)
+            .expect("visible Manage agents button");
+
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: area.x,
+                        row: area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "a preference hit must ignore {kind:?}"
+            );
+        }
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+    }
+
+    #[test]
+    fn every_non_dropdown_preference_control_requires_a_matching_primary_release() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = complete_view();
+        let _ = draw(&mut session, &view, 140, 160, Locale::En);
+
+        let mut targets = Vec::new();
+        for row in 0..160 {
+            for column in 0..140 {
+                let Some(hit) = session.clicks.handle_click(column, row).cloned() else {
+                    continue;
+                };
+                let is_non_dropdown = !matches!(hit, PreferencesHit::Dropdown { .. })
+                    && !matches!(
+                        session.widgets.get(&control_id(&hit)),
+                        Some(PreferencesWidget::Choice {
+                            presentation: ChoicePresentation::Picker,
+                            ..
+                        })
+                    );
+                if is_non_dropdown && !targets.iter().any(|(registered, _, _)| registered == &hit) {
+                    targets.push((hit, column, row));
+                }
+            }
+        }
+
+        for (id, widget) in &session.widgets {
+            if matches!(
+                widget,
+                PreferencesWidget::Choice {
+                    presentation: ChoicePresentation::Picker,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            assert!(
+                targets.iter().any(|(hit, _, _)| control_id(hit) == *id),
+                "non-dropdown control {id:?} has no tested pointer target"
+            );
+        }
+        assert!(!targets.is_empty());
+
+        for (target, column, row) in &targets {
+            session.click.cancel();
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(*column, *row, 1, 1),
+                        MouseEventKind::Down(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Consumed,
+                "Down activated {target:?}"
+            );
+            let released = session.handle_event(
+                mouse(
+                    Rect::new(*column, *row, 1, 1),
+                    MouseEventKind::Up(MouseButton::Left),
+                ),
+                &view,
+            );
+            assert_eq!(
+                std::mem::discriminant(&released),
+                std::mem::discriminant(&PreferencesEventHandling::Action(PreferencesAction::Save,)),
+                "same-target Up did not activate {target:?}"
+            );
+        }
+
+        let (_, first_column, first_row) = &targets[0];
+        let (_, second_column, second_row) = &targets[1];
+        for (cancel, label) in [
+            (MouseEventKind::Down(MouseButton::Right), "right click"),
+            (MouseEventKind::Down(MouseButton::Middle), "middle click"),
+        ] {
+            session.click.cancel();
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(*first_column, *first_row, 1, 1),
+                        MouseEventKind::Down(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse(Rect::new(*first_column, *first_row, 1, 1), cancel),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "{label} was not rejected"
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(*first_column, *first_row, 1, 1),
+                        MouseEventKind::Up(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "{label} did not cancel the armed control"
+            );
+        }
+
+        for (release_column, release_row, label) in [
+            (*second_column, *second_row, "a different control"),
+            (0, 0, "outside the Preferences controls"),
+        ] {
+            session.click.cancel();
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(*first_column, *first_row, 1, 1),
+                        MouseEventKind::Down(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(release_column, release_row, 1, 1),
+                        MouseEventKind::Up(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "release over {label} activated the pressed control"
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse(
+                        Rect::new(*first_column, *first_row, 1, 1),
+                        MouseEventKind::Up(MouseButton::Left),
+                    ),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "a cancelled control accepted a later release"
+            );
+        }
+    }
+
+    #[test]
+    fn a_press_outside_preferences_controls_is_ignored() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 80, 24, Locale::En);
+
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: u16::MAX,
+                    row: u16::MAX,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn short_terminals_keep_the_whole_form_wheel_reachable() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 52, 10, Locale::En);
+        assert!(session.maximum_scroll_offset() > 0);
+
+        let handling = session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 4,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+        );
+        assert_eq!(handling, PreferencesEventHandling::Consumed);
+        assert!(session.scroll_offset() > 0);
+    }
+
+    /// Tabbing to a control below the fold must bring it into view.
+    ///
+    /// A scroll affordance is what the code drew; the control being on screen is what the user
+    /// gets. Asserting the affordance passed on the run form while focus sat off screen, so this
+    /// asserts the outcome: the focused control's rectangle lies inside the viewport.
+    #[test]
+    fn tabbing_to_a_control_below_the_fold_brings_it_into_view() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let _ = draw(&mut session, &view, 52, 10, Locale::En);
+        assert!(
+            session.maximum_scroll_offset() > 0,
+            "this fixture must overflow for the test to mean anything"
+        );
+
+        for _ in 0..12 {
+            let handling = session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &view,
+            );
+            if let PreferencesEventHandling::Action(action) = handling {
+                view.update(action);
+            }
+            let _ = draw(&mut session, &view, 52, 10, Locale::En);
+            let focused = view.focused();
+            let area = session
+                .control_areas
+                .iter()
+                .find_map(|(id, area)| (*id == focused).then_some(*area))
+                .unwrap_or_else(|| panic!("the focused control {focused:?} was not rendered"));
+            let viewport = session.viewport;
+            assert!(
+                area.y >= viewport.y
+                    && area.y.saturating_add(area.height)
+                        <= viewport.y.saturating_add(viewport.height),
+                "focus moved to {focused:?} at {area:?}, outside the viewport {viewport:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_skill_picker_is_visible_and_uses_the_same_typed_keyboard_and_mouse_paths() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(vec![
+            AgentTarget {
+                name: "claude".to_owned(),
+                scope: AgentScope::User,
+                base: PathBuf::from("/home/demo/.claude"),
+            },
+            AgentTarget {
+                name: "codex".to_owned(),
+                scope: AgentScope::Project,
+                base: PathBuf::from("/work/.codex"),
+            },
+        ]));
+        let terminal = draw(&mut session, &view, 100, 28, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+        assert!(rendered.contains("Teach an AI agent to use skit"));
+        assert!(rendered.contains("claude (user)"));
+        assert!(rendered.contains("codex (project)"));
+
+        let target = session.agent_target_area(0).expect("visible target row");
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: target.x,
+                    row: target.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: target.x,
+                    row: target.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ActivateAgentSkillTarget(0))
+        );
+
+        let handling = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &view,
+        );
+        assert_eq!(
+            handling,
+            PreferencesEventHandling::Action(PreferencesAction::SelectAgentSkillTarget(1))
+        );
+        view.update(PreferencesAction::SelectAgentSkillTarget(1));
+        let handling = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &view,
+        );
+        assert_eq!(
+            handling,
+            PreferencesEventHandling::Action(PreferencesAction::ConfirmAgentSkillTarget)
+        );
+
+        let _ = draw(&mut session, &view, 100, 28, Locale::En);
+        let cancel = session.agent_cancel_area().expect("visible cancel button");
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: cancel.x,
+                    row: cancel.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: cancel.x,
+                    row: cancel.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::CloseAgentSkillTargets)
+        );
+    }
+
+    #[test]
+    fn empty_agent_skill_picker_explains_the_manual_path_and_can_close() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(Vec::new()));
+        let terminal = draw(&mut session, &view, 72, 12, Locale::En);
+        assert!(text(terminal.backend().buffer()).contains("skit agent install --to DIR"));
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::CloseAgentSkillTargets)
+        );
+    }
+
+    #[test]
+    fn complete_preferences_routes_every_input_choice_button_and_shortcut() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = complete_view();
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+
+        for id in [
+            PreferencesControlId::Editor,
+            PreferencesControlId::BashPath,
+            PreferencesControlId::PypiUrl,
+            PreferencesControlId::GithubUrl,
+            PreferencesControlId::NpmUrl,
+        ] {
+            view.update(PreferencesAction::Focus(id));
+            let _ = draw(&mut session, &view, 120, 120, Locale::En);
+            let handling = session.handle_event(Event::Paste("值".to_owned()), &view);
+            assert!(matches!(handling, PreferencesEventHandling::Action(_)));
+            if let PreferencesEventHandling::Action(action) = handling {
+                view.update(action);
+            }
+        }
+        assert_eq!(view.draft().editor, "值");
+        assert_eq!(view.draft().bash_path.as_deref(), Some("值"));
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+        let handling = session.handle_event(key(KeyCode::Char('x'), KeyModifiers::NONE), &view);
+        assert!(matches!(handling, PreferencesEventHandling::Action(_)));
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Up, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Action(PreferencesAction::Focus(
+                PreferencesControlId::Language,
+            ))
+        );
+
+        for (code, modifiers, expected) in [
+            (
+                KeyCode::Char('s'),
+                KeyModifiers::CONTROL,
+                PreferencesEventHandling::Action(PreferencesAction::Save),
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                PreferencesEventHandling::Action(PreferencesAction::Close),
+            ),
+        ] {
+            assert_eq!(session.handle_event(key(code, modifiers), &view), expected);
+        }
+        assert!(!matches!(
+            session.handle_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        ));
+        assert!(!matches!(
+            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+        ));
+        assert_eq!(
+            session.handle_event(key(KeyCode::PageDown, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(Event::FocusGained, &view),
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                &view,
+            ),
+            PreferencesEventHandling::Ignored
+        );
+
+        for (id, expected) in [
+            (
+                PreferencesControlId::ManageAgents,
+                PreferencesAction::ManageAgents,
+            ),
+            (
+                PreferencesControlId::InstallAgentSkill,
+                PreferencesAction::InstallAgentSkill,
+            ),
+        ] {
+            view.update(PreferencesAction::Focus(id));
+            let _ = draw(&mut session, &view, 120, 120, Locale::En);
+            assert_eq!(
+                session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view),
+                PreferencesEventHandling::Action(expected)
+            );
+        }
+        view.update(PreferencesAction::Focus(
+            PreferencesControlId::InteractiveForm,
+        ));
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
+                InteractiveFormChoice::Tui,
+            ))
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::F(2), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+
+        let _ = draw(&mut session, &view, 44, 8, Locale::En);
+        for _ in 0..40 {
+            let _ = session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: session.viewport.x,
+                    row: session.viewport.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            );
+        }
+        assert!(session.scroll_offset() > 0);
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+        assert_eq!(session.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn preferences_shortcuts_buttons_and_inputs_keep_distinct_key_owners() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(
+            PreferencesControlId::InteractiveForm,
+        ));
+        let _ = draw(&mut session, &view, 100, 40, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('s'), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('s'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::Save)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+        );
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 100, 40, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::F(2), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
+            PreferencesEventHandling::Consumed,
+            "an input owns Ctrl+K instead of opening the agent installer",
+        );
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+        let _ = draw(&mut session, &view, 100, 40, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('z'), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+        for code in [KeyCode::Enter, KeyCode::Char(' ')] {
+            assert_eq!(
+                session.handle_event(key(code, KeyModifiers::NONE), &view),
+                PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            );
+        }
+    }
+
+    #[test]
+    fn select_dropdown_and_mapping_matrix_keep_real_geometry_and_typed_values() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = complete_view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);
+        let language = session
+            .control_area(PreferencesControlId::Language)
+            .expect("the language selector must be visible");
+        assert_eq!(
+            session.handle_event(mouse(language, MouseEventKind::Moved), &view),
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(language, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(language, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::Focus(
+                PreferencesControlId::Language,
+            ))
+        );
+        view.update(PreferencesAction::Focus(PreferencesControlId::Language));
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);
+        assert_eq!(
+            session.handle_event(
+                mouse(language, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(language, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);
+        assert!(language_picker_snapshot(&session).0.is_empty());
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);
+        let dropdown_area = |id| match session.widgets.get(&id) {
+            Some(PreferencesWidget::Choice {
+                dropdown_regions, ..
+            }) => dropdown_regions
+                .get(1)
+                .map_or(Rect::default(), |region| region.area),
+            _ => Rect::default(),
+        };
+        let dropdown = dropdown_area(PreferencesControlId::Language);
+        assert!(!dropdown.is_empty());
+        assert!(dropdown_area(PreferencesControlId::Editor).is_empty());
+        assert_eq!(
+            session.handle_event(
+                mouse(dropdown, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert!(matches!(
+            session.handle_event(
+                mouse(dropdown, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::SetLanguage(_))
+        ));
+
+        view.update(PreferencesAction::SetLanguage("zh-TW".to_owned()));
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhTw);
+        view.update(PreferencesAction::Focus(PreferencesControlId::Language));
+        let _ = draw(&mut session, &view, 90, 120, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Consumed
+        );
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Char(' '),
+            KeyCode::Esc,
+        ] {
+            assert!(matches!(
+                session.handle_event(key(code, KeyModifiers::NONE), &view),
+                PreferencesEventHandling::Consumed | PreferencesEventHandling::Action(_)
+            ));
+        }
+        assert_eq!(
+            session.handle_event(Event::Paste("ignored".to_owned()), &view),
+            PreferencesEventHandling::Ignored
+        );
+
+        for value in ["en", "zh-CN"] {
+            assert!(matches!(
+                choice_action(PreferencesControlId::Language, value),
+                PreferencesEventHandling::Action(PreferencesAction::SetLanguage(_))
+            ));
+        }
+        for value in ["plain", "tui"] {
+            assert!(matches!(
+                choice_action(PreferencesControlId::InteractiveForm, value),
+                PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(_))
+            ));
+        }
+        for value in ["stay", "exit"] {
+            assert!(matches!(
+                choice_action(PreferencesControlId::AfterRun, value),
+                PreferencesEventHandling::Action(PreferencesAction::SetAfterRun(_))
+            ));
+        }
+        for value in ["deno", "bun", "node", "auto"] {
+            assert!(matches!(
+                choice_action(PreferencesControlId::Javascript, value),
+                PreferencesEventHandling::Action(PreferencesAction::SetJavascript(_))
+            ));
+        }
+        for (id, field) in [
+            (
+                PreferencesControlId::PypiChoice,
+                PreferencesField::PypiMirror,
+            ),
+            (
+                PreferencesControlId::GithubChoice,
+                PreferencesField::GithubMirror,
+            ),
+            (PreferencesControlId::NpmChoice, PreferencesField::NpmMirror),
+        ] {
+            for value in ["custom", "off", "preset"] {
+                assert!(matches!(
+                    choice_action(id, value),
+                    PreferencesEventHandling::Action(PreferencesAction::ChooseMirror {
+                        field: actual,
+                        ..
+                    }) if actual == field
+                ));
+            }
+        }
+        for invalid in [
+            PreferencesControlId::Editor,
+            PreferencesControlId::BashPath,
+            PreferencesControlId::ManageAgents,
+            PreferencesControlId::InstallAgentSkill,
+            PreferencesControlId::PypiUrl,
+            PreferencesControlId::GithubUrl,
+            PreferencesControlId::NpmUrl,
+        ] {
+            assert_eq!(
+                choice_action(invalid, "off"),
+                PreferencesEventHandling::Ignored
+            );
+        }
+        for invalid in [
+            PreferencesControlId::Language,
+            PreferencesControlId::InteractiveForm,
+            PreferencesControlId::AfterRun,
+            PreferencesControlId::Javascript,
+            PreferencesControlId::MirrorMaster,
+            PreferencesControlId::PypiChoice,
+            PreferencesControlId::GithubChoice,
+            PreferencesControlId::NpmChoice,
+        ] {
+            assert_eq!(
+                input_action(invalid, String::new()),
+                PreferencesEventHandling::Ignored
+            );
+            assert_eq!(button_action(invalid), PreferencesEventHandling::Ignored);
+        }
+        for invalid_input in [
+            PreferencesControlId::ManageAgents,
+            PreferencesControlId::InstallAgentSkill,
+        ] {
+            assert_eq!(
+                input_action(invalid_input, String::new()),
+                PreferencesEventHandling::Ignored
+            );
+        }
+        assert_eq!(
+            button_action(PreferencesControlId::ManageAgents),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+        assert_eq!(
+            button_action(PreferencesControlId::InstallAgentSkill),
+            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+        );
+        assert!(matches!(
+            choice_action(PreferencesControlId::MirrorMaster, "on"),
+            PreferencesEventHandling::Action(PreferencesAction::SetMirrorMaster(true))
+        ));
+
+        assert_eq!(
+            session.activate_hit(
+                PreferencesHit::Radio {
+                    id: PreferencesControlId::InteractiveForm,
+                    option: 1,
+                },
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
+                InteractiveFormChoice::Plain,
+            ))
+        );
+        assert_eq!(
+            session.activate_hit(PreferencesHit::Control(PreferencesControlId::Editor), &view),
+            PreferencesEventHandling::Action(PreferencesAction::Focus(
+                PreferencesControlId::Editor,
+            ))
+        );
+        assert_eq!(
+            session.activate_hit(
+                PreferencesHit::Control(PreferencesControlId::InteractiveForm),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::Focus(
+                PreferencesControlId::InteractiveForm,
+            ))
+        );
+        assert_eq!(
+            session.activate_hit(
+                PreferencesHit::Radio {
+                    id: PreferencesControlId::Editor,
+                    option: usize::MAX,
+                },
+                &view,
+            ),
+            PreferencesEventHandling::Ignored
+        );
+        session.widgets.remove(&PreferencesControlId::Editor);
+        assert_eq!(
+            session.activate_hit(PreferencesHit::Control(PreferencesControlId::Editor), &view,),
+            PreferencesEventHandling::Ignored
+        );
+
+        let items = layout_items(&view, Locale::En, 54);
+        assert!(!items.is_empty());
+        assert!(
+            radio_rows(
+                &view
+                    .controls()
+                    .into_iter()
+                    .find_map(|control| match control.kind {
+                        PreferencesControlKind::Choice(choice)
+                            if control.id == PreferencesControlId::PypiChoice =>
+                        {
+                            Some(choice.options)
+                        }
+                        _ => None,
+                    })
+                    .expect("the PyPI mirror radio must be present"),
+                Locale::En,
+                20,
+            ) > 1
+        );
+    }
+
+    #[test]
+    fn agent_picker_and_validation_error_cover_boundaries_wheel_and_modal_priority() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(
+            (0..10)
+                .map(|index| AgentTarget {
+                    name: format!("agent-{index}"),
+                    scope: if index % 2 == 0 {
+                        AgentScope::User
+                    } else {
+                        AgentScope::Project
+                    },
+                    base: PathBuf::from(format!("/tmp/agent-{index}")),
+                })
+                .collect(),
+        ));
+        let _ = draw(&mut session, &view, 90, 18, Locale::ZhTw);
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert!(matches!(
+                session.handle_event(key(code, KeyModifiers::NONE), &view),
+                PreferencesEventHandling::Action(PreferencesAction::SelectAgentSkillTarget(_))
+            ));
+        }
+        assert_eq!(
+            session.handle_event(key(KeyCode::F(2), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Consumed
+        );
+        let wheel_area = session.agent_target_area(0).expect("visible agent target");
+        for kind in [MouseEventKind::ScrollUp, MouseEventKind::ScrollDown] {
+            assert!(matches!(
+                session.handle_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: wheel_area.x,
+                        row: wheel_area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &view,
+                ),
+                PreferencesEventHandling::Action(PreferencesAction::SelectAgentSkillTarget(_))
+            ));
+        }
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        for event in [
+            Event::FocusGained,
+            Event::Paste("ignored".to_owned()),
+            Event::Resize(30, 8),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 4,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+        ] {
+            assert_eq!(
+                session.handle_event(event, &view),
+                PreferencesEventHandling::Consumed
+            );
+        }
+
+        let mut invalid = complete_view();
+        invalid.update(PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::GithubMirror,
+            value: "http://not-https".to_owned(),
+        });
+        let _ = invalid.update(PreferencesAction::Save);
+        let terminal = draw(&mut session, &invalid, 72, 20, Locale::ZhCn);
+        assert!(!text(terminal.backend().buffer()).trim().is_empty());
+        assert!(invalid.error().is_some());
+    }
+
+    #[test]
+    fn agent_picker_wheel_is_contained_and_reaches_the_last_clickable_target() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(
+            (0..20)
+                .map(|index| AgentTarget {
+                    name: format!("agent-{index:02}"),
+                    scope: AgentScope::User,
+                    base: PathBuf::from(format!("/tmp/agent-{index:02}")),
+                })
+                .collect(),
+        ));
+        let _ = draw(&mut session, &view, 46, 8, Locale::En);
+        let list = session.agent_list_area;
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed,
+            "the modal owns outside wheel input without moving its list",
+        );
+        for _ in 0..30 {
+            let handling = session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: list.x,
+                    row: list.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            );
+            if let PreferencesEventHandling::Action(action) = handling {
+                view.update(action);
+            }
+        }
+        assert_eq!(view.agent_skill_install().unwrap().selected(), Some(19));
+        let _ = draw(&mut session, &view, 46, 8, Locale::En);
+        let last = session
+            .agent_target_area(19)
+            .expect("last target is visible");
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: last.x,
+                    row: last.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: last.x,
+                    row: last.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ActivateAgentSkillTarget(19))
+        );
+    }
+
+    #[test]
+    fn agent_picker_drag_and_nonprimary_events_cancel_a_pressed_target() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(vec![
+            AgentTarget {
+                name: "codex".to_owned(),
+                scope: AgentScope::User,
+                base: PathBuf::from("/tmp/codex"),
+            },
+        ]));
+        let _ = draw(&mut session, &view, 60, 10, Locale::En);
+        let target = session.agent_target_area(0).expect("visible agent target");
+
+        for cancel_kind in [
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Right),
+            MouseEventKind::Down(MouseButton::Middle),
+        ] {
+            session.cancel_click();
+            assert_eq!(
+                session.handle_event(
+                    mouse(target, MouseEventKind::Down(MouseButton::Left)),
+                    &view,
+                ),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(mouse(target, cancel_kind), &view),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(mouse(target, MouseEventKind::Up(MouseButton::Left)), &view,),
+                PreferencesEventHandling::Consumed,
+                "a cancelled press must not activate on a later primary release",
+            );
+        }
+        assert_eq!(
+            session.handle_event(
+                mouse(target, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(Event::FocusLost, &view),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(mouse(target, MouseEventKind::Up(MouseButton::Left)), &view,),
+            PreferencesEventHandling::Consumed,
+            "focus loss must cancel an armed agent target",
+        );
+    }
+
+    #[test]
+    fn agent_picker_height_and_key_kind_match_the_visible_target_state() {
+        let target = AgentTarget {
+            name: "codex".to_owned(),
+            scope: AgentScope::User,
+            base: PathBuf::from("/tmp/codex"),
+        };
+        let path = target.skills_dir().display().to_string();
+        let mut session = PreferencesWidgetSession::default();
+        let mut populated = view();
+        populated.update(PreferencesAction::PresentAgentSkillTargets(vec![target]));
+
+        let short = draw(&mut session, &populated, 80, 4, Locale::En);
+        assert!(!text(short.backend().buffer()).contains(&path));
+        let tall = draw(&mut session, &populated, 80, 5, Locale::En);
+        assert!(text(tall.backend().buffer()).contains(&path));
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                &populated,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &populated),
+            PreferencesEventHandling::Action(PreferencesAction::ConfirmAgentSkillTarget)
+        );
+
+        let mut empty = view();
+        empty.update(PreferencesAction::PresentAgentSkillTargets(Vec::new()));
+        let _ = draw(&mut session, &empty, 80, 5, Locale::En);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &empty),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Esc,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                &empty,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &empty),
+            PreferencesEventHandling::Action(PreferencesAction::CloseAgentSkillTargets)
+        );
+    }
+
+    #[test]
+    fn agent_picker_cancels_an_armed_index_when_the_target_identity_changes() {
+        let target = |name: &str| AgentTarget {
+            name: name.to_owned(),
+            scope: AgentScope::User,
+            base: PathBuf::from(format!("/tmp/{name}")),
+        };
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::PresentAgentSkillTargets(vec![target(
+            "alpha",
+        )]));
+        let _ = draw(&mut session, &view, 60, 10, Locale::En);
+        let old = session.agent_target_area(0).expect("alpha target row");
+        assert_eq!(
+            session.handle_event(mouse(old, MouseEventKind::Down(MouseButton::Left)), &view),
+            PreferencesEventHandling::Consumed
+        );
+
+        view.update(PreferencesAction::PresentAgentSkillTargets(vec![target(
+            "beta",
+        )]));
+        let _ = draw(&mut session, &view, 60, 10, Locale::En);
+        let replacement = session.agent_target_area(0).expect("beta target row");
+        assert_eq!(replacement, old);
+        assert_eq!(
+            session.handle_event(
+                mouse(replacement, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+
+        assert_eq!(
+            session.handle_event(
+                mouse(replacement, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &view, 60, 10, Locale::En);
+        assert_eq!(
+            session.handle_event(
+                mouse(replacement, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ActivateAgentSkillTarget(0))
+        );
+    }
+
+    #[test]
+    fn preferences_alignment_distinguishes_above_equal_and_below_viewport_edges() {
+        let mut session = PreferencesWidgetSession {
+            visible_height: 3,
+            ..PreferencesWidgetSession::default()
+        };
+        session.scroll.set_lines(vec![String::new(); 20]);
+
+        for (offset, start, height, expected) in
+            [(5, 4, 1, 4), (5, 5, 3, 5), (5, 5, 5, 7), (5, 7, 2, 6)]
+        {
+            session.scroll.set_scroll_offset(offset);
+            session.ensure_visible(start, height);
+            assert_eq!(session.scroll_offset(), expected);
+        }
+    }
+
+    #[test]
+    fn preferences_choice_actions_cover_after_run_and_every_javascript_runtime() {
+        assert_eq!(
+            choice_action(PreferencesControlId::AfterRun, "stay"),
+            PreferencesEventHandling::Action(PreferencesAction::SetAfterRun(AfterRunChoice::Stay,))
+        );
+        assert_eq!(
+            choice_action(PreferencesControlId::AfterRun, "exit"),
+            PreferencesEventHandling::Action(PreferencesAction::SetAfterRun(AfterRunChoice::Exit,))
+        );
+        for (value, expected) in [
+            ("automatic", JavascriptChoice::Automatic),
+            ("deno", JavascriptChoice::Deno),
+            ("bun", JavascriptChoice::Bun),
+            ("node", JavascriptChoice::Node),
+        ] {
+            assert_eq!(
+                choice_action(PreferencesControlId::Javascript, value),
+                PreferencesEventHandling::Action(PreferencesAction::SetJavascript(expected)),
+            );
+        }
+    }
+
+    #[test]
+    fn rendered_after_run_and_javascript_options_dispatch_their_exact_typed_actions() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let families = [
+            (
+                PreferencesControlId::AfterRun,
+                vec![
+                    (
+                        PreferencesAction::SetAfterRun(AfterRunChoice::Exit),
+                        "Quit skit — leave the run's output in the terminal",
+                    ),
+                    (
+                        PreferencesAction::SetAfterRun(AfterRunChoice::Stay),
+                        "Return to the Library immediately",
+                    ),
+                ],
+            ),
+            (
+                PreferencesControlId::Javascript,
+                vec![
+                    (
+                        PreferencesAction::SetJavascript(JavascriptChoice::Automatic),
+                        "Automatic — the first of deno / bun / node found",
+                    ),
+                    (
+                        PreferencesAction::SetJavascript(JavascriptChoice::Deno),
+                        "deno",
+                    ),
+                    (
+                        PreferencesAction::SetJavascript(JavascriptChoice::Bun),
+                        "bun",
+                    ),
+                    (
+                        PreferencesAction::SetJavascript(JavascriptChoice::Node),
+                        "node",
+                    ),
+                ],
+            ),
+        ];
+        for (id, expected) in families {
+            view.update(PreferencesAction::Focus(id));
+            let terminal = draw(&mut session, &view, 140, 80, Locale::En);
+            for (option, (action, label)) in expected.into_iter().enumerate() {
+                let point = (0..80)
+                    .flat_map(|row| (0..140).map(move |column| (column, row)))
+                    .find(|(column, row)| {
+                        session.clicks.handle_click(*column, *row)
+                            == Some(&PreferencesHit::Radio { id, option })
+                    })
+                    .expect("rendered radio option has a hit");
+                let row_text = (0..140)
+                    .map(|column| terminal.backend().buffer()[(column, point.1)].symbol())
+                    .collect::<String>();
+                assert!(
+                    row_text.contains(skit_i18n::text(Locale::En, label).as_ref()),
+                    "option {option} is not bound to its visible label: {row_text}",
+                );
+                let area = Rect::new(point.0, point.1, 1, 1);
+                assert_eq!(
+                    session
+                        .handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view,),
+                    PreferencesEventHandling::Consumed
+                );
+                assert_eq!(
+                    session
+                        .handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view,),
+                    PreferencesEventHandling::Action(action)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn javascript_radio_pixels_follow_the_exact_selected_model_option() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Javascript));
+
+        let selected_pixels = |session: &mut PreferencesWidgetSession,
+                               terminal: &Terminal<TestBackend>| {
+            let mut selected = vec![false; 4];
+            let area = terminal.backend().buffer().area;
+            for row in area.y..area.bottom() {
+                for column in area.x..area.right() {
+                    if let Some(PreferencesHit::Radio {
+                        id: PreferencesControlId::Javascript,
+                        option,
+                    }) = session.clicks.handle_click(column, row)
+                        && terminal.backend().buffer()[(column, row)].bg == SELECT_BG
+                    {
+                        selected[*option] = true;
+                    }
+                }
+            }
+            selected
+        };
+
+        let automatic = draw(&mut session, &view, 140, 80, Locale::En);
+        assert_eq!(
+            selected_pixels(&mut session, &automatic),
+            [true, false, false, false]
+        );
+        view.update(PreferencesAction::SetJavascript(JavascriptChoice::Deno));
+        let deno = draw(&mut session, &view, 140, 80, Locale::En);
+        assert_eq!(
+            selected_pixels(&mut session, &deno),
+            [false, true, false, false]
+        );
+    }
+
+    #[test]
+    fn preferences_radio_exact_fit_keeps_the_full_nonzero_origin_row_clickable() {
+        let labels = vec!["A".repeat(37), "B".repeat(38)];
+        let options = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| PreferencesOption {
+                value: index.to_string(),
+                label: label.clone(),
+            })
+            .collect::<Vec<_>>();
+        let control = PreferencesControl {
+            id: PreferencesControlId::PypiChoice,
+            label: String::new(),
+            help: String::new(),
+            kind: PreferencesControlKind::Choice(PreferencesChoiceControl {
+                options: options.clone(),
+                selected: "0".to_owned(),
+                presentation: ChoicePresentation::Radio,
+            }),
+        };
+        assert_eq!(radio_rows(&options, Locale::En, 80), 1);
+
+        let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        let mut clicks = ClickRegionRegistry::new();
+        let buttons = vec![ButtonState::default(), ButtonState::default()];
+        terminal
+            .draw(|frame| {
+                render_radio_band(
+                    frame,
+                    RowClip::new(1, 0, Rect::new(20, 1, 80, 1)),
+                    &control,
+                    "",
+                    &labels,
+                    &buttons,
+                    &mut clicks,
+                );
+            })
+            .unwrap();
+        let row = (20..100)
+            .map(|column| terminal.backend().buffer()[(column, 1)].symbol())
+            .collect::<String>();
+        assert!(
+            row.contains(&"B".repeat(38)),
+            "exact-fit option missing: {row}"
+        );
+        assert_eq!(
+            clicks.handle_click(99, 1),
+            Some(&PreferencesHit::Radio {
+                id: PreferencesControlId::PypiChoice,
+                option: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn ephemeral_widget_shapes_resync_and_reject_stale_control_pairings() {
+        let text_control = PreferencesControl {
+            id: PreferencesControlId::Editor,
+            label: "Editor".to_owned(),
+            help: "Help".to_owned(),
+            kind: PreferencesControlKind::Text(PreferencesTextControl {
+                value: "one".to_owned(),
+                kind: FormInputKind::Text,
+                placeholder: "placeholder".to_owned(),
+            }),
+        };
+        let missing_choice = PreferencesControl {
+            id: PreferencesControlId::Language,
+            label: "Language".to_owned(),
+            help: String::new(),
+            kind: PreferencesControlKind::Choice(PreferencesChoiceControl {
+                options: vec![PreferencesOption {
+                    value: "en".to_owned(),
+                    label: "en".to_owned(),
+                }],
+                selected: "missing".to_owned(),
+                presentation: ChoicePresentation::Picker,
+            }),
+        };
+        let radio = PreferencesControl {
+            id: PreferencesControlId::MirrorMaster,
+            label: "Mirror".to_owned(),
+            help: String::new(),
+            kind: PreferencesControlKind::Choice(PreferencesChoiceControl {
+                options: vec![
+                    PreferencesOption {
+                        value: "on".to_owned(),
+                        label: "on".to_owned(),
+                    },
+                    PreferencesOption {
+                        value: "off".to_owned(),
+                        label: "off".to_owned(),
+                    },
+                ],
+                selected: "on".to_owned(),
+                presentation: ChoicePresentation::Radio,
+            }),
+        };
+        let button = PreferencesControl {
+            id: PreferencesControlId::ManageAgents,
+            label: "Manage agents…".to_owned(),
+            help: String::new(),
+            kind: PreferencesControlKind::Button,
+        };
+
+        let mut input = widget(&text_control, Locale::En);
+        let mut changed_text = text_control.clone();
+        if let PreferencesControlKind::Text(model) = &mut changed_text.kind {
+            model.value = "two".to_owned();
+        }
+        sync_widget(&mut input, &changed_text, Locale::ZhCn);
+        assert!(matches!(input, PreferencesWidget::Input(ref state) if state.value() == "two"));
+
+        let mut picker = widget(&missing_choice, Locale::En);
+        assert!(matches!(
+            picker,
+            PreferencesWidget::Choice { ref state, .. } if state.selected_index.is_none()
+        ));
+        let mut selected = missing_choice.clone();
+        if let PreferencesControlKind::Choice(choice) = &mut selected.kind {
+            choice.selected = "en".to_owned();
+        }
+        sync_widget(&mut picker, &selected, Locale::ZhTw);
+        assert!(matches!(
+            picker,
+            PreferencesWidget::Choice { ref state, .. } if state.selected_index == Some(0)
+        ));
+
+        let mut radio_widget = widget(&radio, Locale::En);
+        sync_widget(&mut radio_widget, &radio, Locale::ZhCn);
+        set_widget_focus(&mut radio_widget, true);
+        set_widget_focus(&mut radio_widget, false);
+        let mut button_widget = widget(&button, Locale::En);
+        set_widget_focus(&mut button_widget, true);
+        set_widget_focus(&mut input, true);
+
+        sync_widget(&mut input, &radio, Locale::En);
+        sync_widget(&mut radio_widget, &text_control, Locale::En);
+        sync_widget(&mut button_widget, &text_control, Locale::En);
+
+        assert_eq!(control_height(&missing_choice, Locale::En, 20), 3);
+        assert_eq!(control_height(&radio, Locale::En, 120), 2);
+        assert!(radio_options_stack(PreferencesControlId::Language, 120));
+        assert!(radio_options_stack(PreferencesControlId::MirrorMaster, 20));
+        assert!(!radio_options_stack(
+            PreferencesControlId::MirrorMaster,
+            120
+        ));
+        assert_eq!(centered(Rect::new(2, 3, 20, 10), 8, 4).width, 8);
+
+        for (id, expected_field) in [
+            (PreferencesControlId::Editor, None),
+            (PreferencesControlId::BashPath, None),
+            (
+                PreferencesControlId::PypiUrl,
+                Some(PreferencesField::PypiMirror),
+            ),
+            (
+                PreferencesControlId::GithubUrl,
+                Some(PreferencesField::GithubMirror),
+            ),
+            (
+                PreferencesControlId::NpmUrl,
+                Some(PreferencesField::NpmMirror),
+            ),
+        ] {
+            let action = input_action(id, "value".to_owned());
+            assert!(matches!(action, PreferencesEventHandling::Action(_)));
+            if let (
+                Some(expected),
+                PreferencesEventHandling::Action(PreferencesAction::SetMirrorUrl { field, .. }),
+            ) = (expected_field, action)
+            {
+                assert_eq!(field, expected);
+            }
+        }
+
+        let mut session = PreferencesWidgetSession::default();
+        let view = complete_view();
+        let _ = draw(&mut session, &view, 120, 120, Locale::En);
+        assert_eq!(
+            session.handle_open_select_key(
+                PreferencesControlId::InteractiveForm,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            None
+        );
+        assert_eq!(
+            session.handle_paste(PreferencesControlId::Language, "ignored"),
+            PreferencesEventHandling::Ignored
+        );
+        session.widgets.remove(&PreferencesControlId::Editor);
+        let editor = view
+            .controls()
+            .into_iter()
+            .find(|control| control.id == PreferencesControlId::Editor)
+            .expect("editor control exists");
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render_control(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    &editor,
+                    &view,
+                    Locale::En,
+                );
+            })
+            .unwrap();
+        assert!(session.control_area(PreferencesControlId::Editor).is_some());
+    }
+}

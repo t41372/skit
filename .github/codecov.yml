@@ -1,7 +1,5 @@
-# The authoritative coverage gate is pytest's `fail_under = 100` (pyproject.toml) — anything below
-# 100% already fails the "coverage (100% gate)" CI job. Codecov here is only for the dashboard, the
-# trend graph, and the README badge, so its own status checks are informational: they annotate PRs
-# but never add a second, redundant merge blocker (and a Codecov outage can't gate a merge).
+# The authoritative gate merges LCOV records and checks every executable source line locally.
+# Codecov is only a dashboard. An external service cannot define correctness.
 coverage:
   status:
     project:

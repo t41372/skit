@@ -1,9 +1,6 @@
 name: Install hyperfine (pinned)
 description: >-
-  Version-pinned hyperfine from a GitHub release tarball, verified against a
-  hardcoded sha256 (upstream publishes no checksum assets). The pin's source of
-  truth is benchmarks/hyperfine.py; tests/test_benchmarks_tooling.py holds this
-  file to it byte-for-byte on version, checksum, and URL.
+  Install hyperfine 1.20.0 from its release archive and verify the fixed SHA-256 digest.
 runs:
   using: composite
   steps:

@@ -1,118 +1,132 @@
 name: benchmark (compare)
 
-# On-demand A/B: the evidence tool optimization PRs cite (docs/design/benchmarks.md).
-# Semantics are pinned: the HARNESS is always this invoking ref's benchmarks/ package;
-# base and head supply only built venvs (each synced from its own ref's uv.lock —
-# dependency changes are part of the measured diff — except pyperf, which is harness
-# infrastructure installed into both sides so a pre-pipeline base ref doesn't blank
-# the micro lane). Runs the `compare` profile (pr minus footprint: the wheel would be
-# built from the harness checkout, measuring the wrong ref). Warn-only by design.
 on:
-  workflow_dispatch:
-    inputs:
-      base:
-        description: "Base ref (branch, tag, or SHA)"
-        required: true
-      head:
-        description: "Head ref (branch, tag, or SHA)"
-        required: true
+  pull_request:
 
-# Grant no permissions by default; the job requests the minimum it needs.
 permissions: {}
 
-# A/B runs are told apart by their INPUTS, not the ref they were dispatched from, so
-# keying on the ref alone would have a second dispatch cancel the first — destroying
-# ~45 minutes of the evidence AGENTS.md makes mandatory for optimization PRs. Serialize
-# per base/head pair and never cancel (benchmark-nightly.yml is non-cancelling for the
-# same reason).
 concurrency:
-  group: benchmark-compare-${{ github.event.inputs.base }}-${{ github.event.inputs.head }}
+  group: benchmark-compare-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 env:
-  PYTHONUTF8: "1"
   BENCH_CI_RUNNER: ubuntu-24.04
+  PYTHONUTF8: "1"
 
 jobs:
   compare:
-    name: A/B (${{ inputs.base }} vs ${{ inputs.head }})
+    name: A/B pull request
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
-      - name: Checkout harness (this ref)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the report harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Checkout base
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.base }}
+          ref: ${{ github.event.pull_request.base.sha }}
           path: side-base
           persist-credentials: false
-      - name: Checkout head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.head }}
+          ref: ${{ github.event.pull_request.head.sha }}
           path: side-head
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install Python and uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
+          version: "0.12.3"
           python-version: "3.13"
-          enable-cache: true
-      - name: Sync harness dependencies
-        run: uv sync --dev
-      - name: Install hyperfine (pinned)
+          activate-environment: true
+          # Either selected ref can execute arbitrary benchmark code. Do not let it write a cache
+          # that a later trusted run can restore.
+          enable-cache: false
+      - name: Verify benchmark Python 3.13
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
+      - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
-      # Each side: its own venv from its own lockfile (runtime deps only — groups are
-      # dev tooling and old refs may not have today's groups), plus pyperf as harness
-      # infrastructure. The harness then runs UNDER the side's python, so
-      # sys.executable's venv — the thing the suites benchmark — is that side's skit,
-      # while the benchmarks/ package resolves from this checkout's cwd. The harness
-      # therefore imports only runtime deps + pyperf + stdlib — enforced by
-      # tests/test_benchmarks_tooling.py's import-surface test. The compare profile
-      # itself carries compare_mode on every SuitePlan, so micro degrades per-case
-      # with recorded skips against older sides (no ambient env flag involved).
-      # --measured-repo makes the results carry the SIDE's git identity, never the
-      # harness ref's. Compatibility floor: sides must be ≥ 725f11d (the dataset
-      # generator uses the prompt-kind store API) — older refs fail dataset
-      # generation before any suite runs.
-      - name: Build base venv + run
-        run: |
-          uv sync --directory side-base --no-default-groups
-          uv pip install --python side-base/.venv/bin/python "pyperf==2.10.0"
-          side-base/.venv/bin/python -m benchmarks run --profile compare --out .bench-base --measured-repo side-base
-      - name: Build head venv + run
-        run: |
-          uv sync --directory side-head --no-default-groups
-          uv pip install --python side-head/.venv/bin/python "pyperf==2.10.0"
-          side-head/.venv/bin/python -m benchmarks run --profile compare --out .bench-head --measured-repo side-head
-      - name: Render comparison
-        if: ${{ !cancelled() }}
-        # Explicit `shell: bash` for `pipefail`: the default shell runs `bash -e`
-        # WITHOUT it, so `compare | tee` would report tee's success and publish an
-        # empty comparison.md as green A/B evidence.
+      - name: Validate comparison sides
         shell: bash
         run: |
-          uv run python -m benchmarks compare .bench-base/results.json .bench-head/results.json \
+          for side in side-base side-head; do
+            if [[ -f "$side/Cargo.toml" && -f "$side/crates/skit-benchmarks/Cargo.toml" ]]; then
+              continue
+            fi
+            if [[ -f "$side/pyproject.toml" && -f "$side/benchmarks/__main__.py" ]]; then
+              continue
+            fi
+            echo "$side has no supported benchmark harness" >&2
+            exit 1
+          done
+      - name: Build the report harness
+        run: cargo build --locked --release -p skit-benchmarks
+      - name: Build the Rust base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: cargo build --locked --release --manifest-path side-base/Cargo.toml -p skit-cli-rs -p skit-benchmarks
+      - name: Measure the Rust base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: |
+          side-base/target/release/skit-bench run \
+            --profile compare \
+            --out .bench-base \
+            --budgets benchmarks/budgets.toml \
+            --repo side-base \
+            --measured-repo side-base \
+            --skit-binary side-base/target/release/skit
+      # The latest v0.4 development ref has no Rust benchmark crate.
+      # Its schema-v1 Python benchmark harness remains supported. v0.5 adds no Python harness.
+      - name: Measure the Python base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') == '' }}
+        working-directory: side-base
+        run: |
+          uv sync --no-default-groups
+          uv pip install --python .venv/bin/python "pyperf==2.10.0"
+          .venv/bin/python -m benchmarks run \
+            --profile compare \
+            --out "$GITHUB_WORKSPACE/.bench-base" \
+            --measured-repo .
+      - name: Build the Rust head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: cargo build --locked --release --manifest-path side-head/Cargo.toml -p skit-cli-rs -p skit-benchmarks
+      - name: Measure the Rust head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: |
+          side-head/target/release/skit-bench run \
+            --profile compare \
+            --out .bench-head \
+            --budgets benchmarks/budgets.toml \
+            --repo side-head \
+            --measured-repo side-head \
+            --skit-binary side-head/target/release/skit
+      - name: Measure the Python head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') == '' }}
+        working-directory: side-head
+        run: |
+          uv sync --no-default-groups
+          uv pip install --python .venv/bin/python "pyperf==2.10.0"
+          .venv/bin/python -m benchmarks run \
+            --profile compare \
+            --out "$GITHUB_WORKSPACE/.bench-head" \
+            --measured-repo .
+      - name: Render the comparison
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          target/release/skit-bench compare .bench-base/results.json .bench-head/results.json \
             | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload artifacts
+      - name: Upload A/B evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-compare
-          # The evidence lives under dot-prefixed directories, which
-          # upload-artifact excludes by default whenever they survive as
-          # artifact-internal paths (they do here: comparison.md at the root
-          # makes the workspace the common root). Silent, and it would leave
-          # the A/B report with no raw results.json behind it.
           include-hidden-files: true
           path: |
             comparison.md
-            .bench-base/results.json
-            .bench-base/results.md
-            .bench-head/results.json
-            .bench-head/results.md
+            .bench-base/
+            .bench-head/
           retention-days: 90

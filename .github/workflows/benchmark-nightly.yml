@@ -1,16 +1,10 @@
 name: benchmark (nightly)
 
-# The full-profile nightly (docs/design/benchmarks.md): scale grid + JS lane +
-# syscalls + dependency closure, 40+ statistical runs, budgets checked (this is the
-# enforcement point for the profile = "full" enforced rows — the pr job never
-# evaluates them), artifacts retained for 90 days. First run after merge must be
-# dispatched deliberately (see the design's merge checklist).
 on:
   schedule:
-    - cron: "43 2 * * *" # 02:43 UTC nightly — off the top of the hour, offset from mutation.yml
+    - cron: "43 2 * * *"
   workflow_dispatch:
 
-# Grant no permissions by default; each job requests the minimum it needs.
 permissions: {}
 
 concurrency:
@@ -18,52 +12,58 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PYTHONUTF8: "1"
   BENCH_CI_RUNNER: ubuntu-24.04
+  PYTHONUTF8: "1"
 
 jobs:
   bench-full:
-    name: full profile
+    name: Full profile
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install Python and uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
+          version: "0.12.3"
           python-version: "3.13"
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --dev
-      - name: Install strace (not preinstalled on runner images)
+          activate-environment: true
+          # This job installs no package with uv, so uv never makes its cache directory. The
+          # setup-uv post step then fails on the absent path. Keep the cache off.
+          enable-cache: false
+      - name: Verify benchmark Python 3.13
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Install strace
         run: sudo apt-get update -q && sudo apt-get install -y -q strace
-      - name: Install hyperfine (pinned)
+      - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
-      - name: Run full profile
-        run: uv run python -m benchmarks run --profile full --out .bench
-      - name: Check budgets (enforced tier gates this job)
-        run: uv run python -m benchmarks check .bench/results.json --require-enforced
-      - name: Publish step summary
+      - name: Build the measured binary and harness
+        run: cargo build --locked --release -p skit-cli-rs -p skit-benchmarks
+      - name: Run Criterion subjects
+        run: cargo bench --locked -p skit-benchmarks
+      - name: Run the full profile
+        run: bash benchmarks/run.sh full .bench target/release/skit
+      - name: Check budgets
+        run: bash benchmarks/check.sh .bench/results.json benchmarks/budgets.toml --require-enforced
+      - name: Publish the result table
         if: ${{ !cancelled() }}
         run: cat .bench/results.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload results artifact
+      - name: Upload benchmark data
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: benchmark-results-nightly
-          # Safe today only because every path sits under .bench/, so the
-          # action strips it as the common root; one root-level file would
-          # silently drop the lot. Not worth leaving to path arithmetic.
+          name: benchmark-results-full
           include-hidden-files: true
           path: |
-            .bench/results.json
-            .bench/results.md
-            .bench/run.json
-            .bench/suites/
-            .bench/artifacts/
+            .bench/
+            target/criterion/
           retention-days: 90

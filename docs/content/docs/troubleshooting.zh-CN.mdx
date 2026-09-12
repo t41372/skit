@@ -1,0 +1,58 @@
+---
+title: 疑难解答与常见问题
+description: 已知怪异之处、它们的应对办法，以及常见问题的简短回答。
+---
+
+## Shell 脚本在 Windows 上无法运行 [#shell-scripts-do-not-run-on-windows]
+
+Shell 条目需要 bash：skit 先看 `PATH`，然后看 `shell.bash_path`
+配置键，然后以退出码 126 拒绝并给出提示 —— 它从不静默改道走 WSL。
+PowerShell 条目需要 `pwsh`（或 `powershell.exe`）。
+
+## 在中国大陆下载失败 [#downloads-fail-in-mainland-china]
+
+把每个生态指向一个国内镜像 —— `mirror.*` 键见[配置](/zh-CN/docs/configuration)。
+对于最开始的 `uv tool install skit-cli`（那时 skit 还不存在，帮不上忙），
+请为那一条命令导出
+`UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple`。
+
+## 常见问题 [#faq]
+
+**skit 会修改我的脚本吗？**
+只会修改 `[tool.skit]` 注释块，而且只在 skit 存储的副本中（引用条目根本不会被写入）。
+编辑会保留文件自身的行尾 —— 包括 CRLF —— 以及非 UTF-8 字节。唯一的例外是需要
+主动开启的 `skit params --normalize NAME`（仅 shell），它在你同意后把存储副本中的
+一处 `NAME=value` 改写为 `${NAME:-value}`。
+
+**我改了脚本中的一个常量 —— 为什么运行时用的还是旧值？**
+自 0.4.0 起不会这样了：默认值在每次运行时从脚本当前的源文件读取，
+而不是来自管理时的缓存。如果定义看起来是旧的，
+`skit params NAME --resync` 会刷新它们。
+
+**我如何传递空字符串？**
+在启动菜单中清空预填的字段，或使用 `--set NAME=`。在类型支持的地方，
+空值会作为真正的 `''` 传递 —— 参见
+[空就是空](/zh-CN/docs/parameters#empty-means-empty)。
+
+**我设置过一次 `-- --model opus` —— 它会一直保留吗？**
+会：每个条目都记住它上次的 `--` 尾部参数，并在不带参数的运行中重放
+（并在标准错误上给出说明）。`--forget-args` 清除它；`--raw` 干净地运行。
+
+**deno 会给我的脚本加沙箱吗？**
+不会。当 deno 是解析出的运行器时，skit 会传递 `--allow-all`，
+这样同一个脚本在 deno、bun 与 node 下表现完全一致。skit 是一个启动器，
+不是沙箱。
+
+**提示词里放敏感值安全吗？**
+不安全 —— 提示词不是敏感值通道。把占位符标记为敏感可以阻止 skit 保存它，
+并在真正运行前给你一个警告，但渲染后的文本仍会进入接收代理自己的会话日志。
+
+**我的数据在哪里，卸载会删除什么？**
+`skit doctor` 会打印解析后的程序库路径。`uv tool uninstall skit-cli`
+会删除 skit 及其 `PATH` 垫片，但有意保留你的程序库、配置与预设 ——
+重新安装就回来了。skit 从不写入你的 `PATH`、shell 配置文件或全局 uv 配置。
+
+**skit 需要哪些运行时？**
+skit 是一个 Rust 二进制文件，不需要 Python。Python 条目需要 uv。
+在你同意后，skit 可以下载一份固定版本、经过校验和验证的专用 uv 副本。
+对于 JS/TS，请你提供 deno、bun 或 node。skit 从不安装 JS 运行时。

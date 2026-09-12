@@ -1,0 +1,41 @@
+---
+title: 环境变量
+description: skit 读取的每个变量，以及它为子进程设置的变量。
+---
+
+## skit 读取的变量 [#variables-skit-reads]
+
+| 变量 | 作用 |
+| --- | --- |
+| `SKIT_DATA_DIR` | 覆盖数据根目录 —— 程序库、存储的副本、草稿，以及 skit 的专用 uv |
+| `SKIT_STATE_DIR` | 覆盖状态根目录 —— 上次使用的值、预设、运行历史 |
+| `SKIT_CONFIG_DIR` | 覆盖配置根目录 —— `config.toml` |
+| `SKIT_LANG` | 本进程的界面语言（`SKIT_LANG=zh-TW skit`） |
+| `VISUAL` / `EDITOR` | 当 `editor` 配置键未设置时使用的编辑器 |
+| `TERM` | `TERM=dumb` 把交互流程切换为纯文本逐行提问（屏幕阅读器、Emacs shell） |
+| `PATHEXT`（Windows） | 在分类可执行文件时，决定哪些扩展名算作可运行 |
+
+优先级细节：
+
+- **语言**：`SKIT_LANG` → `lang` 配置键 → `LC_ALL` → `LC_MESSAGES` →
+  `LANG` → 系统区域设置。值为 `C` 时被忽略。
+- **编辑器**：`editor` 配置键 → `VISUAL` → `EDITOR` → 平台默认值
+  （Windows 上是 `notepad`，其他平台是 `vi`）。空白值算作未设置。
+
+`skit doctor` 会打印解析后的数据、状态与配置路径。
+
+## skit 为它启动的进程设置的变量 [#variables-skit-sets-for-the-processes-it-launches]
+
+镜像设置以环境覆盖层的方式应用于 skit **自己的子进程** ——
+从不写入你的 shell、`PATH` 或全局 uv 配置 —— 并且每一项都让位于
+你自己已经设置的值：
+
+| 变量 | 来自 | 让位于 |
+| --- | --- | --- |
+| `UV_DEFAULT_INDEX` | `mirror.pypi` | 你自己的 `UV_DEFAULT_INDEX` 或 `UV_INDEX_URL` |
+| `UV_PYTHON_INSTALL_MIRROR` | `mirror.github` | —— |
+| `NPM_CONFIG_REGISTRY` | `mirror.npm` | 你自己的 `NPM_CONFIG_REGISTRY` / `npm_config_registry`（注意：npm 把这个变量排在 `~/.npmrc` 之上） |
+
+大写的 `NPM_CONFIG_REGISTRY` 形式对 npm、bun 与 deno 都有效。
+通过环境传递的参数值最后叠加，因此明确设置的参数胜过环境本身与
+skit 的镜像变量。

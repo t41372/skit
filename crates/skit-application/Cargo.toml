@@ -1,0 +1,27 @@
+[package]
+name = "skit-application"
+description = "UI-independent use cases and ports for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+regex.workspace = true
+skit-i18n.workspace = true
+serde.workspace = true
+shlex.workspace = true
+windows-args.workspace = true
+thiserror.workspace = true
+time.workspace = true
+skit-domain.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+skit-i18n.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
