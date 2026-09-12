@@ -851,33 +851,24 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn screen_modes_toggle_the_alternate_screen_mouse_capture_and_focus_reporting() {
+        // The commands write ASCII only, so the lossy conversion is exact.
         let mut entered = Vec::new();
         enter_screen_modes(&mut entered).unwrap();
-        for expected in [
-            "\x1b[?1049h".as_bytes(),
-            "\x1b[?1003h".as_bytes(),
-            "\x1b[?1004h".as_bytes(),
-        ] {
+        let entered = String::from_utf8_lossy(&entered);
+        for expected in ["\x1b[?1049h", "\x1b[?1003h", "\x1b[?1004h"] {
             assert!(
-                entered.windows(expected.len()).any(|part| part == expected),
-                "the entered modes miss {}: {}",
-                String::from_utf8_lossy(expected),
-                String::from_utf8_lossy(&entered)
+                entered.contains(expected),
+                "the entered modes miss {expected:?}: {entered:?}"
             );
         }
 
         let mut left = Vec::new();
         leave_screen_modes(&mut left).unwrap();
-        for expected in [
-            "\x1b[?1049l".as_bytes(),
-            "\x1b[?1003l".as_bytes(),
-            "\x1b[?1004l".as_bytes(),
-        ] {
+        let left = String::from_utf8_lossy(&left);
+        for expected in ["\x1b[?1049l", "\x1b[?1003l", "\x1b[?1004l"] {
             assert!(
-                left.windows(expected.len()).any(|part| part == expected),
-                "the left modes miss {}: {}",
-                String::from_utf8_lossy(expected),
-                String::from_utf8_lossy(&left)
+                left.contains(expected),
+                "the left modes miss {expected:?}: {left:?}"
             );
         }
     }
