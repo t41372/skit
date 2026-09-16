@@ -237,3 +237,104 @@ fn row_cas_refuses_container_tokens_and_disappeared_arrays() {
         "[prompt]\nrunners = \"gone\"\n"
     );
 }
+
+/// A configuration file the user is still repairing by hand.
+const MALFORMED: &str = "not = [valid\n";
+
+/// A refused compare-and-set must leave a malformed file exactly as the user wrote it.
+///
+/// The store repairs a malformed file on its first real write. A refusal is not a write: the
+/// user's own bytes stay until a mutation commits, so a stale expectation can never replace a
+/// file the user is still repairing by hand.
+#[test]
+fn a_refused_single_row_mutation_keeps_a_malformed_file_and_its_defaults() {
+    let stale_row = {
+        let source = TempDir::new().unwrap();
+        let store = FileConfigStore::new(source.path());
+        store.set_runner(runner("my-agent", "old"), false).unwrap();
+        store
+            .runner_rows()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.name.as_deref() == Some("my-agent"))
+            .unwrap()
+    };
+
+    for refuse in [
+        |store: &FileConfigStore, row: &skit_store::PromptRunnerRow| {
+            store.set_runner_if_unchanged(runner("my-agent", "mine"), std::slice::from_ref(row))
+        },
+        |store: &FileConfigStore, row: &skit_store::PromptRunnerRow| {
+            store.replace_runner_row_if_unchanged(runner("my-agent", "mine"), row)
+        },
+        |store: &FileConfigStore, row: &skit_store::PromptRunnerRow| {
+            store.remove_runner_row_if_unchanged(row)
+        },
+        |store: &FileConfigStore, row: &skit_store::PromptRunnerRow| {
+            store.remove_runner_if_unchanged("my-agent", std::slice::from_ref(row))
+        },
+    ] {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("config.toml");
+        fs::write(&path, MALFORMED).unwrap();
+        let store = FileConfigStore::new(root.path());
+
+        assert!(!refuse(&store, &stale_row).unwrap());
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), MALFORMED);
+        assert!(!root.path().join("config.toml.bak").exists());
+    }
+}
+
+/// A refused mutation on a fresh configuration must not seed the default agents either.
+#[test]
+fn a_refused_single_row_mutation_leaves_a_fresh_configuration_unwritten() {
+    let source = TempDir::new().unwrap();
+    let seeded = FileConfigStore::new(source.path());
+    seeded.set_runner(runner("my-agent", "old"), false).unwrap();
+    let stale = seeded
+        .runner_rows()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.name.as_deref() == Some("my-agent"))
+        .unwrap();
+
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(
+        !store
+            .set_runner_if_unchanged(runner("my-agent", "mine"), std::slice::from_ref(&stale))
+            .unwrap()
+    );
+
+    assert!(!root.path().join("config.toml").exists());
+}
+
+/// A removal that finds no such agent is not a write either.
+///
+/// `remove_runner` reports `false` when the name was never there. The store keeps its hands off
+/// the file in that case: it creates no configuration for a name it did not remove, and it leaves
+/// a malformed file for the user to repair.
+#[test]
+fn a_removal_that_finds_no_such_agent_writes_nothing() {
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(!store.remove_runner("no-such-agent").unwrap());
+
+    assert!(!root.path().join("config.toml").exists());
+
+    let malformed = TempDir::new().unwrap();
+    let path = malformed.path().join("config.toml");
+    fs::write(&path, MALFORMED).unwrap();
+
+    assert!(
+        !FileConfigStore::new(malformed.path())
+            .remove_runner("no-such-agent")
+            .unwrap()
+    );
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), MALFORMED);
+    assert!(!malformed.path().join("config.toml.bak").exists());
+}

@@ -1,9 +1,12 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use skit_application::RepositoryError;
 use skit_domain::EntrySettings;
 
-use crate::{ConfigError, FileConfigStore, FileStore, PromptRunnerRow};
+use crate::{
+    ConfigError, FileConfigStore, FileStore, PromptRunnerRow, RunnerMutation,
+    config::{normalize_settings, normalized_runner_mutations},
+};
 
 /// Result of one identity- and pin-checked named runner removal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +17,22 @@ pub enum RunnerRemovalCas {
     RowsChanged,
     /// The number of prompt entries pinned to the runner changed after confirmation.
     PinsChanged {
+        /// Current count collected while the library mutation lock is held.
+        actual: usize,
+    },
+}
+
+/// Result of one preferences transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreferencesCommit {
+    /// The settings and every staged runner mutation reached the file.
+    Committed,
+    /// One or more raw config rows changed after inspection.
+    RowsChanged,
+    /// The number of prompt entries pinned to a runner changed after confirmation.
+    PinsChanged {
+        /// Stable runner key of the refused removal.
+        name: String,
         /// Current count collected while the library mutation lock is held.
         actual: usize,
     },
@@ -94,14 +113,92 @@ impl FileRunnerManagementStore {
         }
     }
 
+    /// Write scalar settings and every staged runner mutation as one config transaction.
+    ///
+    /// Invalid input refuses before the transaction takes a lock. The transaction takes the
+    /// library namespace lock only when it must freeze prompt pins. A stale row expectation or
+    /// pin count keeps the complete batch out of the file and keeps the stored bytes.
+    pub fn commit_preferences(
+        &self,
+        settings: &BTreeMap<String, String>,
+        runners: &[RunnerMutation],
+    ) -> Result<PreferencesCommit, RunnerManagementStoreError> {
+        self.commit_preferences_with_hook(settings, runners, || {})
+    }
+
+    fn commit_preferences_with_hook(
+        &self,
+        settings: &BTreeMap<String, String>,
+        runners: &[RunnerMutation],
+        after_library_lock: impl FnOnce(),
+    ) -> Result<PreferencesCommit, RunnerManagementStoreError> {
+        let mutations = normalized_runner_mutations(runners)?;
+        let settings = normalize_settings(settings)?;
+        let pins = mutations
+            .iter()
+            .filter_map(pin_expectation)
+            .collect::<Vec<_>>();
+        let _library_lock = if pins.is_empty() {
+            None
+        } else {
+            Some(self.library.namespace_lock()?)
+        };
+        after_library_lock();
+        // One scan under the lock serves every staged removal.
+        let pinned = if pins.is_empty() {
+            Vec::new()
+        } else {
+            self.prompt_pins()?
+        };
+        for (name, expected) in pins {
+            let actual = count_pins(&pinned, name);
+            if actual != expected {
+                return Ok(PreferencesCommit::PinsChanged {
+                    name: name.to_owned(),
+                    actual,
+                });
+            }
+        }
+        if self
+            .config
+            .commit_runner_transaction(&settings, &mutations)?
+        {
+            Ok(PreferencesCommit::Committed)
+        } else {
+            Ok(PreferencesCommit::RowsChanged)
+        }
+    }
+
     fn prompt_pin_count(&self, name: &str) -> Result<usize, RepositoryError> {
+        Ok(count_pins(&self.prompt_pins()?, name))
+    }
+
+    /// Read the pinned runner name of every prompt entry in one library scan.
+    fn prompt_pins(&self) -> Result<Vec<String>, RepositoryError> {
         Ok(self
             .library
             .scan_entries()?
             .into_iter()
             .filter(|entry| entry.meta.kind.as_str() == "prompt")
-            .filter(|entry| EntrySettings::from_meta(&entry.meta).runner == name)
-            .count())
+            .map(|entry| EntrySettings::from_meta(&entry.meta).runner)
+            .collect())
+    }
+}
+
+/// Count the prompt entries that one scan found pinned to one runner name.
+fn count_pins(pinned: &[String], name: &str) -> usize {
+    pinned.iter().filter(|runner| *runner == name).count()
+}
+
+/// Report the prompt pin count one mutation must confirm before it removes a key.
+fn pin_expectation(mutation: &RunnerMutation) -> Option<(&str, usize)> {
+    match mutation {
+        RunnerMutation::RemoveNamed {
+            name,
+            expected_pinned_count,
+            ..
+        } => Some((name.as_str(), *expected_pinned_count)),
+        _ => None,
     }
 }
 
@@ -198,5 +295,78 @@ mod tests {
                 .iter()
                 .all(|runner| runner.name != "victim")
         );
+    }
+
+    #[test]
+    fn a_prompt_pin_mutation_cannot_cross_the_preferences_transaction() {
+        let data_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let library = FileStore::new(data_dir.path());
+        let entry = library.create(prompt_request("victim")).unwrap();
+        let config = FileConfigStore::new(config_dir.path());
+        config
+            .set_runner(
+                PromptRunner {
+                    name: "victim".to_owned(),
+                    argv: vec!["victim".to_owned(), "{{prompt}}".to_owned()],
+                },
+                false,
+            )
+            .unwrap();
+        let expected = config
+            .runner_rows()
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.name.as_deref() == Some("victim"))
+            .collect::<Vec<_>>();
+        let management = FileRunnerManagementStore::new(data_dir.path(), config_dir.path());
+        let settings = BTreeMap::from([("editor".to_owned(), "vim".to_owned())]);
+        let batch = vec![RunnerMutation::RemoveNamed {
+            name: "victim".to_owned(),
+            expected,
+            expected_pinned_count: 1,
+        }];
+        let (locked_sender, locked_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let commit = thread::spawn(move || {
+            management.commit_preferences_with_hook(&settings, &batch, || {
+                locked_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+            })
+        });
+
+        locked_receiver.recv().unwrap();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (done_sender, done_receiver) = mpsc::channel();
+        let mutation = thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            let mut settings = EntrySettings::from_meta(&entry.meta);
+            settings.runner = "other".to_owned();
+            let result = library.update_settings(&entry, &settings, "invoke");
+            done_sender.send(()).unwrap();
+            result
+        });
+        started_receiver.recv().unwrap();
+        assert!(
+            done_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "the metadata mutation must wait for the namespace transaction"
+        );
+
+        release_sender.send(()).unwrap();
+        assert_eq!(
+            commit.join().unwrap().unwrap(),
+            PreferencesCommit::Committed
+        );
+        mutation.join().unwrap().unwrap();
+        assert!(
+            config
+                .runners()
+                .unwrap()
+                .iter()
+                .all(|runner| runner.name != "victim")
+        );
+        assert_eq!(config.get("editor").unwrap(), "vim");
     }
 }

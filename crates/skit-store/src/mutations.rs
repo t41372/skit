@@ -19,7 +19,7 @@ use atomic::{
 pub use hash::content_hash;
 use registry::Registry;
 pub use runner_management::{
-    FileRunnerManagementStore, RunnerManagementStoreError, RunnerRemovalCas,
+    FileRunnerManagementStore, PreferencesCommit, RunnerManagementStoreError, RunnerRemovalCas,
 };
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit,

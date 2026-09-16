@@ -19,10 +19,10 @@ mod toml_document;
 
 pub use config::{
     CONFIG_KEYS, ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner,
-    PromptRunnerRow,
+    PromptRunnerRow, RunnerMutation,
 };
 pub use mutations::{
-    AgentSkillInstallPoint, FileAgentSkillStore, FileRunnerManagementStore,
+    AgentSkillInstallPoint, FileAgentSkillStore, FileRunnerManagementStore, PreferencesCommit,
     PreparedExternalCopyEdit, PreparedLaunch, RegistryRebuildProblem, RegistryRebuildReport,
     RunnerManagementStoreError, RunnerRemovalCas, content_hash,
 };

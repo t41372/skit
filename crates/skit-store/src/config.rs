@@ -137,6 +137,44 @@ impl PromptRunnerRow {
     }
 }
 
+/// One staged runner mutation resolved against a management read.
+#[derive(Clone, Debug)]
+pub enum RunnerMutation {
+    /// Append one runner. A name that a row already uses is refused.
+    Add {
+        /// New runner definition.
+        runner: PromptRunner,
+    },
+    /// Replace one stable runner key while all of its raw rows match the read.
+    ReplaceNamed {
+        /// New runner definition.
+        runner: PromptRunner,
+        /// Every raw row the read reported for the key.
+        expected: Vec<PromptRunnerRow>,
+    },
+    /// Repair one raw row while its complete snapshot matches the read.
+    RepairRow {
+        /// New runner definition.
+        runner: PromptRunner,
+        /// Raw row from the read.
+        expected: PromptRunnerRow,
+    },
+    /// Remove one stable runner key while its rows and its prompt pins match the read.
+    RemoveNamed {
+        /// Stable runner key.
+        name: String,
+        /// Every raw row the read reported for the key.
+        expected: Vec<PromptRunnerRow>,
+        /// Number of prompt entries that the read found pinned to the key.
+        expected_pinned_count: usize,
+    },
+    /// Remove one raw row, or one malformed container, while its snapshot matches the read.
+    RemoveRow {
+        /// Raw row from the read.
+        expected: PromptRunnerRow,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PromptRunnerIssue {
     PromptSectionNotTable,
@@ -413,20 +451,9 @@ impl FileConfigStore {
         &self,
         settings: &BTreeMap<String, String>,
     ) -> Result<Option<ConfigRecovery>, ConfigError> {
-        let settings = settings
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), normalize_setting(key, value)?)))
-            .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
-        self.update_with_recovery(|document| {
-            for (key, value) in settings.iter().filter(|(key, _)| key.as_str() != "mirror") {
-                write_key(document, key, value)?;
-            }
-            if let Some(value) = settings.get("mirror") {
-                write_key(document, "mirror", value)?;
-            }
-            Ok(())
-        })
-        .map(|(_, recovery)| recovery)
+        let settings = normalize_settings(settings)?;
+        self.update_with_recovery(|document| apply_settings(document, &settings))
+            .map(|(_, recovery)| recovery)
     }
 
     /// Read stored mirror URLs without applying the master switch.
@@ -533,43 +560,8 @@ impl FileConfigStore {
 
     /// Add or replace one named prompt runner.
     pub fn set_runner(&self, runner: PromptRunner, replace: bool) -> Result<bool, ConfigError> {
-        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
-        let runner = PromptRunner {
-            name: runner.name.trim().to_owned(),
-            argv: runner.argv,
-        };
-        self.update(|document| {
-            materialize_seed_runners(document)?;
-            let rows = runner_array_mut(document)?;
-            let existing = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(index, value)| {
-                    (raw_runner_name(value) == runner.name).then_some(index)
-                })
-                .collect::<Vec<_>>();
-            if let Some(&first) = existing.first() {
-                if !replace {
-                    return Err(ConfigError::Invalid(
-                        Message::new(
-                            "The runner {} already exists — pass --force to replace its command.",
-                        )
-                        .with(&runner.name),
-                    ));
-                }
-                let row = rows[first]
-                    .as_table_mut()
-                    .expect("a matched runner row is a table");
-                write_runner_fields(row, &runner);
-                for index in existing.into_iter().skip(1).rev() {
-                    rows.remove(index);
-                }
-                Ok(true)
-            } else {
-                rows.push(Value::Table(runner_table(&runner)));
-                Ok(false)
-            }
-        })
+        let runner = checked_runner(&runner)?;
+        self.update(|document| apply_set_runner(document, &runner, replace, &mut Vec::new()))
     }
 
     /// Replace one stable runner key only while all of its raw rows match a prior read.
@@ -581,42 +573,9 @@ impl FileConfigStore {
         runner: PromptRunner,
         expected: &[PromptRunnerRow],
     ) -> Result<bool, ConfigError> {
-        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
-        let runner = PromptRunner {
-            name: runner.name.trim().to_owned(),
-            argv: runner.argv,
-        };
-        self.update(|document| {
-            materialize_seed_runners(document)?;
-            let rows = runner_array_mut(document)?;
-            let matches = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(index, value)| {
-                    (raw_runner_name(value) == runner.name).then_some(index)
-                })
-                .collect::<Vec<_>>();
-            let current = matches
-                .iter()
-                .map(|index| rows[*index].clone())
-                .collect::<Vec<_>>();
-            let expected = expected
-                .iter()
-                .filter(|row| row.name.as_deref() == Some(runner.name.as_str()))
-                .map(|row| row.raw.clone())
-                .collect::<Vec<_>>();
-            if matches.is_empty() || current != expected {
-                return Ok(false);
-            }
-            let first = matches[0];
-            // A matching raw runner name can only come from a table row.
-            let mut replacement = rows[first].as_table().cloned().unwrap_or_default();
-            write_runner_fields(&mut replacement, &runner);
-            rows[first] = Value::Table(replacement);
-            for index in matches.into_iter().skip(1).rev() {
-                rows.remove(index);
-            }
-            Ok(true)
+        let runner = checked_runner(&runner)?;
+        self.update_when_applied(|document| {
+            apply_set_runner_if_unchanged(document, &runner, expected, &mut Vec::new())
         })
     }
 
@@ -626,34 +585,9 @@ impl FileConfigStore {
         runner: PromptRunner,
         expected: &PromptRunnerRow,
     ) -> Result<bool, ConfigError> {
-        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
-        let runner = PromptRunner {
-            name: runner.name.trim().to_owned(),
-            argv: runner.argv,
-        };
-        self.update(|document| {
-            let Some(index) = expected.index else {
-                return Ok(false);
-            };
-            let Some(rows) = explicit_runner_rows_mut(document) else {
-                return Ok(false);
-            };
-            if rows.get(index) != Some(&expected.raw) {
-                return Ok(false);
-            }
-            if rows
-                .iter()
-                .enumerate()
-                .any(|(current, value)| current != index && raw_runner_name(value) == runner.name)
-            {
-                return Err(ConfigError::Invalid(
-                    Message::new("The runner {} already exists — pick another name.")
-                        .with(&runner.name),
-                ));
-            }
-            rows[index] = Value::Table(runner_table(&runner));
-            mark_runners_seeded(document)?;
-            Ok(true)
+        let runner = checked_runner(&runner)?;
+        self.update_when_applied(|document| {
+            apply_replace_runner_row(document, &runner, expected, expected.index)
         })
     }
 
@@ -680,27 +614,8 @@ impl FileConfigStore {
         if name.is_empty() {
             return Ok(false);
         }
-        self.update(|document| {
-            materialize_seed_runners(document)?;
-            let rows = runner_array_mut(document)?;
-            let current = rows
-                .iter()
-                .filter(|value| raw_runner_name(value) == name)
-                .cloned()
-                .collect::<Vec<_>>();
-            if let Some(expected) = expected {
-                let expected = expected
-                    .iter()
-                    .filter(|row| row.name.as_deref() == Some(name))
-                    .map(|row| row.raw.clone())
-                    .collect::<Vec<_>>();
-                if current != expected {
-                    return Ok(false);
-                }
-            }
-            let before = rows.len();
-            rows.retain(|value| raw_runner_name(value) != name);
-            Ok(rows.len() != before)
+        self.update_when_applied(|document| {
+            apply_remove_runner(document, name, expected, &mut Vec::new())
         })
     }
 
@@ -725,20 +640,40 @@ impl FileConfigStore {
         &self,
         expected: &PromptRunnerRow,
     ) -> Result<bool, ConfigError> {
-        self.update(|document| match expected.index {
-            Some(index) => {
-                let Some(rows) = explicit_runner_rows_mut(document) else {
-                    return Ok(false);
-                };
-                if rows.get(index) != Some(&expected.raw) {
-                    return Ok(false);
-                }
-                rows.remove(index);
-                mark_runners_seeded(document)?;
-                Ok(true)
-            }
-            None => remove_malformed_runner_container(document, expected),
+        self.update_when_applied(|document| {
+            apply_remove_runner_row(document, expected, expected.index, &mut Vec::new())
         })
+    }
+
+    /// Write checked settings and every staged runner mutation as one transaction.
+    ///
+    /// The caller supplies settings from [`normalize_settings`] and mutations from
+    /// [`normalized_runner_mutations`]. The mutations run in the supplied order against one
+    /// working copy. A stale expectation returns `false` and keeps the stored bytes, so a
+    /// refusal never repairs or replaces a malformed file.
+    pub(crate) fn commit_runner_transaction(
+        &self,
+        settings: &BTreeMap<String, String>,
+        mutations: &[RunnerMutation],
+    ) -> Result<bool, ConfigError> {
+        let committed = self.update_optional_with_recovery(|document| {
+            let mut working = document.clone();
+            if !mutations.is_empty() {
+                materialize_seed_runners(&mut working)?;
+            }
+            let mut origin = (0..runner_row_count(&mut working))
+                .map(Some)
+                .collect::<Vec<_>>();
+            for mutation in mutations {
+                if !apply_runner_mutation(&mut working, mutation, &mut origin)? {
+                    return Ok(None);
+                }
+            }
+            apply_settings(&mut working, settings)?;
+            *document = working;
+            Ok(Some(()))
+        })?;
+        Ok(committed.0.is_some())
     }
 
     fn path(&self) -> PathBuf {
@@ -788,10 +723,46 @@ impl FileConfigStore {
             .map(|(result, _)| result)
     }
 
+    /// Run one runner transaction that reports whether it applied.
+    ///
+    /// A transaction that does not apply writes nothing. It works on a copy, so a refused
+    /// compare-and-set never seeds the default agents and never replaces a malformed file the
+    /// user is still repairing by hand. This is the rule the preferences batch follows.
+    fn update_when_applied(
+        &self,
+        operation: impl FnOnce(&mut Table) -> Result<bool, ConfigError>,
+    ) -> Result<bool, ConfigError> {
+        let (applied, _) = self.update_optional_with_recovery(|document| {
+            let mut working = document.clone();
+            if !operation(&mut working)? {
+                return Ok(None);
+            }
+            *document = working;
+            Ok(Some(true))
+        })?;
+        Ok(applied.unwrap_or(false))
+    }
+
     fn update_with_recovery<T>(
         &self,
         operation: impl FnOnce(&mut Table) -> Result<T, ConfigError>,
     ) -> Result<(T, Option<ConfigRecovery>), ConfigError> {
+        let (result, recovery) =
+            self.update_optional_with_recovery(|document| operation(document).map(Some))?;
+        Ok((
+            result.expect("an operation that cannot refuse always has a result"),
+            recovery,
+        ))
+    }
+
+    /// Run one configuration transaction that can refuse.
+    ///
+    /// The operation returns `None` to refuse. A refusal writes nothing, so the stored bytes
+    /// stay as they are. A malformed file keeps its content until an operation commits.
+    fn update_optional_with_recovery<T>(
+        &self,
+        operation: impl FnOnce(&mut Table) -> Result<Option<T>, ConfigError>,
+    ) -> Result<(Option<T>, Option<ConfigRecovery>), ConfigError> {
         let lock_path = self.lock_path();
         let _lock =
             acquire_lock(&lock_path).map_err(|error| io_error("lock", &lock_path, error))?;
@@ -800,9 +771,11 @@ impl FileConfigStore {
             .load_document()
             .map_err(|error| io_error("read", &path, error))?;
         let before = loaded.document.clone();
-        let result = operation(&mut loaded.document)?;
+        let Some(result) = operation(&mut loaded.document)? else {
+            return Ok((None, None));
+        };
         if loaded.document == before && !loaded.malformed {
-            return Ok((result, None));
+            return Ok((Some(result), None));
         }
         let desired = toml::to_string_pretty(&loaded.document)
             .expect("a configuration table contains only TOML values");
@@ -826,8 +799,32 @@ impl FileConfigStore {
             backup_path: preserve_corrupt_backup(&path, &loaded.original).ok(),
         });
         atomic_write_bytes(&path, &encoded).map_err(|error| io_error("write", &path, error))?;
-        Ok((result, recovery))
+        Ok((Some(result), recovery))
     }
+}
+
+/// Check and convert every supplied setting before a transaction takes a lock.
+pub(crate) fn normalize_settings(
+    settings: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ConfigError> {
+    settings
+        .iter()
+        .map(|(key, value)| Ok((key.clone(), normalize_setting(key, value)?)))
+        .collect()
+}
+
+/// Write checked settings. The master switch comes last, so it sees the new URLs.
+fn apply_settings(
+    document: &mut Table,
+    settings: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
+    for (key, value) in settings.iter().filter(|(key, _)| key.as_str() != "mirror") {
+        write_key(document, key, value)?;
+    }
+    if let Some(value) = settings.get("mirror") {
+        write_key(document, "mirror", value)?;
+    }
+    Ok(())
 }
 
 fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
@@ -1415,6 +1412,287 @@ fn raw_runner_name(value: &Value) -> &str {
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default()
+}
+
+/// Check and trim one supplied runner before a transaction takes the lock.
+fn checked_runner(runner: &PromptRunner) -> Result<PromptRunner, ConfigError> {
+    validate_runner(runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
+    Ok(PromptRunner {
+        name: runner.name.trim().to_owned(),
+        argv: runner.argv.clone(),
+    })
+}
+
+/// Check and trim every staged mutation before a transaction takes a lock.
+pub(crate) fn normalized_runner_mutations(
+    mutations: &[RunnerMutation],
+) -> Result<Vec<RunnerMutation>, ConfigError> {
+    mutations
+        .iter()
+        .map(|mutation| match mutation {
+            RunnerMutation::Add { runner } => Ok(RunnerMutation::Add {
+                runner: checked_runner(runner)?,
+            }),
+            RunnerMutation::ReplaceNamed { runner, expected } => Ok(RunnerMutation::ReplaceNamed {
+                runner: checked_runner(runner)?,
+                expected: expected.clone(),
+            }),
+            RunnerMutation::RepairRow { runner, expected } => Ok(RunnerMutation::RepairRow {
+                runner: checked_runner(runner)?,
+                expected: expected.clone(),
+            }),
+            RunnerMutation::RemoveNamed {
+                name,
+                expected,
+                expected_pinned_count,
+            } => {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return Err(ConfigError::Usage(PromptRunnerIssue::Name.message()));
+                }
+                Ok(RunnerMutation::RemoveNamed {
+                    name,
+                    expected: expected.clone(),
+                    expected_pinned_count: *expected_pinned_count,
+                })
+            }
+            RunnerMutation::RemoveRow { expected } => Ok(RunnerMutation::RemoveRow {
+                expected: expected.clone(),
+            }),
+        })
+        .collect()
+}
+
+/// Apply one staged mutation and keep the read row addresses current.
+///
+/// `origin` holds the read index of each row, and `None` for a row this transaction added.
+/// Each mutation reports the positions it removed, so a later mutation finds its row again.
+fn apply_runner_mutation(
+    document: &mut Table,
+    mutation: &RunnerMutation,
+    origin: &mut Vec<Option<usize>>,
+) -> Result<bool, ConfigError> {
+    let mut removed = Vec::new();
+    let applied = match mutation {
+        RunnerMutation::Add { runner } => {
+            // An add refuses a name a row already uses, so it only appends one row.
+            let replaced = apply_set_runner(document, runner, false, &mut removed)?;
+            debug_assert!(!replaced, "an add never replaces a row");
+            debug_assert!(removed.is_empty(), "an add never removes a row");
+            origin.push(None);
+            true
+        }
+        RunnerMutation::ReplaceNamed { runner, expected } => {
+            apply_set_runner_if_unchanged(document, runner, expected, &mut removed)?
+        }
+        RunnerMutation::RepairRow { runner, expected } => apply_replace_runner_row(
+            document,
+            runner,
+            expected,
+            current_position(origin, expected.index),
+        )?,
+        RunnerMutation::RemoveNamed { name, expected, .. } => {
+            apply_remove_runner(document, name, Some(expected), &mut removed)?
+        }
+        RunnerMutation::RemoveRow { expected } => apply_remove_runner_row(
+            document,
+            expected,
+            current_position(origin, expected.index),
+            &mut removed,
+        )?,
+    };
+    for position in removed {
+        origin.remove(position);
+    }
+    debug_assert!(
+        !applied || origin.len() == runner_row_count(document),
+        "each stored row keeps one read address"
+    );
+    Ok(applied)
+}
+
+/// Return where one read index is now, or `None` when that row is gone.
+fn current_position(origin: &[Option<usize>], index: Option<usize>) -> Option<usize> {
+    let index = index?;
+    origin.iter().position(|value| *value == Some(index))
+}
+
+/// Count the raw rows the file declares.
+fn runner_row_count(document: &mut Table) -> usize {
+    explicit_runner_rows_mut(document).map_or(0, |rows| rows.len())
+}
+
+/// Add or replace one named runner inside one open transaction.
+///
+/// `removed` receives the coalesced duplicate positions in descending order.
+fn apply_set_runner(
+    document: &mut Table,
+    runner: &PromptRunner,
+    replace: bool,
+    removed: &mut Vec<usize>,
+) -> Result<bool, ConfigError> {
+    materialize_seed_runners(document)?;
+    let rows = runner_array_mut(document)?;
+    let existing = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (raw_runner_name(value) == runner.name).then_some(index))
+        .collect::<Vec<_>>();
+    if let Some(&first) = existing.first() {
+        if !replace {
+            return Err(ConfigError::Invalid(
+                Message::new("The runner {} already exists — pass --force to replace its command.")
+                    .with(&runner.name),
+            ));
+        }
+        let row = rows[first]
+            .as_table_mut()
+            .expect("a matched runner row is a table");
+        write_runner_fields(row, runner);
+        for index in existing.into_iter().skip(1).rev() {
+            rows.remove(index);
+            removed.push(index);
+        }
+        Ok(true)
+    } else {
+        rows.push(Value::Table(runner_table(runner)));
+        Ok(false)
+    }
+}
+
+/// Replace one stable key while its rows match, inside one open transaction.
+///
+/// `removed` receives the coalesced duplicate positions in descending order.
+fn apply_set_runner_if_unchanged(
+    document: &mut Table,
+    runner: &PromptRunner,
+    expected: &[PromptRunnerRow],
+    removed: &mut Vec<usize>,
+) -> Result<bool, ConfigError> {
+    materialize_seed_runners(document)?;
+    let rows = runner_array_mut(document)?;
+    let matches = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (raw_runner_name(value) == runner.name).then_some(index))
+        .collect::<Vec<_>>();
+    let current = matches
+        .iter()
+        .map(|index| rows[*index].clone())
+        .collect::<Vec<_>>();
+    let expected = expected
+        .iter()
+        .filter(|row| row.name.as_deref() == Some(runner.name.as_str()))
+        .map(|row| row.raw.clone())
+        .collect::<Vec<_>>();
+    if matches.is_empty() || current != expected {
+        return Ok(false);
+    }
+    let first = matches[0];
+    // A matching raw runner name can only come from a table row.
+    let mut replacement = rows[first].as_table().cloned().unwrap_or_default();
+    write_runner_fields(&mut replacement, runner);
+    rows[first] = Value::Table(replacement);
+    for index in matches.into_iter().skip(1).rev() {
+        rows.remove(index);
+        removed.push(index);
+    }
+    Ok(true)
+}
+
+/// Repair the row at one position while its snapshot matches, inside one open transaction.
+fn apply_replace_runner_row(
+    document: &mut Table,
+    runner: &PromptRunner,
+    expected: &PromptRunnerRow,
+    position: Option<usize>,
+) -> Result<bool, ConfigError> {
+    let Some(position) = position else {
+        return Ok(false);
+    };
+    let Some(rows) = explicit_runner_rows_mut(document) else {
+        return Ok(false);
+    };
+    if rows.get(position) != Some(&expected.raw) {
+        return Ok(false);
+    }
+    if rows
+        .iter()
+        .enumerate()
+        .any(|(current, value)| current != position && raw_runner_name(value) == runner.name)
+    {
+        return Err(ConfigError::Invalid(
+            Message::new("The runner {} already exists — pick another name.").with(&runner.name),
+        ));
+    }
+    rows[position] = Value::Table(runner_table(runner));
+    mark_runners_seeded(document)?;
+    Ok(true)
+}
+
+/// Remove one stable key inside one open transaction.
+///
+/// `removed` receives the removed positions in descending order.
+fn apply_remove_runner(
+    document: &mut Table,
+    name: &str,
+    expected: Option<&[PromptRunnerRow]>,
+    removed: &mut Vec<usize>,
+) -> Result<bool, ConfigError> {
+    materialize_seed_runners(document)?;
+    let rows = runner_array_mut(document)?;
+    let current = rows
+        .iter()
+        .filter(|value| raw_runner_name(value) == name)
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(expected) = expected {
+        let expected = expected
+            .iter()
+            .filter(|row| row.name.as_deref() == Some(name))
+            .map(|row| row.raw.clone())
+            .collect::<Vec<_>>();
+        if current != expected {
+            return Ok(false);
+        }
+    }
+    let before = rows.len();
+    removed.extend(
+        rows.iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, value)| raw_runner_name(value) == name)
+            .map(|(index, _)| index),
+    );
+    rows.retain(|value| raw_runner_name(value) != name);
+    Ok(rows.len() != before)
+}
+
+/// Remove the row at one position, or one malformed container, inside one open transaction.
+///
+/// `removed` receives the removed position.
+fn apply_remove_runner_row(
+    document: &mut Table,
+    expected: &PromptRunnerRow,
+    position: Option<usize>,
+    removed: &mut Vec<usize>,
+) -> Result<bool, ConfigError> {
+    if expected.index.is_none() {
+        return remove_malformed_runner_container(document, expected);
+    }
+    let Some(position) = position else {
+        return Ok(false);
+    };
+    let Some(rows) = explicit_runner_rows_mut(document) else {
+        return Ok(false);
+    };
+    if rows.get(position) != Some(&expected.raw) {
+        return Ok(false);
+    }
+    rows.remove(position);
+    removed.push(position);
+    mark_runners_seeded(document)?;
+    Ok(true)
 }
 
 /// Record the default runner rows once, keeping any rows the user already wrote.
