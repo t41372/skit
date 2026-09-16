@@ -729,7 +729,8 @@ fn library_wheel_is_contained_and_rows_require_matching_up() {
             &state,
             &geometry,
         ),
-        EventHandling::Action(Action::Next)
+        EventHandling::Consumed,
+        "the Library rows viewport owns a wheel over its own cells"
     );
 
     let second_row = geometry.rows.y.saturating_add(1);
@@ -758,7 +759,7 @@ fn library_wheel_is_contained_and_rows_require_matching_up() {
 }
 
 #[test]
-fn library_wheel_cancels_an_armed_row_before_it_moves_selection() {
+fn library_wheel_cancels_an_armed_row_press() {
     let mut state = state_with_names(&["Alpha", "Beta"]);
     let mut session = TuiSession::default();
     let (_, geometry) = draw(&mut session, &state);
@@ -779,7 +780,7 @@ fn library_wheel_cancels_an_armed_row_before_it_moves_selection() {
             &geometry,
             mouse_kind(MouseEventKind::ScrollDown, first.0, first.1),
         ),
-        EventHandling::Action(Action::Next)
+        EventHandling::Consumed
     );
     assert_eq!(
         session.handle_event(

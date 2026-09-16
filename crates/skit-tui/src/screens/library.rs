@@ -6,9 +6,7 @@ use ratatui_core::{
     terminal::Frame,
     text::{Line, Span},
 };
-use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
-};
+use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent};
 use ratatui_interact::{
     components::{
         ScrollableContentState, handle_scrollable_content_key, handle_scrollable_content_mouse,
@@ -17,7 +15,7 @@ use ratatui_interact::{
 };
 use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
-    table::{Cell, Row, Table, TableState},
+    table::{Cell, Row, Table},
 };
 use skit_domain::{EntrySummary, StorageMode};
 use skit_i18n::{Locale, format_text, kind_label, text};
@@ -33,7 +31,9 @@ use crate::{
         rect as snapshot_rect, scroll as snapshot_scroll, value as snapshot_value,
     },
     pointer::contains,
+    session::alignment_snapshot,
     theme::{ACCENT, BOX_GREEN, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel, panel_block},
+    viewport::{AlignmentSignature, Viewport},
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
@@ -51,7 +51,6 @@ pub(crate) enum LibraryClickTarget {
 /// Result of one pointer event owned by the Library body.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LibraryPointerHandling {
-    Action(Action),
     Consumed,
     Ignored,
 }
@@ -65,6 +64,9 @@ pub(crate) struct LibraryScreenSession {
     detail_height: usize,
     focus: FocusManager<LibraryPane>,
     detail_signature: Option<(Option<skit_domain::Slug>, u16)>,
+    list_scroll: ScrollableContentState,
+    list_alignment: Option<AlignmentSignature<Option<usize>, usize>>,
+    pending_follow: bool,
 }
 
 impl Default for LibraryScreenSession {
@@ -78,6 +80,9 @@ impl Default for LibraryScreenSession {
             detail_height: 0,
             focus,
             detail_signature: None,
+            list_scroll: ScrollableContentState::empty(),
+            list_alignment: None,
+            pending_follow: false,
         }
     }
 }
@@ -98,7 +103,14 @@ impl LibraryScreenSession {
             detail_height,
             focus,
             detail_signature,
+            list_scroll,
+            list_alignment,
+            pending_follow,
         } = self;
+        let list_alignment = list_alignment
+            .as_ref()
+            .map(|alignment| alignment_snapshot("library.list_alignment", alignment))
+            .transpose()?;
         Ok(snapshot_node(
             "library",
             [
@@ -111,8 +123,20 @@ impl LibraryScreenSession {
                     "detail_signature",
                     snapshot_value("library.detail_signature", detail_signature)?,
                 ),
+                ("list_scroll", snapshot_scroll(list_scroll)),
+                ("list_alignment", serde_json::json!(list_alignment)),
+                ("pending_follow", serde_json::json!(pending_follow)),
             ],
         ))
+    }
+
+    /// Ask the next render to put the selected entry back in the viewport.
+    ///
+    /// The reducer clamps the selection at both ends of the list. `Previous` at the first entry
+    /// and `Next` at the last one keep the same index, so the index alone cannot report that the
+    /// reader asked to see the selection. This flag records the request itself.
+    pub(crate) const fn follow_selection(&mut self) {
+        self.pending_follow = true;
     }
 
     pub(crate) fn render(
@@ -158,9 +182,14 @@ impl LibraryScreenSession {
             table_inner.width,
             table_inner.height.saturating_sub(1),
         );
+        let offset = self.align_list(state, rows);
+        let selected = state.selected_visible_index();
         let table_rows = state
             .visible_entries()
-            .map(|entry| {
+            .enumerate()
+            .skip(offset)
+            .take(usize::from(rows.height))
+            .map(|(index, entry)| {
                 let mut label = format!(
                     "{} {}",
                     kind_glyph(entry.kind.as_str()),
@@ -177,11 +206,21 @@ impl LibraryScreenSession {
                 } else {
                     ""
                 };
-                Row::new(vec![
+                let row = Row::new(vec![
                     Cell::from(entry.name.as_str()),
                     Cell::from(label),
                     Cell::from(health),
-                ])
+                ]);
+                if selected == Some(index) {
+                    row.style(
+                        Style::default()
+                            .fg(SELECT_FG)
+                            .bg(SELECT_BG)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    row
+                }
             })
             .collect::<Vec<_>>();
         let header = Row::new(vec![
@@ -194,8 +233,6 @@ impl LibraryScreenSession {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         );
-        let mut table_state = TableState::default();
-        table_state.select(state.selected_visible_index());
         let table = Table::new(
             table_rows,
             [
@@ -206,24 +243,57 @@ impl LibraryScreenSession {
         )
         .block(list_block)
         .header(header)
-        .column_spacing(1)
-        .row_highlight_style(
-            Style::default()
-                .fg(SELECT_FG)
-                .bg(SELECT_BG)
-                .add_modifier(Modifier::BOLD),
-        );
-        frame.render_stateful_widget(table, panes[0], &mut table_state);
+        .column_spacing(1);
+        frame.render_widget(table, panes[0]);
 
         let detail = detail_lines(state, locale);
         self.render_detail(frame, panes[1], detail, state, locale);
 
         ViewGeometry {
             rows,
-            first_visible: table_state.offset(),
+            first_visible: offset,
             hits: Vec::new(),
             detail_pane_visible: show_detail,
         }
+    }
+
+    /// Clamp the list offset and follow the selection only on new keyboard or layout intent.
+    ///
+    /// The Library list owns its offset because a wheel notch must move the viewport and leave the
+    /// selection alone. A stateful `Table` cannot do that: `Table::visible_rows` pulls the selected
+    /// row back into view on every draw.
+    ///
+    /// Two inputs decide when to realign. The signature reports a change when the selection moved,
+    /// when the viewport was resized, and when the entry count changed under a selection that did
+    /// not move. `pending_follow` reports a navigation key that the reducer clamped, which leaves
+    /// the index alone. Neither is true on the render right after a wheel notch, so the reader
+    /// keeps the viewport where the wheel put it. The test is deliberately not "did the offset
+    /// change": that answer is true on the render right after a scroll and false on the one after
+    /// that, so the viewport would spring back one frame later.
+    ///
+    /// A realignment moves the offset as little as it can. The selected row is visible for every
+    /// offset from `selected + 1 - visible` through `selected`, so the realignment clamps the
+    /// offset into that band. Under the band the selection is below the viewport. Over it the
+    /// selection is above. A viewport with no room for a row has no band, so it keeps the offset.
+    fn align_list(&mut self, state: &LibraryState, rows: Rect) -> usize {
+        let total = state.visible_entry_count();
+        let visible = usize::from(rows.height);
+        self.list_scroll.set_lines(vec![String::new(); total]);
+        Viewport::new(rows, total).clamp_scroll(&mut self.list_scroll);
+        let selected = state.selected_visible_index();
+        let moved = AlignmentSignature::update(&mut self.list_alignment, selected, rows, total);
+        let follow = std::mem::take(&mut self.pending_follow);
+        if let Some(selected) = selected
+            && (moved || follow)
+            && let Some(lowest) = visible
+                .checked_sub(1)
+                .map(|last| selected.saturating_sub(last))
+        {
+            let offset = self.list_scroll.scroll_offset();
+            self.list_scroll
+                .set_scroll_offset(offset.clamp(lowest, selected));
+        }
+        self.list_scroll.scroll_offset()
     }
 
     /// Route one wheel event to the Library pane under the pointer.
@@ -244,11 +314,13 @@ impl LibraryScreenSession {
         }
         if contains(geometry.rows, mouse.column, mouse.row) {
             self.focus.set(LibraryPane::List);
-            return LibraryPointerHandling::Action(if mouse.kind == MouseEventKind::ScrollUp {
-                Action::Previous
-            } else {
-                Action::Next
-            });
+            let _ = handle_scrollable_content_mouse(
+                &mut self.list_scroll,
+                mouse,
+                geometry.rows,
+                usize::from(geometry.rows.height),
+            );
+            return LibraryPointerHandling::Consumed;
         }
         LibraryPointerHandling::Ignored
     }
@@ -673,10 +745,38 @@ mod tests {
         session.detail_height = 4;
         session.focus.set(LibraryPane::Detail);
         session.detail_signature = Some((None, 80));
+        session
+            .list_scroll
+            .set_lines(vec![String::new(), String::new(), String::new()]);
+        session.list_scroll.set_scroll_offset(2);
         let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
         assert!(json.contains("detail_signature"));
         assert!(json.contains("detail_hit_area"));
         assert!(json.contains("Detail"));
         assert!(json.contains("80"));
+        assert!(json.contains("list_scroll"), "{json}");
+        assert!(
+            json.contains("\"list_alignment\":null"),
+            "an unrendered Library has no list alignment yet: {json}"
+        );
+        assert!(
+            json.contains("\"pending_follow\":false"),
+            "an unrendered Library has no follow request yet: {json}"
+        );
+
+        session.follow_selection();
+        let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
+        assert!(json.contains("\"pending_follow\":true"), "{json}");
+
+        assert!(AlignmentSignature::update(
+            &mut session.list_alignment,
+            Some(7),
+            Rect::new(0, 0, 44, 5),
+            13,
+        ));
+        let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
+        assert!(json.contains("\"focus\":7"), "{json}");
+        assert!(json.contains("\"viewport_height\":5"), "{json}");
+        assert!(json.contains("\"reflow\":13"), "{json}");
     }
 }

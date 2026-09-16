@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use ratatui_core::{
     backend::TestBackend,
     buffer::Buffer,
+    layout::Rect,
     style::{Color, Modifier},
     terminal::Terminal,
 };
@@ -667,32 +668,28 @@ fn library_detail_uses_mature_keyboard_and_mouse_scrolling_after_pointer_focus()
         ),
         EventHandling::Action(Action::SelectVisible(_))
     ));
-    assert!(matches!(
-        session.handle_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 2,
-                row: 7,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &view,
-            &geometry,
-        ),
-        EventHandling::Action(Action::Next)
-    ));
-    assert_eq!(
-        session.handle_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollUp,
-                column: 2,
-                row: 7,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &view,
-            &geometry,
-        ),
-        EventHandling::Action(Action::Previous)
-    );
+    let selected = view.selected_visible_index();
+    for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: 2,
+                    row: 7,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Consumed,
+            "{kind:?} over the Library rows must scroll the list viewport"
+        );
+        assert_eq!(
+            view.selected_visible_index(),
+            selected,
+            "{kind:?} over the Library rows must keep the selection"
+        );
+    }
 }
 
 #[test]
@@ -1111,4 +1108,635 @@ fn library_detail_renders_overflow_parameters_and_every_last_run_age_and_exit_sh
         assert!(rendered.contains(expected), "{rendered}");
         assert!(rendered.contains('✓'), "{rendered}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Library list viewport: the wheel scrolls it, the keyboard realigns it.
+// ---------------------------------------------------------------------------
+
+/// Rows per wheel notch. `ratatui-interact` owns this constant for every scroll surface.
+const WHEEL_ROWS: usize = 3;
+
+/// A library big enough that the 46x12 list viewport must scroll.
+fn numbered_library(count: usize) -> LibraryState {
+    state(
+        (0..count)
+            .map(|index| {
+                entry(
+                    &format!("entry-{index}"),
+                    &format!("Entry {index}"),
+                    "python",
+                    StorageMode::Copy,
+                    "",
+                    None,
+                )
+            })
+            .collect(),
+    )
+}
+
+fn wheel_at(kind: MouseEventKind, column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+/// Report every rendered row index that carries the selected-row background.
+fn selected_rows(terminal: &Terminal<TestBackend>, rows: Rect) -> Vec<u16> {
+    let buffer = terminal.backend().buffer();
+    (rows.y..rows.y.saturating_add(rows.height))
+        .filter(|row| buffer[(rows.x, *row)].bg == SELECT_BG)
+        .collect()
+}
+
+/// Send one Library key through the session and apply the action it produces.
+fn press(
+    session: &mut TuiSession,
+    view: &mut LibraryState,
+    geometry: &ViewGeometry,
+    code: KeyCode,
+) {
+    let handling = session.handle_event(
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+        view,
+        geometry,
+    );
+    let EventHandling::Action(action) = handling else {
+        panic!("{code:?} produced no Library action: {handling:?}");
+    };
+    view.update(action);
+}
+
+/// Scroll the Library rows by whole notches and check that every notch is consumed.
+fn wheel_rows(
+    session: &mut TuiSession,
+    view: &LibraryState,
+    geometry: &ViewGeometry,
+    kind: MouseEventKind,
+    notches: usize,
+) {
+    for _ in 0..notches {
+        assert_eq!(
+            session.handle_event(
+                wheel_at(kind, geometry.rows.x, geometry.rows.y),
+                view,
+                geometry,
+            ),
+            EventHandling::Consumed
+        );
+    }
+}
+
+#[test]
+fn a_boundary_key_at_the_first_entry_reveals_the_scrolled_library_selection() {
+    for code in [KeyCode::Up, KeyCode::Home, KeyCode::PageUp] {
+        let mut view = numbered_library(12);
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+        wheel_rows(
+            &mut session,
+            &view,
+            &geometry,
+            MouseEventKind::ScrollDown,
+            2,
+        );
+        let (_, scrolled) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            scrolled.first_visible, 6,
+            "the fixture must scroll the selection out of view"
+        );
+        assert!(
+            selected_rows(
+                &draw_with_session(&view, &mut session, 46, 12).0,
+                scrolled.rows
+            )
+            .is_empty()
+        );
+
+        press(&mut session, &mut view, &scrolled, code);
+        assert_eq!(
+            view.selected_visible_index(),
+            Some(0),
+            "{code:?}: the reducer clamps at the first entry"
+        );
+
+        let (terminal, revealed) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            revealed.first_visible, 0,
+            "{code:?} must reveal the selection the wheel scrolled away"
+        );
+        assert_eq!(
+            selected_rows(&terminal, revealed.rows),
+            vec![revealed.rows.y],
+            "{code:?} must paint the selected row"
+        );
+
+        let (_, settled) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            settled.first_visible, 0,
+            "{code:?}: a render with no input must keep the offset"
+        );
+    }
+}
+
+#[test]
+fn a_library_action_that_is_not_navigation_keeps_the_wheel_offset() {
+    let view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    wheel_rows(
+        &mut session,
+        &view,
+        &geometry,
+        MouseEventKind::ScrollDown,
+        2,
+    );
+    let (_, scrolled) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(scrolled.first_visible, 6);
+
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            &view,
+            &scrolled,
+        ),
+        EventHandling::Action(Action::Rerun),
+        "the fixture must produce a Library action that does not navigate"
+    );
+    let (_, after) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        after.first_visible, 6,
+        "only a navigation action may pull the viewport back to the selection"
+    );
+}
+
+#[test]
+fn a_boundary_key_at_the_last_entry_reveals_the_scrolled_library_selection() {
+    for code in [KeyCode::Down, KeyCode::End, KeyCode::PageDown] {
+        let mut view = numbered_library(12);
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+        let visible = usize::from(geometry.rows.height);
+        press(&mut session, &mut view, &geometry, KeyCode::End);
+        assert_eq!(view.selected_visible_index(), Some(11));
+        let (_, followed) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(followed.first_visible, 12 - visible);
+
+        wheel_rows(&mut session, &view, &followed, MouseEventKind::ScrollUp, 3);
+        let (terminal, away) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            away.first_visible, 0,
+            "the fixture must scroll the selection out of view"
+        );
+        assert!(selected_rows(&terminal, away.rows).is_empty());
+
+        press(&mut session, &mut view, &away, code);
+        assert_eq!(
+            view.selected_visible_index(),
+            Some(11),
+            "{code:?}: the reducer clamps at the last entry"
+        );
+
+        let (terminal, revealed) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            revealed.first_visible,
+            12 - visible,
+            "{code:?} must reveal the selection the wheel scrolled away"
+        );
+        assert_eq!(
+            selected_rows(&terminal, revealed.rows),
+            vec![
+                revealed
+                    .rows
+                    .y
+                    .saturating_add(revealed.rows.height)
+                    .saturating_sub(1)
+            ],
+            "{code:?} must paint the selected row"
+        );
+
+        let (_, settled) = draw_with_session(&view, &mut session, 46, 12);
+        assert_eq!(
+            settled.first_visible,
+            12 - visible,
+            "{code:?}: a render with no input must keep the offset"
+        );
+    }
+}
+
+#[test]
+fn a_library_wheel_notch_scrolls_the_viewport_and_keeps_the_selection() {
+    let view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(geometry.rows.height, 5, "the 46x12 list shows five rows");
+    assert_eq!(geometry.first_visible, 0);
+
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "the Library rows viewport must own the wheel"
+    );
+    assert_eq!(
+        view.selected_visible_index(),
+        Some(0),
+        "a wheel scroll must not move the selection"
+    );
+
+    let (terminal, scrolled) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        scrolled.first_visible, WHEEL_ROWS,
+        "one notch must scroll exactly three rows"
+    );
+    let rendered = lines(terminal.backend().buffer()).join("\n");
+    assert!(rendered.contains("Entry 3"), "{rendered}");
+    assert!(rendered.contains("Entry 7"), "{rendered}");
+    assert!(!rendered.contains("Entry 2"), "{rendered}");
+    assert!(!rendered.contains("Entry 8"), "{rendered}");
+    assert!(
+        selected_rows(&terminal, scrolled.rows).is_empty(),
+        "a selection scrolled out of view must not paint a row: {rendered}"
+    );
+}
+
+#[test]
+fn a_library_render_without_input_keeps_the_wheel_offset() {
+    let view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (_, scrolled) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(scrolled.first_visible, WHEEL_ROWS);
+
+    let (_, settled) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        settled.first_visible, WHEEL_ROWS,
+        "a render with no new input must keep the reader's offset"
+    );
+}
+
+#[test]
+fn the_library_wheel_clamps_at_both_ends_of_the_entry_list() {
+    let view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    let maximum = 12 - usize::from(geometry.rows.height);
+
+    for _ in 0..10 {
+        assert_eq!(
+            session.handle_event(
+                wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+                &view,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+    }
+    let (terminal, bottom) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        bottom.first_visible, maximum,
+        "the wheel must stop at the last full screen of entries"
+    );
+    let rendered = lines(terminal.backend().buffer()).join("\n");
+    assert!(rendered.contains("Entry 11"), "{rendered}");
+
+    for _ in 0..10 {
+        assert_eq!(
+            session.handle_event(
+                wheel_at(MouseEventKind::ScrollUp, bottom.rows.x, bottom.rows.y),
+                &view,
+                &bottom,
+            ),
+            EventHandling::Consumed
+        );
+    }
+    let (_, top) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(top.first_visible, 0, "the wheel must stop at the first row");
+}
+
+#[test]
+fn a_click_on_a_scrolled_library_row_selects_the_entry_that_row_shows() {
+    let view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (terminal, scrolled) = draw_with_session(&view, &mut session, 46, 12);
+
+    let offset = 2_u16;
+    let row = scrolled.rows.y.saturating_add(offset);
+    assert!(
+        lines(terminal.backend().buffer())[usize::from(row)].contains("Entry 5"),
+        "the third visible row must show the sixth entry"
+    );
+    assert_eq!(
+        session.handle_event(
+            wheel_at(
+                MouseEventKind::Down(MouseButton::Left),
+                scrolled.rows.x,
+                row
+            ),
+            &view,
+            &scrolled,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::Up(MouseButton::Left), scrolled.rows.x, row),
+            &view,
+            &scrolled,
+        ),
+        EventHandling::Action(Action::SelectVisible(
+            scrolled.first_visible + usize::from(offset)
+        )),
+        "a click must select the entry the scrolled row shows"
+    );
+}
+
+#[test]
+fn the_library_realigns_only_when_the_selection_leaves_the_viewport() {
+    let mut view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    let visible = usize::from(geometry.rows.height);
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+
+    // The last row inside the viewport keeps the offset the reader chose.
+    for _ in 0..WHEEL_ROWS + visible - 1 {
+        view.update(Action::Next);
+    }
+    assert_eq!(
+        view.selected_visible_index(),
+        Some(WHEEL_ROWS + visible - 1)
+    );
+    let (_, inside) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        inside.first_visible, WHEEL_ROWS,
+        "a selection on the last visible row must not scroll the viewport"
+    );
+
+    // The first row outside it scrolls by exactly one.
+    view.update(Action::Next);
+    let (_, outside) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        outside.first_visible,
+        WHEEL_ROWS + 1,
+        "the first row below the viewport must scroll it by one row"
+    );
+}
+
+#[test]
+fn keyboard_selection_realigns_the_scrolled_library_viewport_from_both_sides() {
+    let mut view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    let visible = usize::from(geometry.rows.height);
+
+    // A selection below the viewport lands on the last visible row.
+    for _ in 0..8 {
+        view.update(Action::Next);
+    }
+    assert_eq!(view.selected_visible_index(), Some(8));
+    let (_, followed) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(followed.first_visible, 9 - visible);
+
+    for _ in 0..2 {
+        assert_eq!(
+            session.handle_event(
+                wheel_at(MouseEventKind::ScrollUp, followed.rows.x, followed.rows.y),
+                &view,
+                &followed,
+            ),
+            EventHandling::Consumed
+        );
+    }
+    let (_, away) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(away.first_visible, 0, "the wheel must leave the selection");
+
+    view.update(Action::Next);
+    let (terminal, realigned) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        realigned.first_visible,
+        10 - visible,
+        "keyboard selection must realign with the smallest offset"
+    );
+    assert_eq!(
+        selected_rows(&terminal, realigned.rows),
+        vec![
+            realigned
+                .rows
+                .y
+                .saturating_add(realigned.rows.height)
+                .saturating_sub(1)
+        ],
+        "the realigned selection must paint the last visible row"
+    );
+
+    // A selection above the viewport lands on the first visible row.
+    for _ in 0..3 {
+        assert_eq!(
+            session.handle_event(
+                wheel_at(
+                    MouseEventKind::ScrollDown,
+                    realigned.rows.x,
+                    realigned.rows.y
+                ),
+                &view,
+                &realigned,
+            ),
+            EventHandling::Consumed
+        );
+    }
+    let (_, below) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(below.first_visible, 12 - visible);
+    for _ in 0..7 {
+        view.update(Action::Previous);
+    }
+    assert_eq!(view.selected_visible_index(), Some(2));
+    let (terminal, above) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        above.first_visible, 2,
+        "a selection above the viewport must become its first row"
+    );
+    assert_eq!(
+        selected_rows(&terminal, above.rows),
+        vec![above.rows.y],
+        "the realigned selection must paint the first visible row"
+    );
+}
+
+#[test]
+fn filtering_the_library_clamps_the_viewport_to_the_shorter_list() {
+    let mut view = numbered_library(20);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 46, 12);
+    view.update(Action::End);
+    let (_, followed) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(view.selected_visible_index(), Some(19));
+    assert_eq!(
+        followed.first_visible, 15,
+        "the last entry pins the viewport to the tail of twenty entries"
+    );
+    let _ = geometry;
+
+    // A query drops the list from twenty entries to eleven. The offset the long list earned is
+    // past the tail of the short one, so the render must clamp it before it draws.
+    view.update(Action::BeginSearch);
+    view.update(Action::SetSearchQuery("Entry 1".to_owned()));
+    let (terminal, filtered) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(
+        view.visible_entry_count(),
+        11,
+        "the query must keep the eleven entries whose name holds a 1"
+    );
+    assert_eq!(
+        filtered.first_visible, 5,
+        "a shorter list must clamp the offset to its last full screen"
+    );
+
+    let rendered = lines(terminal.backend().buffer());
+    let drawn = (filtered.rows.y..filtered.rows.y.saturating_add(filtered.rows.height))
+        .map(|row| {
+            rendered[usize::from(row)]
+                .trim_start_matches('│')
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        drawn,
+        vec![
+            "Entry 14", "Entry 15", "Entry 16", "Entry 17", "Entry 18", "Entry 19"
+        ],
+        "an unclamped offset draws the last entry over blank rows"
+    );
+}
+
+#[test]
+fn a_shorter_terminal_keeps_the_selected_library_row_visible() {
+    let mut view = numbered_library(12);
+    let mut session = TuiSession::default();
+    let _ = draw_with_session(&view, &mut session, 46, 12);
+    for _ in 0..11 {
+        view.update(Action::Next);
+    }
+    let (_, tall) = draw_with_session(&view, &mut session, 46, 12);
+    assert_eq!(tall.first_visible, 12 - usize::from(tall.rows.height));
+
+    let (_, short) = draw_with_session(&view, &mut session, 46, 10);
+    assert!(
+        short.rows.height < tall.rows.height,
+        "the fixture must shrink the list viewport"
+    );
+    assert_eq!(
+        short.first_visible,
+        12 - usize::from(short.rows.height),
+        "a resize must realign the selected row into the shorter viewport"
+    );
+}
+
+#[test]
+fn a_wheel_over_the_library_detail_pane_leaves_the_list_offset() {
+    let view = numbered_library(40);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    assert!(geometry.detail_pane_visible);
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (_, scrolled) = draw_with_session(&view, &mut session, 100, 18);
+    assert_eq!(scrolled.first_visible, WHEEL_ROWS);
+
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, 75, 7),
+            &view,
+            &scrolled,
+        ),
+        EventHandling::Consumed,
+        "the detail pane keeps its own wheel"
+    );
+    let (_, after) = draw_with_session(&view, &mut session, 100, 18);
+    assert_eq!(
+        after.first_visible, WHEEL_ROWS,
+        "a detail-pane wheel must not move the list viewport"
+    );
+}
+
+#[test]
+fn a_library_wheel_returns_keyboard_focus_to_the_list_pane() {
+    let view = numbered_library(40);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&view, &mut session, 100, 18);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        assert_eq!(
+            session.handle_event(wheel_at(kind, 75, 7), &view, &geometry),
+            EventHandling::Consumed
+        );
+    }
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "the fixture must give the detail pane keyboard focus"
+    );
+
+    assert_eq!(
+        session.handle_event(
+            wheel_at(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Next),
+        "a wheel over the rows must return keyboard focus to the list"
+    );
 }

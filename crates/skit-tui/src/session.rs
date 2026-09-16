@@ -1895,6 +1895,22 @@ impl TuiSession {
         state: &LibraryState,
         geometry: &ViewGeometry,
     ) -> EventHandling {
+        let handling = self.dispatch_event(event, state, geometry);
+        if matches!(state.screen(), Screen::Library)
+            && let EventHandling::Action(action) = &handling
+            && moves_library_selection(action)
+        {
+            self.library.follow_selection();
+        }
+        handling
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: Event,
+        state: &LibraryState,
+        geometry: &ViewGeometry,
+    ) -> EventHandling {
         self.screen_target_rendered = false;
         self.screen_target_state = None;
         if !matches!(event, Event::Mouse(_))
@@ -1928,7 +1944,6 @@ impl TuiSession {
             )
         {
             return match self.library.handle_wheel(mouse, geometry) {
-                LibraryPointerHandling::Action(action) => EventHandling::Action(action),
                 LibraryPointerHandling::Consumed => EventHandling::Consumed,
                 LibraryPointerHandling::Ignored => EventHandling::Ignored,
             };
@@ -2087,15 +2102,7 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_run_key(key, form)
                 }
-                Event::Mouse(mouse) => {
-                    let handling = self.handle_run_mouse(mouse, form, geometry);
-                    if handling == EventHandling::Ignored {
-                        map_event(Event::Mouse(mouse), state, geometry)
-                            .map_or(EventHandling::Ignored, EventHandling::Action)
-                    } else {
-                        handling
-                    }
-                }
+                Event::Mouse(mouse) => self.handle_run_mouse(mouse, form, geometry),
                 Event::Paste(value) => self.handle_run_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored
@@ -2108,15 +2115,7 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_form_key(key, form)
                 }
-                Event::Mouse(mouse) => {
-                    let handling = self.handle_form_mouse(mouse, form, geometry);
-                    if handling == EventHandling::Ignored {
-                        map_event(Event::Mouse(mouse), state, geometry)
-                            .map_or(EventHandling::Ignored, EventHandling::Action)
-                    } else {
-                        handling
-                    }
-                }
+                Event::Mouse(mouse) => self.handle_form_mouse(mouse, form, geometry),
                 Event::Paste(value) => self.handle_form_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored
@@ -2911,11 +2910,11 @@ impl TuiSession {
                 }
                 EventHandling::Action(Action::SetSearchQuery(self.search.input.value().to_owned()))
             }
-            Event::Mouse(mouse) => map_event(Event::Mouse(mouse), state, geometry)
-                .map_or(EventHandling::Ignored, EventHandling::Action),
-            Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
-                EventHandling::Ignored
-            }
+            Event::FocusGained
+            | Event::FocusLost
+            | Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _) => EventHandling::Ignored,
         }
     }
 
@@ -3839,6 +3838,24 @@ fn textarea_viewport_snapshot(viewport: TextAreaViewport) -> serde_json::Value {
     })
 }
 
+/// Report whether one action asks the Library to show its selected entry.
+///
+/// The reducer clamps the selection at both ends of the list, so a key at the first or the last
+/// entry keeps the same index. The Library viewport must still follow the request, because a wheel
+/// notch can have moved the viewport away from the selection.
+fn moves_library_selection(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Previous
+            | Action::Next
+            | Action::PagePrevious
+            | Action::PageNext
+            | Action::Home
+            | Action::End
+            | Action::SelectVisible(_)
+    )
+}
+
 fn virtual_scroll_snapshot(scroll: &VirtualScrollState) -> serde_json::Value {
     serde_json::json!({
         "line_count": scroll.line_count(),
@@ -3846,7 +3863,7 @@ fn virtual_scroll_snapshot(scroll: &VirtualScrollState) -> serde_json::Value {
     })
 }
 
-fn alignment_snapshot<Focus, Reflow>(
+pub(crate) fn alignment_snapshot<Focus, Reflow>(
     field: &'static str,
     alignment: &AlignmentSignature<Focus, Reflow>,
 ) -> Result<serde_json::Value, AgentReviewSnapshotError>

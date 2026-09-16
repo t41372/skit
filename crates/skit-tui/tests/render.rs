@@ -687,7 +687,7 @@ fn stateless_mapping_defers_paste_to_the_mature_session() {
 }
 
 #[test]
-fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
+fn every_mouse_event_maps_to_no_frontend_neutral_action() {
     let geometry = ViewGeometry {
         rows: Rect::new(2, 3, 30, 4),
         first_visible: 5,
@@ -719,11 +719,13 @@ fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
     );
     assert_eq!(
         map_event(mouse(MouseEventKind::ScrollUp, 4, 4), &state, &geometry),
-        Some(Action::Previous)
+        None,
+        "the stateless map must leave the wheel to the Library viewport"
     );
     assert_eq!(
         map_event(mouse(MouseEventKind::ScrollDown, 4, 4), &state, &geometry),
-        Some(Action::Next)
+        None,
+        "the stateless map must leave the wheel to the Library viewport"
     );
     for (column, row, owner) in [
         (4, 4, "Library row"),

@@ -16,9 +16,7 @@ mod theme;
 mod viewport;
 
 use ratatui_core::{layout::Rect, terminal::Frame};
-use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
-};
+use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_widgets::clear::Clear;
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
@@ -36,7 +34,6 @@ pub use local_action::{
     LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
     LocalKeyBinding,
 };
-use pointer::contains;
 #[doc(hidden)]
 pub use screen_target::{
     ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit, ScreenTargetInventory,
@@ -392,14 +389,17 @@ pub(crate) fn form_title(locale: Locale, form: &FormView) -> String {
 }
 
 /// Translate Crossterm input into frontend-neutral actions.
+///
+/// Pointer input is not stateless. Every mouse owner needs the persistent geometry and scroll
+/// state that `TuiSession::handle_event` keeps, so this map answers for the keyboard only.
 #[must_use]
 pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state, geometry),
-        Event::Mouse(mouse) => map_mouse(mouse, state, geometry),
         Event::FocusGained
         | Event::FocusLost
         | Event::Key(_)
+        | Event::Mouse(_)
         | Event::Paste(_)
         | Event::Resize(_, _) => None,
     }
@@ -482,33 +482,6 @@ fn ui_binding(key: KeyEvent) -> Option<UiBinding> {
         hint: "",
         compact_hint: "",
     })
-}
-
-fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
-    let library_context = matches!(
-        state.command_context(),
-        CommandContext::LibraryBrowse | CommandContext::LibrarySearch
-    );
-    match mouse.kind {
-        MouseEventKind::ScrollUp
-            if library_context && contains(geometry.rows, mouse.column, mouse.row) =>
-        {
-            Some(Action::Previous)
-        }
-        MouseEventKind::ScrollDown
-            if library_context && contains(geometry.rows, mouse.column, mouse.row) =>
-        {
-            Some(Action::Next)
-        }
-        MouseEventKind::Down(_)
-        | MouseEventKind::Up(_)
-        | MouseEventKind::Drag(_)
-        | MouseEventKind::Moved
-        | MouseEventKind::ScrollLeft
-        | MouseEventKind::ScrollRight
-        | MouseEventKind::ScrollUp
-        | MouseEventKind::ScrollDown => None,
-    }
 }
 
 pub(crate) fn command_action(
