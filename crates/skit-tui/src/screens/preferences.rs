@@ -3,7 +3,7 @@
 use std::{cmp::Ordering, collections::HashMap, fmt::Display};
 
 use ratatui_core::{
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
@@ -28,8 +28,7 @@ use skit_application::{AgentScope, AgentTarget};
 use skit_i18n::{Locale, Localize, format_text, text};
 use skit_ui::{
     ChoicePresentation, PreferencesAction, PreferencesControl, PreferencesControlId,
-    PreferencesControlKind, PreferencesDisplayText, PreferencesOption, PreferencesTextPlacement,
-    PreferencesView,
+    PreferencesControlKind, PreferencesDisplayText, PreferencesTextPlacement, PreferencesView,
 };
 use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
@@ -44,10 +43,13 @@ use crate::{
     },
     pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
     rowclip::RowClip,
-    session::{radio_style, render_line_input_band, select_style},
+    session::{radio_option_width, render_line_input_band, render_radio_option, select_style},
     theme::{ACCENT, BOX_DIM, BOX_INDIGO, padded_panel},
     viewport::AlignmentSignature,
 };
+
+/// The cells each unbordered control keeps on its left for the focus marker.
+const FOCUS_GUTTER_CELLS: u16 = 2;
 
 /// Result of one Preferences widget event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1386,28 +1388,43 @@ impl PreferencesWidgetSession {
                     clip,
                     control,
                     &label,
-                    labels,
-                    buttons,
+                    RadioBand {
+                        labels,
+                        buttons,
+                        focused,
+                        selected: state.selected_index,
+                        active: state.selected_index.unwrap_or(state.highlighted_index),
+                    },
                     &mut self.clicks,
                 );
                 state.ensure_visible(1);
             }
             PreferencesWidget::Button(state) => {
-                let shown = text(locale, &control.label);
-                let region = Button::new(&shown, state)
+                if focused {
+                    paint_focus_marker(frame, area);
+                }
+                let door = options_band(area);
+                // The button measures its label in characters. The paint uses display cells, so
+                // the click rect must use the painted width or a wide label reaches past it.
+                let width = u16::try_from(label.as_ref().width().saturating_add(2))
+                    .unwrap_or(u16::MAX)
+                    .min(door.width);
+                let painted = Rect::new(door.x, door.y, width, 1);
+                Button::new(&label, state)
                     .variant(ButtonVariant::SingleLine)
+                    .alignment(Alignment::Left)
                     .style(
                         ratatui_interact::components::ButtonStyle::new(ButtonVariant::SingleLine)
                             .focused(Color::White, ACCENT)
                             .unfocused(Color::White, BOX_DIM),
                     )
-                    .render_stateful(area, frame.buffer_mut());
+                    .render_stateful(painted, frame.buffer_mut());
                 self.clicks
-                    .register(region.area, PreferencesHit::Control(control.id));
+                    .register(painted, PreferencesHit::Control(control.id));
                 self.control_areas
                     .last_mut()
                     .expect("control area was inserted")
-                    .1 = region.area;
+                    .1 = painted;
             }
         }
     }
@@ -1711,48 +1728,139 @@ fn render_radio_band(
     clip: RowClip,
     control: &PreferencesControl,
     label: &str,
-    labels: &[String],
-    buttons: &[ButtonState],
+    band: RadioBand<'_>,
     clicks: &mut ClickRegionRegistry<PreferencesHit>,
 ) {
     let label_rows = usize::from(!label.is_empty());
-    let stacked = radio_options_stack(control.id, clip.area().width);
+    let placements = radio_placements(
+        band.labels,
+        options_band(clip.area()).width,
+        radio_options_stack(control.id, clip.area().width),
+    );
+    if band.focused
+        && let Some(row) = focus_marker_row(clip, &placements, band.active, label_rows)
+    {
+        paint_focus_marker(frame, row);
+    }
     for (source, row) in clip.rows() {
+        let body = options_band(row);
         if source < label_rows {
             frame.render_widget(
                 Paragraph::new(label).style(Style::default().fg(Color::White)),
-                row,
+                body,
             );
             continue;
         }
         let target_row = source.saturating_sub(label_rows);
-        let mut option_row = 0_usize;
-        let mut x = row.x;
-        for (index, (option_label, button)) in labels.iter().zip(buttons.iter()).enumerate() {
-            let wanted = u16::try_from(option_label.width().saturating_add(2))
-                .unwrap_or(u16::MAX)
-                .min(row.width.max(1));
-            if x > row.x && (stacked || x.saturating_add(wanted) > row.right()) {
-                x = row.x;
-                option_row = option_row.saturating_add(1);
+        for (index, ((option_label, button), placement)) in band
+            .labels
+            .iter()
+            .zip(band.buttons.iter())
+            .zip(placements.iter())
+            .enumerate()
+        {
+            if placement.row != target_row {
+                continue;
             }
-            if option_row == target_row {
-                let option_area = Rect::new(x, row.y, wanted, 1);
-                let region = Button::new(option_label, button)
-                    .variant(ButtonVariant::Toggle)
-                    .style(radio_style())
-                    .render_stateful(option_area, frame.buffer_mut());
-                clicks.register(
-                    region.area,
-                    PreferencesHit::Radio {
-                        id: control.id,
-                        option: index,
-                    },
-                );
-            }
-            x = x.saturating_add(wanted).saturating_add(1);
+            let rect = render_radio_option(
+                frame.buffer_mut(),
+                Rect::new(
+                    body.x.saturating_add(placement.offset),
+                    row.y,
+                    placement.width,
+                    1,
+                ),
+                option_label,
+                button,
+                band.focused,
+                band.selected == Some(index),
+            );
+            clicks.register(
+                rect,
+                PreferencesHit::Radio {
+                    id: control.id,
+                    option: index,
+                },
+            );
         }
     }
+}
+
+/// The options of one radio group and the focus that paints them.
+struct RadioBand<'a> {
+    labels: &'a [String],
+    buttons: &'a [ButtonState],
+    focused: bool,
+    selected: Option<usize>,
+    active: usize,
+}
+
+/// The place of one painted radio option inside its band.
+struct RadioPlacement {
+    row: usize,
+    offset: u16,
+    width: u16,
+}
+
+/// Place every option of one radio band in the given width.
+///
+/// The layout and the paint both use this function, so a row count and a painted row always agree.
+fn radio_placements<S: AsRef<str>>(labels: &[S], width: u16, stacked: bool) -> Vec<RadioPlacement> {
+    let mut placements = Vec::with_capacity(labels.len());
+    let mut row = 0_usize;
+    let mut offset = 0_u16;
+    for label in labels {
+        let cells = radio_option_width(label.as_ref(), width);
+        if offset > 0 && (stacked || offset.saturating_add(cells) > width) {
+            offset = 0;
+            row = row.saturating_add(1);
+        }
+        placements.push(RadioPlacement {
+            row,
+            offset,
+            width: cells,
+        });
+        offset = offset.saturating_add(cells).saturating_add(1);
+    }
+    placements
+}
+
+/// Return the row that gets the focus marker of one radio band.
+///
+/// The marker follows the selected option. A wheel scroll can move that option off screen while
+/// the other options stay, so the first visible row of the control then keeps the cue.
+fn focus_marker_row(
+    clip: RowClip,
+    placements: &[RadioPlacement],
+    active: usize,
+    label_rows: usize,
+) -> Option<Rect> {
+    placements
+        .get(active)
+        .map(|placement| placement.row.saturating_add(label_rows))
+        .and_then(|source| clip.row(source))
+        .or_else(|| clip.rows().next().map(|(_, row)| row))
+}
+
+/// Return the cells of one control row that hold content instead of the focus marker.
+fn options_band(row: Rect) -> Rect {
+    Rect::new(
+        row.x.saturating_add(FOCUS_GUTTER_CELLS),
+        row.y,
+        row.width.saturating_sub(FOCUS_GUTTER_CELLS),
+        1,
+    )
+}
+
+/// Paint the focus marker in the gutter of one control row.
+fn paint_focus_marker(frame: &mut Frame, row: Rect) {
+    frame.buffer_mut().set_stringn(
+        row.x,
+        row.y,
+        "▶ ",
+        usize::from(FOCUS_GUTTER_CELLS.min(row.width)),
+        Style::default().fg(ACCENT),
+    );
 }
 
 fn is_open_select_key(code: KeyCode) -> bool {
@@ -1871,15 +1979,21 @@ fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> u
         {
             3
         }
-        PreferencesControlKind::Choice(choice) => usize::from(!control.label.is_empty())
-            .saturating_add(
-                if radio_options_stack(control.id, width) {
-                    choice.options.len()
-                } else {
-                    radio_rows(&choice.options, locale, width)
-                }
-                .max(1),
-            ),
+        PreferencesControlKind::Choice(choice) => {
+            let labels = choice
+                .options
+                .iter()
+                .map(|option| text(locale, &option.label))
+                .collect::<Vec<_>>();
+            let rows = radio_placements(
+                &labels,
+                width.saturating_sub(FOCUS_GUTTER_CELLS),
+                radio_options_stack(control.id, width),
+            )
+            .last()
+            .map_or(1, |placement| placement.row.saturating_add(1));
+            usize::from(!control.label.is_empty()).saturating_add(rows)
+        }
         PreferencesControlKind::Button => 1,
     }
 }
@@ -1921,23 +2035,6 @@ fn select_dropdown_panel(
         desired_height.min(available),
     );
     (!panel.is_empty()).then_some(panel)
-}
-
-fn radio_rows(options: &[PreferencesOption], locale: Locale, width: u16) -> usize {
-    let mut rows = 1_usize;
-    let mut used = 0_u16;
-    for option in options {
-        let label = text(locale, &option.label);
-        let item = u16::try_from(label.as_ref().width().saturating_add(2))
-            .unwrap_or(u16::MAX)
-            .min(width.max(1));
-        if used.saturating_add(item) > width {
-            rows = rows.saturating_add(1);
-            used = 0;
-        }
-        used = used.saturating_add(item).saturating_add(1);
-    }
-    rows
 }
 
 fn centered(area: Rect, maximum_width: u16, desired_height: u16) -> Rect {
@@ -2197,8 +2294,9 @@ mod tests {
     use skit_i18n::Locale;
     use skit_ui::{
         FormInputKind, PreferencesAction, PreferencesChoiceControl, PreferencesControlId,
-        PreferencesTextControl, PreferencesView,
+        PreferencesOption, PreferencesTextControl, PreferencesView,
     };
+    use unicode_width::UnicodeWidthStr as _;
 
     use super::*;
 
@@ -3860,23 +3958,30 @@ mod tests {
 
         let items = layout_items(&view, Locale::En, 54);
         assert!(!items.is_empty());
+        let mirror_labels = view
+            .controls()
+            .into_iter()
+            .find_map(|control| match control.kind {
+                PreferencesControlKind::Choice(choice)
+                    if control.id == PreferencesControlId::PypiChoice =>
+                {
+                    Some(
+                        choice
+                            .options
+                            .iter()
+                            .map(|option| skit_i18n::text(Locale::En, &option.label).into_owned())
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                _ => None,
+            })
+            .expect("the PyPI mirror radio must be present");
         assert!(
-            radio_rows(
-                &view
-                    .controls()
-                    .into_iter()
-                    .find_map(|control| match control.kind {
-                        PreferencesControlKind::Choice(choice)
-                            if control.id == PreferencesControlId::PypiChoice =>
-                        {
-                            Some(choice.options)
-                        }
-                        _ => None,
-                    })
-                    .expect("the PyPI mirror radio must be present"),
-                Locale::En,
-                20,
-            ) > 1
+            radio_placements(&mirror_labels, 20, false)
+                .last()
+                .expect("the PyPI mirror radio has options")
+                .row
+                > 0
         );
     }
 
@@ -4317,47 +4422,536 @@ mod tests {
         }
     }
 
+    /// Report the row, the glyph cell, and the chip background of every option of one radio
+    /// control.
+    fn radio_option_pixels(
+        session: &PreferencesWidgetSession,
+        buffer: &Buffer,
+        id: PreferencesControlId,
+        options: usize,
+    ) -> Vec<(u16, String, Color, Color)> {
+        let mut origins = vec![None; options];
+        for row in buffer.area.y..buffer.area.bottom() {
+            for column in buffer.area.x..buffer.area.right() {
+                if let Some(PreferencesHit::Radio { id: hit, option }) =
+                    session.clicks.handle_click(column, row)
+                    && *hit == id
+                    && origins[*option].is_none_or(|(first, _)| column < first)
+                {
+                    origins[*option] = Some((column, row));
+                }
+            }
+        }
+        origins
+            .into_iter()
+            .enumerate()
+            .map(|(option, origin)| {
+                let (column, row) =
+                    origin.unwrap_or_else(|| panic!("option {option} of {id:?} has no hit"));
+                let glyph = &buffer[(column, row)];
+                (
+                    row,
+                    glyph.symbol().to_owned(),
+                    glyph.fg,
+                    buffer[(column.saturating_add(2), row)].bg,
+                )
+            })
+            .collect()
+    }
+
+    /// Return every cell that holds the focus marker.
+    fn focus_markers(buffer: &Buffer) -> Vec<(u16, u16)> {
+        (buffer.area.y..buffer.area.bottom())
+            .flat_map(|row| (buffer.area.x..buffer.area.right()).map(move |column| (column, row)))
+            .filter(|position| buffer[*position].symbol() == "▶")
+            .collect()
+    }
+
+    /// Return the registered cells of one radio option, or `None` when the option is off screen.
+    fn radio_option_rect(
+        session: &PreferencesWidgetSession,
+        area: Rect,
+        id: PreferencesControlId,
+        option: usize,
+    ) -> Option<Rect> {
+        let mut rect: Option<Rect> = None;
+        for row in area.y..area.bottom() {
+            for column in area.x..area.right() {
+                if session.clicks.handle_click(column, row)
+                    == Some(&PreferencesHit::Radio { id, option })
+                {
+                    rect = Some(rect.map_or(Rect::new(column, row, 1, 1), |current: Rect| {
+                        Rect::new(
+                            current.x,
+                            current.y,
+                            column.saturating_add(1).saturating_sub(current.x),
+                            1,
+                        )
+                    }));
+                }
+            }
+        }
+        rect
+    }
+
+    /// Return the index of the selected option of one radio control.
+    fn selected_option(view: &PreferencesView, id: PreferencesControlId) -> usize {
+        let controls = view.controls();
+        let control = controls
+            .iter()
+            .find(|control| control.id == id)
+            .unwrap_or_else(|| panic!("{id:?} is not in the view"));
+        let PreferencesControlKind::Choice(choice) = &control.kind else {
+            panic!("{id:?} is not a choice control");
+        };
+        choice
+            .options
+            .iter()
+            .position(|option| option.value == choice.selected)
+            .unwrap_or_else(|| panic!("{id:?} selects no option"))
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a choice control")]
+    fn selected_option_refuses_a_control_that_is_not_a_choice() {
+        let _ = selected_option(&complete_view(), PreferencesControlId::Editor);
+    }
+
+    /// The Preferences controls that show their focus with a border.
+    fn is_bordered(control: &PreferencesControl) -> bool {
+        matches!(&control.kind, PreferencesControlKind::Text(_))
+            || matches!(
+                &control.kind,
+                PreferencesControlKind::Choice(choice)
+                    if choice.presentation == ChoicePresentation::Picker
+            )
+    }
+
+    /// Report whether one control area holds an accent cell.
+    fn has_accent(buffer: &Buffer, area: Rect) -> bool {
+        (area.y..area.bottom())
+            .flat_map(|row| (area.x..area.right()).map(move |column| (column, row)))
+            .any(|position| buffer[position].fg == ACCENT)
+    }
+
+    /// A wheel event over the Preferences form.
+    fn wheel(kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 4,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A scrolled radio group must keep its focus cue on a row the user can see.
+    ///
+    /// The wheel does not realign the form, so the selected option can leave the screen while the
+    /// other options stay. Without a marker on a visible row the next arrow key edits a control
+    /// that shows no focus at all.
+    #[test]
+    fn a_scrolled_focused_radio_group_keeps_its_marker_on_a_visible_row() {
+        for (id, width) in [
+            (PreferencesControlId::Javascript, 80),
+            (PreferencesControlId::MirrorMaster, 60),
+        ] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = complete_view();
+            view.update(PreferencesAction::Focus(id));
+            let selected = selected_option(&view, id);
+            let _ = draw(&mut session, &view, width, 14, Locale::En);
+            let mut clipped = 0_usize;
+            let mut stopped_at_first_row = 0_usize;
+            let mut clipped_offset = None;
+            {
+                let mut assert_marker = |session: &mut PreferencesWidgetSession, step: String| {
+                    let terminal = draw(session, &view, width, 14, Locale::En);
+                    let buffer = terminal.backend().buffer();
+                    let markers = focus_markers(buffer);
+                    let Some(area) = session.control_area(id) else {
+                        assert!(
+                            markers.is_empty(),
+                            "{id:?} is off screen at {step} but kept a marker",
+                        );
+                        clipped = clipped.saturating_add(1);
+                        return true;
+                    };
+                    assert_eq!(markers.len(), 1, "{id:?} has no single marker at {step}");
+                    assert_eq!(markers[0].0, area.x, "{id:?} marker left the gutter");
+                    let selected_row =
+                        radio_option_rect(session, area, id, selected).map(|rect| rect.y);
+                    if selected_row.is_none() {
+                        stopped_at_first_row = stopped_at_first_row.saturating_add(1);
+                    }
+                    assert_eq!(
+                        markers[0].1,
+                        selected_row.unwrap_or(area.y),
+                        "{id:?} marker is not on the selected row or the first visible row at {step}",
+                    );
+                    false
+                };
+                for offset in 0..=session.maximum_scroll_offset() {
+                    session.scroll.set_scroll_offset(offset);
+                    if assert_marker(&mut session, format!("offset {offset}")) {
+                        clipped_offset = Some(offset);
+                    }
+                }
+                for notch in 1..=6_usize {
+                    assert_eq!(
+                        session.handle_event(wheel(MouseEventKind::ScrollUp), &view),
+                        PreferencesEventHandling::Consumed
+                    );
+                    assert_marker(&mut session, format!("{notch} wheel notches"));
+                }
+            }
+            assert!(clipped > 0, "the scroll never moved {id:?} off screen");
+            assert!(
+                stopped_at_first_row > 0,
+                "the scroll never clipped the selected option of {id:?} alone",
+            );
+
+            let offset = clipped_offset.expect("the sweep never scrolled the control off screen");
+            session.scroll.set_scroll_offset(offset);
+            let terminal = draw(&mut session, &view, width, 14, Locale::En);
+            assert!(
+                focus_markers(terminal.backend().buffer()).is_empty(),
+                "a control that is off screen kept a marker",
+            );
+            assert!(session.control_area(id).is_none());
+
+            let action = session.move_focus_action(true);
+            view.update(action);
+            assert_ne!(view.focused(), id, "the focus ring did not move");
+            let terminal = draw(&mut session, &view, width, 14, Locale::En);
+            let buffer = terminal.backend().buffer();
+            let focused = view.focused();
+            let area = session
+                .control_area(focused)
+                .expect("a focus move must bring the focused control into view");
+            let controls = view.controls();
+            let control = controls
+                .iter()
+                .find(|control| control.id == focused)
+                .expect("the focused control is in the view");
+            if is_bordered(control) {
+                assert!(
+                    has_accent(buffer, area),
+                    "{focused:?} lost its accent border"
+                );
+            } else {
+                assert_eq!(
+                    focus_markers(buffer).len(),
+                    1,
+                    "{focused:?} lost its marker"
+                );
+            }
+        }
+    }
+
+    /// The painted label and the click rect must cover the same cells in every locale.
+    ///
+    /// `ratatui-interact` measures a label in characters. A Chinese label takes two cells for each
+    /// character, so the visible text went past the rect that receives the click.
+    #[test]
+    fn a_localized_door_and_radio_option_click_their_complete_painted_label() {
+        for (locale, door_label, option_label) in [
+            (
+                Locale::ZhTw,
+                "Manage agents…",
+                "Quit skit — leave the run's output in the terminal",
+            ),
+            (
+                Locale::ZhCn,
+                "Manage agents…",
+                "Quit skit — leave the run's output in the terminal",
+            ),
+        ] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+            let terminal = draw(&mut session, &view, 120, 44, locale);
+            let door = session
+                .control_area(PreferencesControlId::ManageAgents)
+                .expect("visible Manage agents door");
+            let shown = skit_i18n::text(locale, door_label);
+            assert_eq!(
+                door.width,
+                u16::try_from(shown.as_ref().width().saturating_add(2)).unwrap(),
+                "the door click rect does not cover its painted label",
+            );
+            assert_eq!(
+                terminal.backend().buffer()[(door.right().saturating_sub(1), door.y)].bg,
+                ACCENT,
+                "the door paints past its click rect",
+            );
+            let last = Rect::new(door.right().saturating_sub(1), door.y, 1, 1);
+            assert_eq!(
+                session.handle_event(mouse(last, MouseEventKind::Down(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(mouse(last, MouseEventKind::Up(MouseButton::Left)), &view),
+                PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            );
+            let beyond = Rect::new(door.right(), door.y, 1, 1);
+            assert_eq!(
+                session.handle_event(
+                    mouse(beyond, MouseEventKind::Down(MouseButton::Left)),
+                    &view
+                ),
+                PreferencesEventHandling::Ignored,
+                "the cell after the door label is a click target",
+            );
+
+            let area = session
+                .control_area(PreferencesControlId::AfterRun)
+                .expect("visible after-run group");
+            let option = radio_option_rect(&session, area, PreferencesControlId::AfterRun, 0)
+                .expect("the first after-run option is visible");
+            let shown = skit_i18n::text(locale, option_label);
+            assert_eq!(
+                option.width,
+                u16::try_from(shown.as_ref().width().saturating_add(4)).unwrap(),
+                "the option click rect does not cover its glyph and painted label",
+            );
+            assert_eq!(
+                terminal.backend().buffer()[(option.right().saturating_sub(1), option.y)].bg,
+                SELECT_BG,
+                "the option paints past its click rect",
+            );
+            let last = Rect::new(option.right().saturating_sub(1), option.y, 1, 1);
+            assert_eq!(
+                session.handle_event(mouse(last, MouseEventKind::Down(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(mouse(last, MouseEventKind::Up(MouseButton::Left)), &view),
+                PreferencesEventHandling::Action(PreferencesAction::SetAfterRun(
+                    AfterRunChoice::Exit
+                ))
+            );
+            let beyond = Rect::new(option.right(), option.y, 1, 1);
+            assert_eq!(
+                session.handle_event(
+                    mouse(beyond, MouseEventKind::Down(MouseButton::Left)),
+                    &view
+                ),
+                PreferencesEventHandling::Ignored,
+                "the cell after the option label is a click target",
+            );
+        }
+    }
+
+    /// Every radio group must show its value with one filled glyph.
+    #[test]
+    fn every_radio_control_paints_one_filled_glyph_and_hollow_options() {
+        for locale in [Locale::En, Locale::ZhTw] {
+            let mut session = PreferencesWidgetSession::default();
+            let view = complete_view();
+            let terminal = draw(&mut session, &view, 140, 160, locale);
+            let buffer = terminal.backend().buffer();
+            for control in &view.controls() {
+                let PreferencesControlKind::Choice(choice) = &control.kind else {
+                    continue;
+                };
+                if choice.presentation != ChoicePresentation::Radio {
+                    continue;
+                }
+                let pixels =
+                    radio_option_pixels(&session, buffer, control.id, choice.options.len());
+                let filled = pixels.iter().filter(|(_, glyph, ..)| glyph == "◉").count();
+                assert_eq!(filled, 1, "{:?} has {filled} filled glyphs", control.id);
+                for (_, glyph, foreground, _) in &pixels {
+                    assert!(
+                        glyph == "◉" || glyph == "○",
+                        "{:?} painted an option without a value glyph",
+                        control.id,
+                    );
+                    assert_eq!(*foreground, ACCENT, "{:?} glyph is not accent", control.id);
+                }
+            }
+        }
+    }
+
     #[test]
     fn javascript_radio_pixels_follow_the_exact_selected_model_option() {
         let mut session = PreferencesWidgetSession::default();
         let mut view = view();
         view.update(PreferencesAction::Focus(PreferencesControlId::Javascript));
 
-        let selected_pixels = |session: &mut PreferencesWidgetSession,
-                               terminal: &Terminal<TestBackend>| {
-            let mut selected = vec![false; 4];
-            let area = terminal.backend().buffer().area;
-            for row in area.y..area.bottom() {
-                for column in area.x..area.right() {
-                    if let Some(PreferencesHit::Radio {
-                        id: PreferencesControlId::Javascript,
-                        option,
-                    }) = session.clicks.handle_click(column, row)
-                        && terminal.backend().buffer()[(column, row)].bg == SELECT_BG
-                    {
-                        selected[*option] = true;
-                    }
-                }
-            }
-            selected
-        };
-
         let automatic = draw(&mut session, &view, 140, 80, Locale::En);
+        let javascript = session
+            .control_area(PreferencesControlId::Javascript)
+            .expect("visible JavaScript group");
+        let after_run = session
+            .control_area(PreferencesControlId::AfterRun)
+            .expect("visible after-run group");
+        let stacked = |area: Rect, offset: u16, glyph: &str, background: Color| {
+            (
+                area.y.saturating_add(offset),
+                glyph.to_owned(),
+                ACCENT,
+                background,
+            )
+        };
         assert_eq!(
-            selected_pixels(&mut session, &automatic),
-            [true, false, false, false]
+            radio_option_pixels(
+                &session,
+                automatic.backend().buffer(),
+                PreferencesControlId::Javascript,
+                4,
+            ),
+            [
+                stacked(javascript, 0, "◉", ACCENT),
+                stacked(javascript, 1, "○", Color::Reset),
+                stacked(javascript, 2, "○", Color::Reset),
+                stacked(javascript, 3, "○", Color::Reset),
+            ],
+            "the focused group must stack its options and paint the selected one on the accent",
         );
+        assert_eq!(
+            radio_option_pixels(
+                &session,
+                automatic.backend().buffer(),
+                PreferencesControlId::AfterRun,
+                2,
+            ),
+            [
+                stacked(after_run, 0, "◉", SELECT_BG),
+                stacked(after_run, 1, "○", Color::Reset),
+            ],
+            "an unfocused group must keep its selected option on the select background",
+        );
+
         view.update(PreferencesAction::SetJavascript(JavascriptChoice::Deno));
         let deno = draw(&mut session, &view, 140, 80, Locale::En);
         assert_eq!(
-            selected_pixels(&mut session, &deno),
-            [false, true, false, false]
+            radio_option_pixels(
+                &session,
+                deno.backend().buffer(),
+                PreferencesControlId::Javascript,
+                4,
+            ),
+            [
+                stacked(javascript, 0, "○", Color::Reset),
+                stacked(javascript, 1, "◉", ACCENT),
+                stacked(javascript, 2, "○", Color::Reset),
+                stacked(javascript, 3, "○", Color::Reset),
+            ],
         );
     }
 
     #[test]
+    fn every_focused_preference_control_shows_exactly_one_focus_cue() {
+        for (width, height) in [(140_u16, 160_u16), (80, 14)] {
+            for locale in [Locale::En, Locale::ZhTw] {
+                let mut session = PreferencesWidgetSession::default();
+                let mut view = complete_view();
+                let controls = view.controls();
+                for control in &controls {
+                    view.update(PreferencesAction::Focus(control.id));
+                    let terminal = draw(&mut session, &view, width, height, locale);
+                    let buffer = terminal.backend().buffer();
+                    let markers = focus_markers(buffer);
+                    let id = control.id;
+                    let area = session
+                        .control_area(id)
+                        .expect("a focus move must bring the focused control into view");
+                    if is_bordered(control) {
+                        assert!(markers.is_empty(), "{id:?} painted a marker on a border");
+                        assert!(has_accent(buffer, area), "{id:?} lost its accent border");
+                    } else {
+                        assert_eq!(markers.len(), 1, "{id:?} has no single focus marker");
+                        let gutter = if matches!(control.kind, PreferencesControlKind::Button) {
+                            area.x.saturating_sub(2)
+                        } else {
+                            area.x
+                        };
+                        assert_eq!(markers[0].0, gutter, "{id:?} marker left the gutter");
+                        assert!(
+                            (area.y..area.bottom()).contains(&markers[0].1),
+                            "{id:?} marker left its rows",
+                        );
+                        assert_eq!(buffer[markers[0]].fg, ACCENT, "{id:?} marker is not accent");
+                    }
+                    for other in controls.iter().filter(|other| other.id != control.id) {
+                        if !is_bordered(other) {
+                            continue;
+                        }
+                        let Some(other_area) = session.control_area(other.id) else {
+                            continue;
+                        };
+                        assert!(
+                            !has_accent(buffer, other_area),
+                            "{:?} kept an accent border while {id:?} owns the focus",
+                            other.id,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_preference_door_paints_its_label_inside_its_click_rect() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+        let terminal = draw(&mut session, &view, 120, 44, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::ManageAgents)
+            .expect("visible Manage agents door");
+        let gutter = area.x.saturating_sub(2);
+        assert_eq!(gutter, session.viewport.x, "the door lost its gutter");
+
+        let buffer = terminal.backend().buffer();
+        let label = skit_i18n::text(Locale::En, "Manage agents…").into_owned();
+        let painted = (area.x..buffer.area.right())
+            .map(|column| buffer[(column, area.y)].symbol())
+            .collect::<String>();
+        assert!(
+            painted.starts_with(&format!(" {label} ")),
+            "the door text does not start two cells right of the gutter: {painted}",
+        );
+        assert_eq!(
+            area.width,
+            u16::try_from(label.width().saturating_add(2)).unwrap(),
+            "the click rect does not cover the painted label",
+        );
+
+        let first_character = Rect::new(area.x.saturating_add(1), area.y, 1, 1);
+        assert_eq!(
+            session.handle_event(
+                mouse(first_character, MouseEventKind::Down(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(first_character, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+
+        let marker = Rect::new(gutter, area.y, 1, 1);
+        assert_eq!(buffer[(gutter, area.y)].symbol(), "▶");
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert_eq!(
+                session.handle_event(mouse(marker, kind), &view),
+                PreferencesEventHandling::Ignored,
+                "the focus marker must not be a click target"
+            );
+        }
+    }
+
+    #[test]
     fn preferences_radio_exact_fit_keeps_the_full_nonzero_origin_row_clickable() {
-        let labels = vec!["A".repeat(37), "B".repeat(38)];
+        let labels = vec!["A".repeat(34), "B".repeat(35)];
         let options = labels
             .iter()
             .enumerate()
@@ -4376,7 +4970,24 @@ mod tests {
                 presentation: ChoicePresentation::Radio,
             }),
         };
-        assert_eq!(radio_rows(&options, Locale::En, 80), 1);
+        assert_eq!(
+            radio_placements(&labels, 78, false)
+                .last()
+                .expect("the exact-fit band has options")
+                .row,
+            0,
+            "the exact fit must place both options on one row",
+        );
+        assert_eq!(
+            control_height(&control, Locale::En, 80),
+            1,
+            "the gutter must leave the exact-fit row whole",
+        );
+        assert_eq!(
+            control_height(&control, Locale::En, 79),
+            2,
+            "one cell less than the exact fit must wrap the last option",
+        );
 
         let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
         let mut clicks = ClickRegionRegistry::new();
@@ -4388,8 +4999,13 @@ mod tests {
                     RowClip::new(1, 0, Rect::new(20, 1, 80, 1)),
                     &control,
                     "",
-                    &labels,
-                    &buttons,
+                    RadioBand {
+                        labels: &labels,
+                        buttons: &buttons,
+                        focused: false,
+                        selected: Some(0),
+                        active: 0,
+                    },
                     &mut clicks,
                 );
             })
@@ -4398,7 +5014,7 @@ mod tests {
             .map(|column| terminal.backend().buffer()[(column, 1)].symbol())
             .collect::<String>();
         assert!(
-            row.contains(&"B".repeat(38)),
+            row.contains(&"B".repeat(35)),
             "exact-fit option missing: {row}"
         );
         assert_eq!(
@@ -4407,6 +5023,47 @@ mod tests {
                 id: PreferencesControlId::PypiChoice,
                 option: 1,
             })
+        );
+        assert_eq!(
+            clicks.handle_click(20, 1),
+            None,
+            "the focus gutter must not select the first option",
+        );
+        assert_eq!(
+            clicks.handle_click(22, 1),
+            Some(&PreferencesHit::Radio {
+                id: PreferencesControlId::PypiChoice,
+                option: 0,
+            }),
+            "the value glyph must select its own option",
+        );
+
+        let mut wrapped = ClickRegionRegistry::new();
+        terminal
+            .draw(|frame| {
+                render_radio_band(
+                    frame,
+                    RowClip::new(2, 0, Rect::new(20, 1, 79, 2)),
+                    &control,
+                    "",
+                    RadioBand {
+                        labels: &labels,
+                        buttons: &buttons,
+                        focused: false,
+                        selected: Some(0),
+                        active: 0,
+                    },
+                    &mut wrapped,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            wrapped.handle_click(22, 2),
+            Some(&PreferencesHit::Radio {
+                id: PreferencesControlId::PypiChoice,
+                option: 1,
+            }),
+            "one cell less than the exact fit must paint the last option on the next row",
         );
     }
 

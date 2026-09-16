@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
-    layout::Rect,
+    buffer::Buffer,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
@@ -3020,27 +3021,28 @@ impl TuiSession {
                 for (option, (option_label, button)) in
                     options.iter().zip(buttons.iter()).enumerate()
                 {
-                    let width = u16::try_from(option_label.width().saturating_add(2))
-                        .unwrap_or(u16::MAX)
-                        .min(area_width.get());
+                    let width = radio_option_width(option_label, area_width.get());
                     if x.saturating_add(width) > area.right() {
                         x = area.x;
                         y = y.saturating_add(1);
                     }
-                    let option_area = Rect::new(x, y, width, 1);
-                    let region = Button::new(option_label, button)
-                        .variant(ButtonVariant::Toggle)
-                        .style(radio_style())
-                        .render_stateful(option_area, frame.buffer_mut());
+                    let rect = render_radio_option(
+                        frame.buffer_mut(),
+                        Rect::new(x, y, width, 1),
+                        option_label,
+                        button,
+                        state.focused,
+                        state.selected_index == Some(option),
+                    );
                     self.run.hits.register(
-                        region.area,
+                        rect,
                         RunClickTarget::RadioOption {
                             field: index,
                             value: option_label.clone(),
                         },
                     );
                     hits.push(HitRegion {
-                        rect: region.area,
+                        rect,
                         action: HitTarget::SelectFieldOption {
                             field: index,
                             option,
@@ -5332,9 +5334,7 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
     let mut rows = 1_usize;
     let mut x = 0_u16;
     for label in labels {
-        let wanted = u16::try_from(label.width().saturating_add(2))
-            .unwrap_or(u16::MAX)
-            .min(available);
+        let wanted = radio_option_width(label, available);
         if x.saturating_add(wanted) > available {
             rows = rows.saturating_add(1);
             x = 0;
@@ -5616,6 +5616,70 @@ pub(crate) fn radio_style() -> ButtonStyle {
         .toggled(SELECT_FG, SELECT_BG)
 }
 
+/// The style of the selected option of the focused radio group.
+///
+/// `ratatui-interact` reads the toggled flag before the focused flag, so the focused colour of
+/// [`radio_style`] never reaches a selected option. This style puts the focus on the toggled
+/// colours instead.
+pub(crate) fn focused_radio_style() -> ButtonStyle {
+    radio_style().toggled(SELECT_FG, ACCENT)
+}
+
+/// The cells one radio option keeps for its value glyph.
+pub(crate) const RADIO_GLYPH_CELLS: u16 = 2;
+
+/// Return the cells one radio option needs: the value glyph, the chip pad, and the label.
+pub(crate) fn radio_option_width(label: &str, available: u16) -> u16 {
+    u16::try_from(
+        label
+            .width()
+            .saturating_add(2)
+            .saturating_add(usize::from(RADIO_GLYPH_CELLS)),
+    )
+    .unwrap_or(u16::MAX)
+    .min(available.max(1))
+}
+
+/// Paint one radio option and return the cells that select it.
+///
+/// The glyph shows the value of the option. The chip shows the focus: only the selected option of
+/// the focused group gets the accent colour. The result covers every painted cell, because the
+/// button measures its label in characters while the paint uses display cells.
+pub(crate) fn render_radio_option(
+    buffer: &mut Buffer,
+    area: Rect,
+    label: &str,
+    button: &ButtonState,
+    focused: bool,
+    selected: bool,
+) -> Rect {
+    let glyph_cells = RADIO_GLYPH_CELLS.min(area.width);
+    buffer.set_stringn(
+        area.x,
+        area.y,
+        if selected { "◉ " } else { "○ " },
+        usize::from(glyph_cells),
+        Style::default().fg(ACCENT),
+    );
+    let chip = Rect::new(
+        area.x.saturating_add(glyph_cells),
+        area.y,
+        area.width.saturating_sub(glyph_cells),
+        1,
+    );
+    let style = if focused && selected {
+        focused_radio_style()
+    } else {
+        radio_style()
+    };
+    Button::new(label, button)
+        .variant(ButtonVariant::Toggle)
+        .alignment(Alignment::Left)
+        .style(style)
+        .render_stateful(chip, buffer);
+    Rect::new(area.x, area.y, area.width, 1)
+}
+
 #[cfg(test)]
 mod textarea_band_tests {
     use std::collections::BTreeMap;
@@ -5681,6 +5745,18 @@ mod textarea_band_tests {
             state,
             geometry,
         )
+    }
+
+    /// The run layout must keep the same option width as the painter.
+    ///
+    /// Each option holds its value glyph, the chip pad, and the label. A row that is one cell
+    /// short must move the last option to the next row.
+    #[test]
+    fn packed_radio_rows_count_the_value_glyph_of_each_option() {
+        let options = vec!["json".to_owned(), "yaml".to_owned()];
+        assert_eq!(radio_option_width(&options[0], 80), 8);
+        assert_eq!(packed_row_count(&options, 17), 1);
+        assert_eq!(packed_row_count(&options, 16), 2);
     }
 
     #[test]

@@ -3255,7 +3255,7 @@ fn run_control_height_tracks_typed_multiline_and_packed_radio_content() {
 
     let state = state_with_form(form());
     let mut exact_session = TuiSession::default();
-    let (_, exact) = draw(&mut exact_session, &state, 15, 40);
+    let (_, exact) = draw(&mut exact_session, &state, 19, 40);
     let radio = exact
         .hits
         .iter()
@@ -3266,7 +3266,7 @@ fn run_control_height_tracks_typed_multiline_and_packed_radio_content() {
     let exact_bottom = radio.iter().map(|hit| hit.rect.bottom()).max().unwrap();
     assert_eq!(exact_bottom.saturating_sub(exact_top), 1);
     let mut wrapped_session = TuiSession::default();
-    let (_, wrapped) = draw(&mut wrapped_session, &state, 14, 40);
+    let (_, wrapped) = draw(&mut wrapped_session, &state, 18, 40);
     let radio = wrapped
         .hits
         .iter()
@@ -3476,19 +3476,68 @@ fn a_fixed_height_run_textarea_can_show_a_tail_beyond_terminal_coordinates() {
     );
 }
 
+/// The focused radio field must look different from every other radio field.
+///
+/// The toggled colour and the focused colour were the same, and `ratatui-interact` reads the
+/// toggled flag first, so a focused group rendered exactly like an unfocused one.
+#[test]
+fn run_radio_focus_paints_its_selected_option_on_the_accent() {
+    let mut state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let option_rect = |geometry: &ViewGeometry, option: usize| {
+        geometry
+            .hits
+            .iter()
+            .find(|hit| hit.action == HitTarget::SelectFieldOption { field: 3, option })
+            .expect("every radio option publishes a hit")
+            .rect
+    };
+
+    let (unfocused, geometry) = draw(&mut session, &state, 60, 30);
+    let selected = option_rect(&geometry, 0);
+    assert_eq!(
+        unfocused.backend().buffer()[(selected.x, selected.y)].symbol(),
+        "◉"
+    );
+    assert_eq!(
+        unfocused.backend().buffer()[(selected.x + 2, selected.y)].bg,
+        SELECT_BG,
+        "an unfocused radio field lost its selected background"
+    );
+
+    state.update(Action::FocusField(3));
+    let (focused, geometry) = draw(&mut session, &state, 60, 30);
+    let selected = option_rect(&geometry, 0);
+    let other = option_rect(&geometry, 1);
+    assert_eq!(
+        focused.backend().buffer()[(selected.x, selected.y)].symbol(),
+        "◉"
+    );
+    assert_eq!(
+        focused.backend().buffer()[(selected.x + 2, selected.y)].bg,
+        ACCENT,
+        "the focused radio field does not show its focus"
+    );
+    assert_eq!(focused.backend().buffer()[(other.x, other.y)].symbol(), "○");
+    assert_eq!(
+        focused.backend().buffer()[(other.x + 2, other.y)].bg,
+        Color::Reset
+    );
+}
+
 #[test]
 fn run_radio_options_wrap_only_after_the_exact_right_boundary() {
     let state = state_with_form(form());
     let mut exact_session = TuiSession::default();
-    let (exact, exact_geometry) = draw(&mut exact_session, &state, 15, 40);
-    assert_eq!(exact_geometry.rows.width, 13);
+    let (exact, exact_geometry) = draw(&mut exact_session, &state, 19, 40);
+    assert_eq!(exact_geometry.rows.width, 17);
     let (_json_column, json_row) = buffer_position(exact.backend().buffer(), "json");
     let (yaml_column, yaml_row) = buffer_position(exact.backend().buffer(), "yaml");
     assert_eq!(json_row, yaml_row, "an exactly fitting option wrapped");
     let json = &exact.backend().buffer()[(_json_column, json_row)];
     assert_eq!((json.fg, json.bg), (SELECT_FG, SELECT_BG));
     assert_eq!(
-        yaml_column.saturating_sub(1) + 6,
+        yaml_column.saturating_sub(3) + 8,
         exact_geometry.rows.right(),
         "the exact-fit contract must exercise the right boundary",
     );
@@ -3507,8 +3556,8 @@ fn run_radio_options_wrap_only_after_the_exact_right_boundary() {
     );
 
     let mut wrapped_session = TuiSession::default();
-    let (wrapped, wrapped_geometry) = draw(&mut wrapped_session, &state, 14, 40);
-    assert_eq!(wrapped_geometry.rows.width, 12);
+    let (wrapped, wrapped_geometry) = draw(&mut wrapped_session, &state, 18, 40);
+    assert_eq!(wrapped_geometry.rows.width, 16);
     let (_, json_row) = buffer_position(wrapped.backend().buffer(), "json");
     let (yaml_column, yaml_row) = buffer_position(wrapped.backend().buffer(), "yaml");
     assert_eq!(yaml_row, json_row + 1, "an overflowing option did not wrap");
