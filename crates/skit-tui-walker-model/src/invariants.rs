@@ -1,8 +1,7 @@
 use skit_ui::{
     Action, AddAction, AddEffect, AddStage, AddWorkflowState, DraftSummary, LibraryState,
-    ModalState, ReviewLane, RunFormView, RunnerEditorMode, RunnerEditorOwner, RunnerManagerView,
-    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveTarget, Screen, SettingsSectionId,
-    SourceSnapshot,
+    ModalState, PreferencesView, ReviewLane, RunFormView, RunnerEditorMode, RunnerEditorOwner,
+    RunnerEditorView, RunnerSaveTarget, Screen, SettingsSectionId, SourceSnapshot,
 };
 
 /// Check every named invariant over one reducer state.
@@ -101,39 +100,14 @@ fn check_screen(state: &LibraryState) -> Result<(), String> {
         }
         Screen::Run(run) => check_focus("run", run.focused(), run.fields().len()),
         Screen::Form(form) => check_focus("form", form.focused, form.fields.len()),
-        Screen::Runners(runners) => {
-            if runners.selected().is_some() != !runners.rows().is_empty() {
-                return Err(format!(
-                    "RUNNER_SELECTION_PRESENCE selected={:?} rows={}",
-                    runners.selected(),
-                    runners.rows().len()
-                ));
-            }
-            if let Some(selected) = runners.selected()
-                && selected >= runners.rows().len()
-            {
-                return Err(format!(
-                    "runner selection {selected} is out of bounds for {} rows",
-                    runners.rows().len()
-                ));
-            }
-            if let Some(index) = runners.action_row()
-                && index >= runners.rows().len()
-            {
-                return Err(format!(
-                    "runner action row {index} is out of bounds for {} rows",
-                    runners.rows().len()
-                ));
-            }
-            if let Some(removal) = runners.removal() {
-                check_runner_removal(runners, removal)?;
-            }
-            if let Some(editor) = runners.editor() {
-                check_runner_editor(runners, editor)?;
-            }
-            Ok(())
-        }
         Screen::Preferences(preferences) => {
+            let runner_rows = preferences.draft().runner_rows().len();
+            if preferences.runner_cursor() >= runner_rows.max(1) {
+                return Err(format!(
+                    "PREFERENCES_RUNNER_CURSOR cursor={} rows={runner_rows}",
+                    preferences.runner_cursor()
+                ));
+            }
             if !preferences.has_control(preferences.focused()) {
                 return Err(format!(
                     "PREFERENCES_FOCUS_HIDDEN focused={:?}",
@@ -277,178 +251,72 @@ fn check_focus(label: &str, focused: usize, fields: usize) -> Result<(), String>
     }
 }
 
-fn check_runner_removal(
-    runners: &RunnerManagerView,
-    removal: &skit_ui::RunnerRemovalView,
-) -> Result<(), String> {
-    let value = serde_json::to_value(removal)
-        .map_err(|error| format!("RUNNER_REMOVAL_SCHEMA encode={error}"))?;
-    let request: RunnerRemoveRequest = serde_json::from_value(
-        value
-            .get("request")
-            .cloned()
-            .ok_or("RUNNER_REMOVAL_SCHEMA request is missing")?,
-    )
-    .map_err(|error| format!("RUNNER_REMOVAL_SCHEMA request={error}"))?;
-    match request {
-        RunnerRemoveRequest::Named {
-            name,
-            expected,
-            expected_pinned_count,
-        } => {
-            let identities = named_runner_identities(runners.rows(), &name);
-            let candidates = named_runner_rows(runners.rows(), &name);
-            let valid = candidates.iter().filter(|row| row.is_valid()).count();
-            let caches_match = candidates
-                .iter()
-                .all(|row| row.key_identities == identities);
-            let pins_match = candidates
-                .iter()
-                .all(|row| row.pinned_count == expected_pinned_count);
-            let selected_matches = runners.selected().is_some_and(|selected| {
-                runners
-                    .rows()
-                    .get(selected)
-                    .is_some_and(|row| row.is_valid() && row.name.as_deref() == Some(name.as_str()))
-            });
-            if valid != 1
-                || expected != identities
-                || !caches_match
-                || !pins_match
-                || !selected_matches
-                || removal.name != name
-                || removal.pinned_count != expected_pinned_count
-                || removal.invalid_row
-                || removal.container
-            {
-                return Err(format!(
-                    "RUNNER_REMOVAL_TARGET name={name:?} valid={valid} candidates={} expected={expected:?} current={identities:?} pins={expected_pinned_count} selected={:?}",
-                    candidates.len(),
-                    runners.selected()
-                ));
-            }
-        }
-        RunnerRemoveRequest::RawRow { expected } => {
-            let candidates = runners
-                .rows()
-                .iter()
-                .filter(|row| row.identity == expected)
-                .collect::<Vec<_>>();
-            let row = candidates.first();
-            let selected_matches = runners.selected().is_some_and(|selected| {
-                runners
-                    .rows()
-                    .get(selected)
-                    .is_some_and(|row| row.identity == expected)
-            });
-            if candidates.len() != 1
-                || row.is_none_or(|row| row.is_valid() || row.label() != removal.name)
-                || !selected_matches
-                || removal.pinned_count != 0
-                || !removal.invalid_row
-                || removal.container != expected.index.is_none()
-            {
-                return Err(format!(
-                    "RUNNER_REMOVAL_TARGET raw={expected:?} matches={} invalid={} container={}",
-                    candidates.len(),
-                    removal.invalid_row,
-                    removal.container
-                ));
-            }
-        }
-    }
-    Ok(())
+/// Return every editor shape the Preferences agent list may open right now.
+///
+/// The new-agent door is always one of them. An appended row reopens its own new-agent editor,
+/// and a stored row keeps its stable key, so the name the host stored decides between an edit and
+/// a repair.
+fn preferences_runner_editor_shapes(
+    preferences: &PreferencesView,
+) -> Result<Vec<(Option<usize>, RunnerEditorMode, RunnerSaveTarget)>, String> {
+    let mut shapes = vec![(None, RunnerEditorMode::New, RunnerSaveTarget::New)];
+    let cursor = preferences.runner_cursor();
+    let Some(row) = preferences.draft().runner_rows().get(cursor) else {
+        return Ok(shapes);
+    };
+    let Some(resolved) = row.resolved_row() else {
+        shapes.push((Some(cursor), RunnerEditorMode::New, RunnerSaveTarget::New));
+        return Ok(shapes);
+    };
+    let value = serde_json::to_value(row)
+        .map_err(|error| format!("PREFERENCES_RUNNER_ROW_SCHEMA encode={error}"))?;
+    let stored_name = value
+        .pointer("/existing/row/name")
+        .and_then(serde_json::Value::as_str);
+    shapes.push(if stored_name.is_some() {
+        (
+            None,
+            RunnerEditorMode::Edit,
+            RunnerSaveTarget::Named {
+                name: resolved.name.clone().unwrap_or_default(),
+                expected: resolved.key_identities,
+            },
+        )
+    } else {
+        (
+            None,
+            RunnerEditorMode::Repair,
+            RunnerSaveTarget::RawRow {
+                expected: resolved.identity,
+            },
+        )
+    });
+    Ok(shapes)
 }
 
-fn named_runner_rows<'a>(rows: &'a [RunnerRow], name: &str) -> Vec<&'a RunnerRow> {
-    rows.iter()
-        .filter(|row| row.name.as_deref() == Some(name))
-        .collect()
-}
-
-fn named_runner_identities(rows: &[RunnerRow], name: &str) -> Vec<RunnerRowIdentity> {
-    named_runner_rows(rows, name)
-        .into_iter()
-        .map(|row| row.identity.clone())
-        .collect()
-}
-
-fn check_runner_editor(
-    runners: &RunnerManagerView,
-    editor: &skit_ui::RunnerEditorView,
+/// Check that one Preferences runner editor names the row its cursor is on.
+fn check_preferences_runner_editor(
+    preferences: &PreferencesView,
+    editor: &RunnerEditorView,
 ) -> Result<(), String> {
     let value = serde_json::to_value(editor)
-        .map_err(|error| format!("RUNNER_EDITOR_SCHEMA encode={error}"))?;
+        .map_err(|error| format!("PREFERENCES_RUNNER_EDITOR_SCHEMA encode={error}"))?;
     let target: RunnerSaveTarget = serde_json::from_value(
         value
             .get("target")
             .cloned()
-            .ok_or("RUNNER_EDITOR_SCHEMA target is missing")?,
+            .ok_or("PREFERENCES_RUNNER_EDITOR_SCHEMA target is missing")?,
     )
-    .map_err(|error| format!("RUNNER_EDITOR_SCHEMA target={error}"))?;
-    match target {
-        RunnerSaveTarget::New => {
-            // The editor reads its mode from this target. The message is built first so every
-            // line of the rule runs.
-            let mode = editor.mode();
-            let refusal = format!("RUNNER_MANAGER_EDITOR_MODE target=new mode={mode:?}");
-            (mode == RunnerEditorMode::New)
-                .then_some(())
-                .ok_or(refusal)?;
-        }
-        RunnerSaveTarget::Named { name, expected } => {
-            let identities = named_runner_identities(runners.rows(), &name);
-            let candidates = named_runner_rows(runners.rows(), &name);
-            let selected_matches = runners.selected().is_some_and(|selected| {
-                runners.rows().get(selected).is_some_and(|row| {
-                    row.is_editable() && row.name.as_deref() == Some(name.as_str())
-                })
-            });
-            if editor.mode() != RunnerEditorMode::Edit
-                || editor.name() != name
-                || expected != identities
-                || candidates.is_empty()
-                || !selected_matches
-                || candidates
-                    .iter()
-                    .any(|row| row.key_identities != identities)
-            {
-                return Err(format!(
-                    "RUNNER_MANAGER_EDITOR_TARGET name={name:?} editor_name={:?} expected={expected:?} current={identities:?} candidates={} selected={:?}",
-                    editor.name(),
-                    candidates.len(),
-                    runners.selected()
-                ));
-            }
-        }
-        RunnerSaveTarget::RawRow { expected } => {
-            let candidates = runners
-                .rows()
-                .iter()
-                .filter(|row| row.identity == expected)
-                .collect::<Vec<_>>();
-            let selected_matches = runners.selected().is_some_and(|selected| {
-                runners
-                    .rows()
-                    .get(selected)
-                    .is_some_and(|row| row.identity == expected)
-            });
-            if editor.mode() != RunnerEditorMode::Repair
-                || candidates.len() != 1
-                || candidates
-                    .first()
-                    .is_none_or(|row| row.name.is_some() || row.is_valid() || !row.is_editable())
-                || !selected_matches
-            {
-                return Err(format!(
-                    "RUNNER_MANAGER_EDITOR_TARGET raw={expected:?} matches={} selected={:?}",
-                    candidates.len(),
-                    runners.selected()
-                ));
-            }
-        }
+    .map_err(|error| format!("PREFERENCES_RUNNER_EDITOR_SCHEMA target={error}"))?;
+    let actual = (preferences.editing_runner_row(), editor.mode(), target);
+    if preferences_runner_editor_shapes(preferences)?.contains(&actual) {
+        return Ok(());
     }
-    Ok(())
+    Err(format!(
+        "PREFERENCES_RUNNER_EDITOR_TARGET actual={actual:?} cursor={} rows={}",
+        preferences.runner_cursor(),
+        preferences.draft().runner_rows().len()
+    ))
 }
 
 fn check_modal(state: &LibraryState) -> Result<(), String> {
@@ -514,7 +382,6 @@ fn check_modal(state: &LibraryState) -> Result<(), String> {
             | Screen::Run(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Form(_)
             | Screen::Report(_) => Err("discard confirmation has no editable workflow".to_owned()),
         },
@@ -587,7 +454,11 @@ fn check_modal(state: &LibraryState) -> Result<(), String> {
             view,
             cancel_status,
         } => {
-            if view.mode() != RunnerEditorMode::New {
+            // Only Preferences edits a stored row through this modal. Every other owner asks for
+            // a new runner, so any other mode there means a stale or forged target.
+            if !matches!(owner, RunnerEditorOwner::Preferences)
+                && view.mode() != RunnerEditorMode::New
+            {
                 return Err(format!(
                     "RUNNER_EDITOR_MODE owner={owner:?} mode={:?}",
                     view.mode()
@@ -634,9 +505,18 @@ fn check_modal(state: &LibraryState) -> Result<(), String> {
                 (RunnerEditorOwner::Add, Screen::Add(_)) => {
                     Err("add runner editor has no prompt review".to_owned())
                 }
+                (RunnerEditorOwner::Preferences, Screen::Preferences(preferences))
+                    if cancel_status.is_none() =>
+                {
+                    check_preferences_runner_editor(preferences, view)
+                }
+                (RunnerEditorOwner::Preferences, Screen::Preferences(_)) => {
+                    Err("RUNNER_EDITOR_PREFERENCES_STATUS has cancel status".to_owned())
+                }
                 (RunnerEditorOwner::Run { .. }, _)
                 | (RunnerEditorOwner::Settings { .. }, _)
-                | (RunnerEditorOwner::Add, _) => {
+                | (RunnerEditorOwner::Add, _)
+                | (RunnerEditorOwner::Preferences, _) => {
                     Err("runner editor has no matching owner workflow".to_owned())
                 }
             }
@@ -705,7 +585,6 @@ fn require_run_form(state: &LibraryState) -> Result<&RunFormView, String> {
         | Screen::Preferences(_)
         | Screen::Add(_)
         | Screen::Health(_)
-        | Screen::Runners(_)
         | Screen::Settings(_)
         | Screen::Form(_)
         | Screen::Report(_) => Err("run modal has no run form".to_owned()),

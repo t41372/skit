@@ -7,8 +7,8 @@ use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 use skit_ui::{
     Action, HealthAction, HealthIssue, HealthIssueKind, HealthRebuildOutcome, HealthSnapshot,
     HealthView, LibraryState, MirrorHealth, ModalState, ReportItem, ReportView, RunFormView,
-    RunnerEditorAction, RunnerEditorField, RunnerEditorOwner, RunnerEditorView,
-    RunnerManagerAction, RunnerManagerView, RunnerRow, RunnerRowIdentity, Screen, UvHealth,
+    RunnerEditorAction, RunnerEditorField, RunnerEditorOwner, RunnerEditorView, RunnerRow,
+    RunnerRowIdentity, Screen, UvHealth,
 };
 use std::collections::BTreeMap;
 
@@ -320,89 +320,9 @@ fn health_screen_routes_every_advertised_keyboard_and_mouse_action() {
 }
 
 #[test]
-fn unpinned_runner_removal_does_not_fabricate_a_pin_warning() {
-    let mut manager = RunnerManagerView::new(vec![runner("codex")]);
-    manager.reduce(RunnerManagerAction::RemoveSelected);
-    assert!(manager.removal().is_some());
+fn the_shared_runner_editor_modal_uses_typed_mature_widget_sessions() {
     let mut state = LibraryState::default();
-    state.update(Action::Present(Screen::Runners(Box::new(manager))));
     let mut session = TuiSession::default();
-    let (terminal, _) = draw(&mut session, &state);
-    let screen = rendered_text(terminal.backend().buffer());
-    assert!(screen.contains("Confirm removal"), "{screen}");
-    assert!(
-        !screen.contains("0 prompt") && !screen.contains("prompts pin"),
-        "an unpinned runner fabricated a dependency warning: {screen}"
-    );
-}
-
-#[test]
-fn runner_manager_and_shared_modal_use_typed_mature_widget_sessions() {
-    let mut state = LibraryState::default();
-    state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex")]),
-    ))));
-    let mut session = TuiSession::default();
-    let (terminal, geometry) = draw(&mut session, &state);
-    let rendered = rendered_text(terminal.backend().buffer());
-    assert!(rendered.contains("Agents (prompt runners)"));
-    assert!(rendered.contains("Ctrl+N New agent"));
-    assert_eq!(
-        session.handle_event(
-            key(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            &state,
-            &geometry,
-        ),
-        EventHandling::Action(Action::Runners(RunnerManagerAction::New))
-    );
-    for event in [
-        key(KeyCode::Char('n'), KeyModifiers::NONE),
-        key(KeyCode::Char('x'), KeyModifiers::CONTROL),
-        key_with_kind(
-            KeyCode::Char('n'),
-            KeyModifiers::CONTROL,
-            KeyEventKind::Release,
-        ),
-    ] {
-        assert_eq!(
-            session.handle_event(event, &state, &geometry),
-            EventHandling::Ignored,
-            "only a pressed Ctrl+N may open a new runner"
-        );
-    }
-    let (row_x, row_y) = cell_position(terminal.backend().buffer(), "codex");
-    assert_eq!(
-        session.handle_event(
-            mouse(MouseEventKind::Moved, row_x, row_y),
-            &state,
-            &geometry,
-        ),
-        EventHandling::Ignored,
-        "pointer motion over a runner must not move the selection"
-    );
-    assert_eq!(
-        session.handle_event(
-            mouse(MouseEventKind::ScrollDown, row_x, row_y),
-            &state,
-            &geometry,
-        ),
-        EventHandling::Action(Action::Runners(RunnerManagerAction::Next))
-    );
-    assert_eq!(
-        session.handle_event(key(KeyCode::Null, KeyModifiers::NONE), &state, &geometry),
-        EventHandling::Ignored
-    );
-    state.update(Action::Runners(RunnerManagerAction::New));
-    let (_, geometry) = draw(&mut session, &state);
-    state.update(Action::Runners(RunnerManagerAction::Editor(
-        RunnerEditorAction::SetName("x".to_owned()),
-    )));
-    assert_eq!(
-        session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &state, &geometry),
-        EventHandling::Consumed
-    );
-    state.update(Action::Runners(RunnerManagerAction::CancelEditor));
-
     let run = RunFormView::from_declarations(
         "prompt",
         "Prompt",

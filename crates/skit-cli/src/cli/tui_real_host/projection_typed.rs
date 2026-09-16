@@ -6,7 +6,7 @@ use serde_json::Value;
 use skit_domain::StorageMode;
 use skit_ui::{
     Action, AddAction, AddEffect, Effect, HealthAction, PreferencesAction, PreferencesEffect,
-    RunnerEditorAction, RunnerManagerAction, Screen, SettingsAction,
+    RunnerEditorAction, Screen, SettingsAction,
 };
 
 use super::{
@@ -28,11 +28,9 @@ enum TypedActionProjection<'a> {
     AddCompleted,
     Status,
     RunnerEditorSaveFailed,
-    RunnerManagerClosed,
     Present(&'a Screen),
     Add(&'a AddAction),
     Health(&'a HealthAction),
-    Runners(&'a RunnerManagerAction),
     RunnerEditor(&'a RunnerEditorAction),
     Preferences(&'a PreferencesAction),
     Settings(&'a SettingsAction),
@@ -112,7 +110,6 @@ impl PathMap {
             Action::OpenSettings => TypedActionProjection::Unit("open_settings"),
             Action::OpenPreferences => TypedActionProjection::Unit("open_preferences"),
             Action::OpenHealth => TypedActionProjection::Unit("open_health"),
-            Action::OpenRunners => TypedActionProjection::Unit("open_runners"),
             Action::OpenPresets => TypedActionProjection::Unit("open_presets"),
             Action::OpenRename => TypedActionProjection::Unit("open_rename"),
             Action::Edit => TypedActionProjection::Unit("edit"),
@@ -150,13 +147,11 @@ impl PathMap {
             Action::Add(nested) => TypedActionProjection::Add(nested),
             Action::OpenAddRunnerEditor => TypedActionProjection::Unit("open_add_runner_editor"),
             Action::Health(nested) => TypedActionProjection::Health(nested),
-            Action::Runners(nested) => TypedActionProjection::Runners(nested),
             Action::RunnerEditor(nested) => TypedActionProjection::RunnerEditor(nested),
             Action::RunnerEditorSaved { .. } => {
                 TypedActionProjection::Payload("runner_editor_saved")
             }
             Action::RunnerEditorSaveFailed { .. } => TypedActionProjection::RunnerEditorSaveFailed,
-            Action::RunnerManagerClosed { .. } => TypedActionProjection::RunnerManagerClosed,
             Action::Preferences(nested) => TypedActionProjection::Preferences(nested),
             Action::Settings(nested) => TypedActionProjection::Settings(nested),
             Action::PreferencesSaved { .. } => TypedActionProjection::Payload("preferences_saved"),
@@ -214,10 +209,6 @@ impl PathMap {
                 let payload = external_payload_mut(value, "runner_editor_save_failed")?;
                 self.normalize_host_text_pointer(payload, "/message")?;
             }
-            TypedActionProjection::RunnerManagerClosed => {
-                let payload = external_payload_mut(value, "runner_manager_closed")?;
-                self.normalize_preferences_view(&mut payload["preferences"])?;
-            }
             TypedActionProjection::Present(screen) => {
                 self.project_typed_screen(screen, external_payload_mut(value, "present")?)?;
             }
@@ -227,10 +218,6 @@ impl PathMap {
             TypedActionProjection::Health(nested) => {
                 self.project_typed_health_action(nested, external_payload_mut(value, "health")?)?
             }
-            TypedActionProjection::Runners(nested) => self.project_typed_runner_manager_action(
-                nested,
-                external_payload_mut(value, "runners")?,
-            )?,
             TypedActionProjection::RunnerEditor(nested) => self
                 .project_typed_runner_editor_action(
                     nested,
@@ -270,10 +257,6 @@ impl PathMap {
             Effect::Add(nested) => TypedEffectProjection::Add(nested),
             Effect::HealthRebuild => TypedEffectProjection::Unit("health_rebuild"),
             Effect::SaveRunner { .. } => TypedEffectProjection::Payload("save_runner"),
-            Effect::RemoveRunner(_) => TypedEffectProjection::Payload("remove_runner"),
-            Effect::RefreshPreferencesAfterRunners => {
-                TypedEffectProjection::Unit("refresh_preferences_after_runners")
-            }
             Effect::Preferences(nested) => TypedEffectProjection::Preferences(nested),
             Effect::Edit { .. } => TypedEffectProjection::Payload("edit"),
             Effect::Remove { .. } => TypedEffectProjection::Payload("remove"),
@@ -340,10 +323,6 @@ impl PathMap {
             "health" => {
                 let health = external_payload_mut(value, "health")?;
                 self.normalize_health_view(health)
-            }
-            "runners" => {
-                let runners = external_payload_mut(value, "runners")?;
-                self.normalize_runner_manager_view(runners)
             }
             "settings" => {
                 let _ = external_payload_mut(value, "settings")?;
@@ -633,7 +612,17 @@ impl PathMap {
             PreferencesAction::Next => NestedProjection::Unit("next"),
             PreferencesAction::Save => NestedProjection::Unit("save"),
             PreferencesAction::Close => NestedProjection::Unit("close"),
-            PreferencesAction::ManageAgents => NestedProjection::Unit("manage_agents"),
+            PreferencesAction::RunnerCursor(_) => NestedProjection::Payload("runner_cursor"),
+            PreferencesAction::RunnerCursorPrevious => {
+                NestedProjection::Unit("runner_cursor_previous")
+            }
+            PreferencesAction::RunnerCursorNext => NestedProjection::Unit("runner_cursor_next"),
+            PreferencesAction::EditRunner => NestedProjection::Unit("edit_runner"),
+            PreferencesAction::NewRunner => NestedProjection::Unit("new_runner"),
+            PreferencesAction::ToggleRunnerRemoval => {
+                NestedProjection::Unit("toggle_runner_removal")
+            }
+            PreferencesAction::RunnerStaged(_) => NestedProjection::Payload("runner_staged"),
             PreferencesAction::InstallAgentSkill => NestedProjection::Unit("install_agent_skill"),
             PreferencesAction::PresentAgentSkillTargets(_) => {
                 NestedProjection::Payload("present_agent_skill_targets")
@@ -684,7 +673,13 @@ impl PathMap {
             | PreferencesAction::Next
             | PreferencesAction::Save
             | PreferencesAction::Close
-            | PreferencesAction::ManageAgents
+            | PreferencesAction::RunnerCursor(_)
+            | PreferencesAction::RunnerCursorPrevious
+            | PreferencesAction::RunnerCursorNext
+            | PreferencesAction::EditRunner
+            | PreferencesAction::NewRunner
+            | PreferencesAction::ToggleRunnerRemoval
+            | PreferencesAction::RunnerStaged(_)
             | PreferencesAction::InstallAgentSkill
             | PreferencesAction::SelectAgentSkillTarget(_)
             | PreferencesAction::ActivateAgentSkillTarget(_)
@@ -705,7 +700,10 @@ impl PathMap {
             PreferencesEffect::Save(_) => NestedProjection::Payload("save"),
             PreferencesEffect::Close => NestedProjection::Unit("close"),
             PreferencesEffect::ConfirmDiscard => NestedProjection::Unit("confirm_discard"),
-            PreferencesEffect::ManageAgents => NestedProjection::Unit("manage_agents"),
+            PreferencesEffect::OpenRunnerEditor(_) => {
+                NestedProjection::Payload("open_runner_editor")
+            }
+            PreferencesEffect::RunnerStaged { .. } => NestedProjection::Payload("runner_staged"),
             PreferencesEffect::DiscoverAgentSkillTargets => {
                 NestedProjection::Unit("discover_agent_skill_targets")
             }
@@ -737,47 +735,6 @@ impl PathMap {
             RunnerEditorAction::MutationFailed(_) => NestedProjection::Payload("mutation_failed"),
         };
         project_nested_shape(value, projection)
-    }
-
-    fn project_typed_runner_manager_action(
-        &mut self,
-        action: &RunnerManagerAction,
-        value: &mut Value,
-    ) -> Result<(), String> {
-        let projection = match action {
-            RunnerManagerAction::Previous => NestedProjection::Unit("previous"),
-            RunnerManagerAction::Next => NestedProjection::Unit("next"),
-            RunnerManagerAction::PagePrevious(_) => NestedProjection::Payload("page_previous"),
-            RunnerManagerAction::PageNext(_) => NestedProjection::Payload("page_next"),
-            RunnerManagerAction::Home => NestedProjection::Unit("home"),
-            RunnerManagerAction::End => NestedProjection::Unit("end"),
-            RunnerManagerAction::Select(_) => NestedProjection::Payload("select"),
-            RunnerManagerAction::ActivateSelected => NestedProjection::Unit("activate_selected"),
-            RunnerManagerAction::ActivateRow(_) => NestedProjection::Payload("activate_row"),
-            RunnerManagerAction::New => NestedProjection::Unit("new"),
-            RunnerManagerAction::EditSelected => NestedProjection::Unit("edit_selected"),
-            RunnerManagerAction::RemoveSelected => NestedProjection::Unit("remove_selected"),
-            RunnerManagerAction::CloseActions => NestedProjection::Unit("close_actions"),
-            RunnerManagerAction::Editor(_) => NestedProjection::Payload("editor"),
-            RunnerManagerAction::CancelEditor => NestedProjection::Unit("cancel_editor"),
-            RunnerManagerAction::ConfirmRemove => NestedProjection::Unit("confirm_remove"),
-            RunnerManagerAction::CancelRemove => NestedProjection::Unit("cancel_remove"),
-            RunnerManagerAction::MutationSucceeded { .. } => {
-                NestedProjection::Payload("mutation_succeeded")
-            }
-            RunnerManagerAction::MutationFailed(_) => NestedProjection::Payload("mutation_failed"),
-            RunnerManagerAction::Back => NestedProjection::Unit("back"),
-        };
-        if let RunnerManagerAction::Editor(editor) = action {
-            let payload = external_payload_mut(value, "editor")?;
-            return self.project_typed_runner_editor_action(editor, payload);
-        }
-        project_nested_shape(value, projection)?;
-        if matches!(action, RunnerManagerAction::MutationFailed(_)) {
-            let payload = external_payload_mut(value, "mutation_failed")?;
-            self.normalize_host_text_value(payload);
-        }
-        Ok(())
     }
 
     fn project_typed_settings_action(

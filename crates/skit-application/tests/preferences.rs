@@ -3,7 +3,12 @@ use std::collections::BTreeMap;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
     PreferencesChangeSet, PreferencesDraft, PreferencesError, PreferencesField,
-    PreferencesSnapshot, github_preset_names, npm_preset_names, pypi_preset_names,
+    PreferencesSnapshot, RunnerChange, RunnerDraftError, RunnerDraftMarker, RunnerDraftRow,
+    RunnerDraftState, github_preset_names, npm_preset_names, pypi_preset_names,
+    runner_row_taken_by_its_key,
+};
+use skit_application::runner_management::{
+    RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
 };
 use skit_i18n::{Locale, Localize as _};
 
@@ -18,7 +23,7 @@ fn snapshot(mirror: MirrorConfiguration) -> PreferencesSnapshot {
         after_run: AfterRunChoice::Exit,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+        runners: vec![runner_row(0, "claude", &["claude", "-p", "{{prompt}}"], 2)],
         mirror,
     }
 }
@@ -77,7 +82,7 @@ fn fresh_preferences_expose_every_default_and_each_mirror_axis() {
     assert_eq!(draft.form, InteractiveFormChoice::Tui);
     assert_eq!(draft.after_run, AfterRunChoice::Exit);
     assert_eq!(draft.javascript, JavascriptChoice::Automatic);
-    assert_eq!(draft.runner_names, ["claude", "codex"]);
+    assert_eq!(draft.runner_rows().len(), 1);
     assert!(draft.mirror_master);
     assert_eq!(draft.pypi, MirrorChoice::Off);
     assert_eq!(draft.github, MirrorChoice::Off);
@@ -340,6 +345,7 @@ fn a_host_can_repeat_file_validation_after_the_reducer_preflight() {
                 "~/missing/bash.exe".to_owned(),
             ),
         ]),
+        runners: Vec::new(),
     };
 
     assert_eq!(
@@ -355,6 +361,7 @@ fn a_host_can_repeat_file_validation_after_the_reducer_preflight() {
             ("editor".to_owned(), "micro".to_owned()),
             ("shell.bash_path".to_owned(), " \t ".to_owned()),
         ]),
+        runners: Vec::new(),
     };
     assert!(
         clear
@@ -387,4 +394,964 @@ fn preference_refusals_are_complete_in_both_chinese_locales() {
             .contains("http://mirror.example")
     );
     assert!(https.message().localize(Locale::ZhTw).contains("https://"));
+}
+
+fn identity(index: Option<usize>, token: &str) -> RunnerRowIdentity {
+    RunnerRowIdentity {
+        index,
+        snapshot_token: token.to_owned(),
+    }
+}
+
+fn runner_row(index: usize, name: &str, argv: &[&str], pinned_count: usize) -> RunnerRow {
+    let identity = identity(Some(index), &format!("token-{index}"));
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(argv.iter().map(|value| (*value).to_owned()).collect()),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count,
+    }
+}
+
+fn malformed_row(index: Option<usize>, argv: Option<&[&str]>) -> RunnerRow {
+    let identity = identity(index, &format!("token-malformed-{index:?}"));
+    RunnerRow {
+        identity,
+        name: None,
+        argv: argv.map(|argv| argv.iter().map(|value| (*value).to_owned()).collect()),
+        reason: Some("name".to_owned()),
+        descriptor: "prompt.runners[9]".to_owned(),
+        key_identities: Vec::new(),
+        pinned_count: 0,
+    }
+}
+
+fn draft_with(runners: Vec<RunnerRow>) -> PreferencesDraft {
+    PreferencesDraft::from_snapshot(PreferencesSnapshot {
+        runners,
+        ..snapshot(MirrorConfiguration::default())
+    })
+}
+
+fn save(name: &str, argv: &[&str], target: RunnerSaveTarget) -> RunnerSaveRequest {
+    RunnerSaveRequest {
+        name: name.to_owned(),
+        argv: argv.iter().map(|value| (*value).to_owned()).collect(),
+        target,
+    }
+}
+
+#[test]
+fn a_fresh_agent_list_is_clean_and_reports_every_stored_row() {
+    let draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "-p", "{{prompt}}"], 2),
+        runner_row(1, "codex", &["codex", "exec", "{{prompt}}"], 0),
+    ]);
+
+    assert!(!draft.dirty());
+    assert_eq!(draft.runner_rows().len(), 2);
+    assert_eq!(draft.runner_rows()[0].name(), Some("claude"));
+    assert_eq!(
+        draft.runner_rows()[1].argv(),
+        Some(
+            [
+                "codex".to_owned(),
+                "exec".to_owned(),
+                "{{prompt}}".to_owned()
+            ]
+            .as_slice()
+        )
+    );
+    assert_eq!(draft.runner_rows()[0].marker(), None);
+    assert!(!draft.runner_rows()[0].is_removed());
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        Vec::<RunnerChange>::new()
+    );
+}
+
+#[test]
+fn staging_an_add_an_edit_and_a_removal_marks_the_draft_dirty() {
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "-p", "{{prompt}}"], 2),
+        runner_row(1, "codex", &["codex", "exec", "{{prompt}}"], 0),
+    ]);
+
+    draft
+        .stage_runner(
+            save(
+                "codex",
+                &["codex", "exec", "--full", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "codex".to_owned(),
+                    expected: vec![identity(Some(1), "token-1")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    draft
+        .stage_runner(
+            save(
+                "my-agent",
+                &["my-agent", "{{prompt}}"],
+                RunnerSaveTarget::New,
+            ),
+            None,
+        )
+        .unwrap();
+    draft.toggle_runner_removal(0).unwrap();
+
+    assert!(draft.dirty());
+    assert_eq!(
+        draft
+            .runner_rows()
+            .iter()
+            .map(RunnerDraftRow::marker)
+            .collect::<Vec<_>>(),
+        [
+            Some(RunnerDraftMarker::Removed),
+            Some(RunnerDraftMarker::Edited),
+            Some(RunnerDraftMarker::Added),
+        ]
+    );
+    assert!(draft.runner_rows()[0].is_removed());
+    assert_eq!(draft.runner_rows()[2].name(), Some("my-agent"));
+}
+
+#[test]
+fn resolve_emits_every_removal_before_repairs_edits_and_adds() {
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "-p", "{{prompt}}"], 2),
+        runner_row(1, "codex", &["codex", "exec", "{{prompt}}"], 0),
+        malformed_row(Some(2), Some(&["broken", "{{prompt}}"])),
+        malformed_row(None, None),
+    ]);
+
+    draft
+        .stage_runner(
+            save(
+                "new-agent",
+                &["new-agent", "{{prompt}}"],
+                RunnerSaveTarget::New,
+            ),
+            None,
+        )
+        .unwrap();
+    draft
+        .stage_runner(
+            save(
+                "codex",
+                &["codex", "exec", "--full", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "codex".to_owned(),
+                    expected: vec![identity(Some(1), "token-1")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    draft
+        .stage_runner(
+            save(
+                "repaired",
+                &["repaired", "{{prompt}}"],
+                RunnerSaveTarget::RawRow {
+                    expected: identity(Some(2), "token-malformed-Some(2)"),
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    draft.toggle_runner_removal(0).unwrap();
+    draft.toggle_runner_removal(3).unwrap();
+
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [
+            RunnerChange::RemoveNamed {
+                name: "claude".to_owned(),
+                expected: vec![identity(Some(0), "token-0")],
+                expected_pinned_count: 2,
+            },
+            RunnerChange::RemoveRow {
+                expected: identity(None, "token-malformed-None"),
+            },
+            RunnerChange::ReplaceNamed {
+                name: "codex".to_owned(),
+                argv: vec![
+                    "codex".to_owned(),
+                    "exec".to_owned(),
+                    "--full".to_owned(),
+                    "{{prompt}}".to_owned(),
+                ],
+                expected: vec![identity(Some(1), "token-1")],
+            },
+            RunnerChange::RepairRow {
+                name: "repaired".to_owned(),
+                argv: vec!["repaired".to_owned(), "{{prompt}}".to_owned()],
+                expected: identity(Some(2), "token-malformed-Some(2)"),
+            },
+            RunnerChange::Add {
+                name: "new-agent".to_owned(),
+                argv: vec!["new-agent".to_owned(), "{{prompt}}".to_owned()],
+            },
+        ]
+    );
+}
+
+#[test]
+fn an_added_row_is_dropped_by_removal_and_an_edited_row_restores_its_edit() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 1)]);
+    draft
+        .stage_runner(
+            save("extra", &["extra", "{{prompt}}"], RunnerSaveTarget::New),
+            None,
+        )
+        .unwrap();
+    draft.toggle_runner_removal(1).unwrap();
+    assert_eq!(draft.runner_rows().len(), 1);
+
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    draft.toggle_runner_removal(0).unwrap();
+    assert_eq!(
+        draft.runner_rows()[0].marker(),
+        Some(RunnerDraftMarker::Removed)
+    );
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::RemoveNamed {
+            name: "claude".to_owned(),
+            expected: vec![identity(Some(0), "token-0")],
+            expected_pinned_count: 1,
+        }]
+    );
+
+    draft.toggle_runner_removal(0).unwrap();
+    assert_eq!(
+        draft.runner_rows()[0].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+    assert_eq!(
+        draft.runner_rows()[0].argv(),
+        Some(
+            [
+                "claude".to_owned(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned()
+            ]
+            .as_slice()
+        )
+    );
+    assert!(matches!(
+        &draft.runner_rows()[0],
+        RunnerDraftRow::Existing {
+            state: RunnerDraftState::Edited(edit),
+            ..
+        } if edit.name == "claude"
+    ));
+
+    draft.toggle_runner_removal(0).unwrap();
+    draft.toggle_runner_removal(0).unwrap();
+    draft.toggle_runner_removal(9).unwrap();
+    assert_eq!(
+        draft.runner_rows()[0].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+}
+
+#[test]
+fn an_unchanged_row_restores_to_unchanged_and_a_clean_draft_stays_clean() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 0)]);
+    draft.toggle_runner_removal(0).unwrap();
+    assert!(draft.dirty());
+
+    draft.toggle_runner_removal(0).unwrap();
+
+    assert_eq!(draft.runner_rows()[0].marker(), None);
+    assert!(!draft.dirty());
+    assert!(matches!(
+        &draft.runner_rows()[0],
+        RunnerDraftRow::Existing {
+            state: RunnerDraftState::Unchanged,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_name_staged_for_removal_can_be_reused_while_a_live_name_is_refused() {
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "{{prompt}}"], 0),
+        runner_row(1, "codex", &["codex", "{{prompt}}"], 0),
+    ]);
+
+    assert_eq!(
+        draft.stage_runner(
+            save("codex", &["codex", "{{prompt}}"], RunnerSaveTarget::New),
+            None,
+        ),
+        Err(RunnerDraftError::DuplicateName)
+    );
+    assert_eq!(draft.runner_rows().len(), 2);
+
+    draft.toggle_runner_removal(1).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "codex",
+                &["codex", "--new", "{{prompt}}"],
+                RunnerSaveTarget::New,
+            ),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(draft.runner_rows().len(), 3);
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [
+            RunnerChange::RemoveNamed {
+                name: "codex".to_owned(),
+                expected: vec![identity(Some(1), "token-1")],
+                expected_pinned_count: 0,
+            },
+            RunnerChange::Add {
+                name: "codex".to_owned(),
+                argv: vec![
+                    "codex".to_owned(),
+                    "--new".to_owned(),
+                    "{{prompt}}".to_owned(),
+                ],
+            },
+        ]
+    );
+}
+
+#[test]
+fn an_edit_may_keep_its_own_name_but_not_take_another_live_name() {
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "{{prompt}}"], 0),
+        malformed_row(Some(1), Some(&["broken", "{{prompt}}"])),
+    ]);
+
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        draft.runner_rows()[0].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+
+    assert_eq!(
+        draft.stage_runner(
+            save(
+                "claude",
+                &["claude", "{{prompt}}"],
+                RunnerSaveTarget::RawRow {
+                    expected: identity(Some(1), "token-malformed-Some(1)"),
+                },
+            ),
+            None,
+        ),
+        Err(RunnerDraftError::DuplicateName)
+    );
+    assert_eq!(draft.runner_rows()[1].marker(), None);
+}
+
+#[test]
+fn a_new_request_rewrites_only_the_added_row_the_editor_opened() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 0)]);
+    draft
+        .stage_runner(
+            save("draft", &["draft", "{{prompt}}"], RunnerSaveTarget::New),
+            None,
+        )
+        .unwrap();
+
+    draft
+        .stage_runner(
+            save("renamed", &["renamed", "{{prompt}}"], RunnerSaveTarget::New),
+            Some(1),
+        )
+        .unwrap();
+    assert_eq!(draft.runner_rows().len(), 2);
+    assert_eq!(draft.runner_rows()[1].name(), Some("renamed"));
+
+    draft
+        .stage_runner(
+            save("second", &["second", "{{prompt}}"], RunnerSaveTarget::New),
+            Some(0),
+        )
+        .unwrap();
+
+    assert_eq!(draft.runner_rows().len(), 3);
+    assert_eq!(draft.runner_rows()[0].name(), Some("claude"));
+    assert_eq!(draft.runner_rows()[2].name(), Some("second"));
+}
+
+#[test]
+fn a_save_request_for_a_row_the_draft_no_longer_has_changes_nothing() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 0)]);
+
+    assert_eq!(
+        draft.stage_runner(
+            save(
+                "ghost",
+                &["ghost", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "ghost".to_owned(),
+                    expected: vec![identity(Some(7), "token-7")],
+                },
+            ),
+            None,
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        draft.stage_runner(
+            save(
+                "ghost",
+                &["ghost", "{{prompt}}"],
+                RunnerSaveTarget::RawRow {
+                    expected: identity(Some(7), "token-7"),
+                },
+            ),
+            None,
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        draft.stage_runner(
+            save("ghost", &["ghost", "{{prompt}}"], RunnerSaveTarget::New),
+            Some(9),
+        ),
+        Ok(())
+    );
+
+    assert_eq!(draft.runner_rows().len(), 2);
+    assert_eq!(draft.runner_rows()[0].marker(), None);
+    assert_eq!(draft.runner_rows()[1].name(), Some("ghost"));
+}
+
+#[test]
+fn a_staged_agent_list_reaches_the_change_set_through_the_unchanged_mirror_shortcut() {
+    let mut draft = PreferencesDraft::from_snapshot(PreferencesSnapshot {
+        runners: vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 0)],
+        ..snapshot(MirrorConfiguration {
+            enabled: true,
+            python_install: "https://mirror.example/python/".to_owned(),
+            uv_binary: "https://mirror.example/uv".to_owned(),
+            ..MirrorConfiguration::default()
+        })
+    });
+    draft.toggle_runner_removal(0).unwrap();
+
+    let change = draft.resolve(|_| true).unwrap();
+
+    assert!(!change.settings.contains_key("mirror.pypi"));
+    assert_eq!(change.runners.len(), 1);
+}
+
+#[test]
+fn the_agent_save_refusals_localize_and_name_the_agent_list() {
+    for error in [
+        PreferencesError::RunnersChanged,
+        PreferencesError::RunnerNameTaken,
+        PreferencesError::RunnerPinsChanged {
+            name: "claude".to_owned(),
+            actual: 3,
+        },
+    ] {
+        assert_eq!(error.field(), PreferencesField::Runners);
+        assert!(!error.message().localize(Locale::ZhTw).is_empty());
+    }
+    assert_eq!(
+        PreferencesError::RunnersChanged
+            .message()
+            .localize(Locale::En),
+        "The agent list changed on disk. Reopen Preferences and try again."
+    );
+    assert_eq!(
+        PreferencesError::RunnerNameTaken
+            .message()
+            .localize(Locale::En),
+        "Another row already uses this runner name."
+    );
+}
+
+#[test]
+fn an_unresolved_malformed_row_can_only_be_removed_by_its_raw_identity() {
+    let mut draft = draft_with(vec![malformed_row(None, None)]);
+    draft.toggle_runner_removal(0).unwrap();
+
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::RemoveRow {
+            expected: identity(None, "token-malformed-None"),
+        }]
+    );
+    assert_eq!(draft.runner_rows()[0].name(), None);
+    assert_eq!(draft.runner_rows()[0].argv(), None);
+}
+
+#[test]
+fn only_a_stored_row_resolves_back_into_a_management_row() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 4)]);
+    let stored = draft.runner_rows()[0].resolved_row().unwrap();
+    assert_eq!(stored.name.as_deref(), Some("claude"));
+    assert_eq!(stored.pinned_count, 4);
+
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    let edited = draft.runner_rows()[0].resolved_row().unwrap();
+    assert_eq!(edited.name.as_deref(), Some("claude"));
+    assert_eq!(
+        edited.argv.as_deref(),
+        Some(
+            [
+                "claude".to_owned(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned()
+            ]
+            .as_slice()
+        )
+    );
+
+    draft
+        .stage_runner(
+            save("extra", &["extra", "{{prompt}}"], RunnerSaveTarget::New),
+            None,
+        )
+        .unwrap();
+    assert_eq!(draft.runner_rows()[1].resolved_row(), None);
+}
+
+/// A cancelled removal brings the name back, so it obeys the rule every staged name obeys.
+#[test]
+fn a_restore_is_refused_while_another_live_row_uses_the_same_name() {
+    let mut draft = draft_with(vec![runner_row(0, "claude", &["claude", "{{prompt}}"], 0)]);
+
+    draft.toggle_runner_removal(0).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--new", "{{prompt}}"],
+                RunnerSaveTarget::New,
+            ),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        draft.toggle_runner_removal(0),
+        Err(RunnerDraftError::DuplicateName)
+    );
+    assert!(draft.runner_rows()[0].is_removed());
+    assert_eq!(draft.runner_rows().len(), 2);
+
+    // Dropping the appended row frees the name again.
+    draft.toggle_runner_removal(1).unwrap();
+    draft.toggle_runner_removal(0).unwrap();
+    assert!(!draft.runner_rows()[0].is_removed());
+    assert!(!draft.dirty());
+}
+
+/// One stable name can be stored on two raw rows. Its own rows never refuse its own save.
+#[test]
+fn a_name_stored_on_two_rows_is_still_editable() {
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "{{prompt}}"], 0),
+        duplicate,
+    ]);
+
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+
+    // The save coalesces the key, so the marker lands on the first row of that name.
+    assert_eq!(
+        draft.runner_rows()[0].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+    assert_eq!(draft.runner_rows()[1].marker(), None);
+    assert_eq!(
+        draft.runner_rows()[0].argv(),
+        Some(
+            [
+                "claude".to_owned(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned()
+            ]
+            .as_slice()
+        )
+    );
+
+    // A different name still collides with the untouched second row.
+    let mut other = draft_with(vec![
+        runner_row(0, "claude", &["claude", "{{prompt}}"], 0),
+        runner_row(1, "codex", &["codex", "{{prompt}}"], 0),
+    ]);
+    assert_eq!(
+        other.stage_runner(
+            save(
+                "codex",
+                &["codex", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        ),
+        Err(RunnerDraftError::DuplicateName)
+    );
+}
+
+/// Two raw rows of one name are one stored key, so a restore never collides with its own twin.
+#[test]
+fn a_restore_ignores_the_other_raw_row_of_its_own_name() {
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    let mut draft = draft_with(vec![
+        runner_row(0, "claude", &["claude", "{{prompt}}"], 0),
+        duplicate,
+    ]);
+
+    draft.toggle_runner_removal(0).unwrap();
+    assert!(draft.runner_rows()[0].is_removed());
+
+    assert_eq!(draft.toggle_runner_removal(0), Ok(()));
+    assert!(!draft.runner_rows()[0].is_removed());
+    assert!(!draft.dirty());
+}
+
+/// A duplicate raw row of one key goes with the key, and it says so instead of staging itself.
+#[test]
+fn a_key_change_takes_the_duplicate_rows_of_that_key() {
+    let key = vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")];
+    let mut primary = runner_row(0, "claude", &["claude", "{{prompt}}"], 0);
+    primary.key_identities = key.clone();
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    duplicate.key_identities = key;
+    let rows = vec![
+        primary,
+        duplicate,
+        runner_row(2, "codex", &["codex", "{{prompt}}"], 0),
+    ];
+
+    // Nothing is staged, so every row still speaks for itself.
+    let mut draft = draft_with(rows.clone());
+    assert!(!runner_row_taken_by_its_key(draft.runner_rows(), 1));
+
+    // A key removal takes every raw row of the key, and only of that key.
+    draft.toggle_runner_removal(0).unwrap();
+    assert!(runner_row_taken_by_its_key(draft.runner_rows(), 1));
+    assert!(!runner_row_taken_by_its_key(draft.runner_rows(), 2));
+    assert!(!runner_row_taken_by_its_key(draft.runner_rows(), 0));
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::RemoveNamed {
+            name: "claude".to_owned(),
+            expected: vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")],
+            expected_pinned_count: 0,
+        }]
+    );
+
+    // An edit of the key folds its duplicates into the first row, so they go with it too.
+    let mut draft = draft_with(rows);
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+    assert!(runner_row_taken_by_its_key(draft.runner_rows(), 1));
+    assert_eq!(draft.resolve(|_| true).unwrap().runners.len(), 1);
+}
+
+/// One raw row of a key leaves its twins, and a removal staged on both must not repeat itself.
+#[test]
+fn one_removed_raw_row_leaves_its_twins_and_never_repeats_a_key_removal() {
+    let key = vec![
+        identity(Some(0), "token-0"),
+        identity(Some(1), "token-1"),
+        identity(Some(2), "token-2"),
+    ];
+    let mut rows = Vec::new();
+    for index in 0..3 {
+        let mut row = runner_row(index, "claude", &["claude", "{{prompt}}"], 0);
+        row.key_identities = key.clone();
+        if index > 0 {
+            row.reason = Some("duplicate".to_owned());
+        }
+        rows.push(row);
+    }
+    let mut draft = draft_with(rows);
+
+    // Removing one duplicate leaves the other duplicate to speak for itself.
+    draft.toggle_runner_removal(1).unwrap();
+    assert!(!runner_row_taken_by_its_key(draft.runner_rows(), 2));
+
+    // The key removal then covers both duplicates, and the save asks for it once.
+    draft.toggle_runner_removal(0).unwrap();
+    assert!(runner_row_taken_by_its_key(draft.runner_rows(), 1));
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::RemoveNamed {
+            name: "claude".to_owned(),
+            expected: key,
+            expected_pinned_count: 0,
+        }]
+    );
+}
+
+/// A removal staged on a duplicate row and an edit of the key that row repeats are one change.
+///
+/// The edit folds every duplicate of the key into the first row, so a second removal would find
+/// nothing and refuse the complete save. The change set asks for the edit alone, and it names
+/// every raw row the read reported for the key.
+#[test]
+fn an_edit_of_a_key_absorbs_a_removal_staged_on_its_duplicate_row() {
+    let key = vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")];
+    let mut primary = runner_row(0, "claude", &["claude", "{{prompt}}"], 0);
+    primary.key_identities = key.clone();
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    duplicate.key_identities = key;
+    let mut draft = draft_with(vec![primary, duplicate]);
+
+    draft.toggle_runner_removal(1).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(0), "token-0")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::ReplaceNamed {
+            name: "claude".to_owned(),
+            argv: vec![
+                "claude".to_owned(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned(),
+            ],
+            expected: vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")],
+        }]
+    );
+}
+
+/// A key staged for removal frees its name, duplicate rows and all.
+///
+/// The save removes before it adds, so a new agent may take the name of a key the same save
+/// deletes. A duplicate row of that key must not refuse the name it no longer keeps.
+#[test]
+fn a_key_staged_for_removal_frees_its_name_for_a_new_agent() {
+    let key = vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")];
+    let mut primary = runner_row(0, "claude", &["claude", "{{prompt}}"], 0);
+    primary.key_identities = key.clone();
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    duplicate.key_identities = key;
+    let mut draft = draft_with(vec![primary, duplicate]);
+
+    draft.toggle_runner_removal(0).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--new", "{{prompt}}"],
+                RunnerSaveTarget::New,
+            ),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(draft.runner_rows().len(), 3);
+    assert_eq!(draft.runner_rows()[2].name(), Some("claude"));
+    // The restore then finds the name again, so it stays refused while the new row holds it.
+    assert_eq!(
+        draft.toggle_runner_removal(0),
+        Err(RunnerDraftError::DuplicateName)
+    );
+}
+
+/// A change set never asks for an edit of a key the same save removes.
+///
+/// The draft still holds the edit: the frontend opens no editor on a row the key removal takes,
+/// and the change set leaves the edit out instead of asking the store for a row that is gone.
+#[test]
+fn a_key_removal_drops_an_edit_staged_on_a_duplicate_of_that_key() {
+    let key = vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")];
+    let mut primary = runner_row(0, "claude", &["claude", "{{prompt}}"], 0);
+    primary.key_identities = key.clone();
+    let mut duplicate = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    duplicate.reason = Some("duplicate".to_owned());
+    duplicate.key_identities = key.clone();
+    let mut draft = draft_with(vec![primary, duplicate]);
+
+    draft.toggle_runner_removal(0).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(1), "token-1")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+
+    // The save skips the removed row and marks the duplicate, which the removal takes as well.
+    assert_eq!(
+        draft.runner_rows()[1].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+    assert!(runner_row_taken_by_its_key(draft.runner_rows(), 1));
+    assert_eq!(
+        draft.resolve(|_| true).unwrap().runners,
+        [RunnerChange::RemoveNamed {
+            name: "claude".to_owned(),
+            expected: key,
+            expected_pinned_count: 0,
+        }]
+    );
+}
+
+/// A named save rewrites the first row of its key that the save keeps.
+///
+/// A removal staged on an earlier raw row of the same name stays staged, and the edit marks the
+/// row that survives it, so neither change covers the other.
+#[test]
+fn a_named_save_marks_the_first_row_of_its_key_that_the_save_keeps() {
+    let key = vec![identity(Some(0), "token-0"), identity(Some(1), "token-1")];
+    let mut broken = malformed_row(Some(0), Some(&["claude", "{{prompt}}"]));
+    broken.name = Some("claude".to_owned());
+    broken.key_identities = key.clone();
+    let mut valid = runner_row(1, "claude", &["claude", "{{prompt}}"], 0);
+    valid.key_identities = key;
+    let mut draft = draft_with(vec![broken, valid]);
+
+    draft.toggle_runner_removal(0).unwrap();
+    draft
+        .stage_runner(
+            save(
+                "claude",
+                &["claude", "--fast", "{{prompt}}"],
+                RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: vec![identity(Some(1), "token-1")],
+                },
+            ),
+            None,
+        )
+        .unwrap();
+
+    assert!(draft.runner_rows()[0].is_removed());
+    assert_eq!(
+        draft.runner_rows()[1].marker(),
+        Some(RunnerDraftMarker::Edited)
+    );
+}
+
+#[test]
+fn a_repaired_raw_row_keeps_its_raw_identity_and_takes_the_typed_name() {
+    let mut draft = draft_with(vec![malformed_row(
+        Some(4),
+        Some(&["broken", "{{prompt}}"]),
+    )]);
+    draft
+        .stage_runner(
+            save(
+                "repaired",
+                &["repaired", "{{prompt}}"],
+                RunnerSaveTarget::RawRow {
+                    expected: identity(Some(4), "token-malformed-Some(4)"),
+                },
+            ),
+            None,
+        )
+        .unwrap();
+
+    let resolved = draft.runner_rows()[0].resolved_row().unwrap();
+    // The repair the user typed travels with the row, so the editor reopens on it.
+    assert_eq!(resolved.name.as_deref(), Some("repaired"));
+    assert_eq!(
+        resolved.identity,
+        identity(Some(4), "token-malformed-Some(4)")
+    );
+    assert_eq!(
+        resolved.argv.as_deref(),
+        Some(["repaired".to_owned(), "{{prompt}}".to_owned()].as_slice())
+    );
+    assert_eq!(draft.runner_rows()[0].name(), Some("repaired"));
 }

@@ -220,14 +220,21 @@ A	1	crates/skit-tui/src/screens/add.rs	"Link the original — edits take effect 
 A	1	crates/skit-tui/src/screens/add.rs	"This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/screens/add.rs	"What is {}? skit can't tell from the name."	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/screens/add.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",	oracle msgid production/catalog copy
-A	2	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."	oracle msgid production/catalog copy
-A	2	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."	oracle msgid production/catalog copy
-A	1	crates/skit-tui/src/screens/management.rs	"row-not-table" => "This runner row isn't a table.",	oracle msgid production/catalog copy
-A	2	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run."	oracle msgid production/catalog copy
-A	2	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	exact owner for frozen user-visible copy
-A	2	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	exact owner for frozen user-visible copy
-A	2	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	exact owner for frozen user-visible copy
-A	1	crates/skit-tui/src/screens/management.rs	("row-not-table", "This runner row isn't a table."),	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"row-not-table" => "This runner row isn't a table.",	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"{{prompt}} can't be the command itself — the first word must be the program to run."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/preferences.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/preferences.rs	("row-not-table", "This runner row isn't a table."),	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/preferences.rs	rendered.contains("This runner row isn't a table."),	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/src/screens/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/screens/settings.rs	assert!(frame.contains("skit doesn't write to this file"), "{frame}");	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/src/session.rs	"The environment variable {} isn't set (needed by {}).",	oracle msgid production/catalog copy

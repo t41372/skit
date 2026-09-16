@@ -1,23 +1,25 @@
 //! Preferences focus rules: a frame advertises only the keys the focused widget releases.
 //!
-//! A shared footer chord that the focused widget owns must stay unreachable, and a `Tab` prefix
-//! must not launder it back. Every state is built from `LibraryState` values, so no host is
-//! involved. The probe helpers come from this crate's `parity` module.
+//! Agent management has one door, so no focus state advertises a chord or a chip for it. Every
+//! state is built from `LibraryState` values, so no host is involved. The probe helpers come from
+//! this crate's `parity` module.
 
 use ratatui_core::{buffer::Buffer, layout::Size};
+use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
     PreferencesSnapshot,
 };
 use skit_i18n::Locale;
 use skit_tui::{HitTarget, TuiSession};
-use skit_tui_walker_model::parity::{
-    ProbeEndpoint, command_bindings, command_key_action, render_probe_endpoint,
-};
+use skit_tui_walker_model::parity::{ProbeEndpoint, render_probe_endpoint, session_action};
 use skit_ui::{
-    Action, Effect, LibraryState, PreferencesAction, PreferencesControlId, PreferencesView, Screen,
-    UiCommand, UiKey,
+    Action, CommandContext, Effect, LibraryState, PreferencesAction, PreferencesControlId,
+    PreferencesView, RunnerRow, RunnerRowIdentity, Screen, UiCommand, UiKey, command_specs,
 };
+
+/// The English labels of the two agent doors that Preferences paints.
+const DOOR_LABELS: [&str; 2] = ["New agent…", "Teach an AI agent skit…"];
 
 // --------------------------------------------------------------------------
 // helpers this file owns
@@ -35,9 +37,45 @@ fn rendered_text(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
 }
 
+/// Return the text of the footer band: every row from the first chip down to the last row.
+///
+/// The doors paint their own labels in the body, so only the footer band can answer whether the
+/// frame still advertises a key for them.
+fn footer_text(endpoint: &ProbeEndpoint) -> String {
+    let buffer = endpoint.backend.buffer();
+    let area = buffer.area;
+    let top = endpoint
+        .geometry
+        .hits
+        .iter()
+        .map(|hit| hit.rect.y)
+        .min()
+        .expect("every Preferences frame advertises at least one footer chip");
+    (top..area.bottom())
+        .flat_map(|row| (area.x..area.right()).map(move |column| (column, row)))
+        .map(|position| buffer[position].symbol())
+        .collect()
+}
+
 // --------------------------------------------------------------------------
 // state fixture
 // --------------------------------------------------------------------------
+
+fn preferences_runner_row(index: usize, name: &str) -> RunnerRow {
+    let identity = RunnerRowIdentity {
+        index: Some(index),
+        snapshot_token: format!("token-{index}"),
+    };
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count: 0,
+    }
+}
 
 fn preferences_state() -> LibraryState {
     let mut state = LibraryState::default();
@@ -52,7 +90,7 @@ fn preferences_state() -> LibraryState {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
-            runner_names: vec!["codex".to_owned()],
+            runners: vec![preferences_runner_row(0, "codex")],
             mirror: MirrorConfiguration::default(),
         })),
     ))));
@@ -85,65 +123,124 @@ fn the_first_preferences_frame_advertises_only_keys_the_focused_widget_releases(
         "the first Preferences frame rendered a key the focused widget owns: {text}"
     );
 
+    // The agent doors are reached by Tab and the mouse, never by a chord. The footer prints a
+    // door label only as the verb of the Enter key while that door itself holds the focus.
+    let controls = state
+        .preferences()
+        .expect("the fixture presents Preferences")
+        .controls();
+    assert!(
+        controls
+            .iter()
+            .any(|control| control.id == PreferencesControlId::NewRunner)
+    );
+    for control in controls {
+        assert_eq!(
+            state.update(Action::Preferences(PreferencesAction::Focus(control.id))),
+            Effect::None
+        );
+        let (session, frame) = draw(&state);
+        let footer = footer_text(&frame);
+        let activation = state
+            .preferences()
+            .expect("the fixture presents Preferences")
+            .activation();
+        for door in DOOR_LABELS {
+            assert_eq!(
+                footer.contains(door),
+                activation.as_ref().is_some_and(|(verb, _)| *verb == door),
+                "the focused {:?} control prints {door} in the footer: {footer}",
+                control.id
+            );
+        }
+        // Enter is printed exactly while a control that Enter activates holds the focus.
+        assert_eq!(
+            session
+                .advertised_command_bindings(&state, UiCommand::Submit)
+                .iter()
+                .map(|binding| binding.key)
+                .collect::<Vec<_>>(),
+            if activation.is_some() {
+                vec![UiKey::Enter]
+            } else {
+                Vec::new()
+            },
+            "{:?}",
+            control.id
+        );
+        if let Some((verb, _)) = &activation {
+            assert!(
+                footer.contains(&format!("Enter {verb}")),
+                "the focused {:?} control prints no verb for Enter: {footer}",
+                control.id
+            );
+        }
+        for hit in &frame.geometry.hits {
+            let HitTarget::Command(command) = hit.action else {
+                continue;
+            };
+            let label = command_specs(CommandContext::Preferences)
+                .find(|spec| spec.command == command)
+                .map_or("", |spec| spec.label);
+            assert!(
+                !DOOR_LABELS.contains(&label),
+                "the focused {:?} control advertises a {label} chip",
+                control.id
+            );
+        }
+    }
+
+    // The agent list names the verb of its cursor row, and drops it when no editor can open.
     assert_eq!(
         state.update(Action::Preferences(PreferencesAction::Focus(
-            PreferencesControlId::Editor,
+            PreferencesControlId::Runners
         ))),
         Effect::None
     );
+    let (_, frame) = draw(&state);
+    assert!(footer_text(&frame).contains("Enter Edit"));
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::ToggleRunnerRemoval)),
+        Effect::None
+    );
     let (session, frame) = draw(&state);
-    for command in [UiCommand::ManageAgents, UiCommand::InstallAgentSkill] {
-        assert!(
-            session
-                .advertised_command_bindings(&state, command)
-                .is_empty(),
-            "the focused Editor field must hide the {command:?} binding"
+    let footer = footer_text(&frame);
+    assert!(!footer.contains("Enter Edit"), "{footer}");
+    assert!(
+        session
+            .advertised_command_bindings(&state, UiCommand::Submit)
+            .is_empty()
+    );
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::ToggleRunnerRemoval)),
+        Effect::None
+    );
+
+    for (door, action) in [
+        (
+            PreferencesControlId::InstallAgentSkill,
+            Action::Preferences(PreferencesAction::InstallAgentSkill),
+        ),
+        (
+            PreferencesControlId::NewRunner,
+            Action::Preferences(PreferencesAction::NewRunner),
+        ),
+    ] {
+        assert_eq!(
+            state.update(Action::Preferences(PreferencesAction::Focus(door))),
+            Effect::None
         );
-        assert!(
-            frame
-                .geometry
-                .hits
-                .iter()
-                .all(|hit| hit.action != HitTarget::Command(command)),
-            "the focused Editor field must hide the {command:?} hit"
+        let (mut session, frame) = draw(&state);
+        assert_eq!(
+            session_action(
+                &mut session,
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                &state,
+                &frame.geometry,
+            )
+            .unwrap(),
+            action,
+            "Enter on the focused {door:?} door dispatches its typed action"
         );
     }
-    let text = rendered_text(frame.backend.buffer());
-    assert!(!text.contains("Manage agents"), "{text}");
-    assert!(!text.contains("Teach an AI agent skit"), "{text}");
-
-    let blocked = command_bindings(&state, UiCommand::InstallAgentSkill).unwrap();
-    // The crate reports an advertised command with no chord as an empty list. This rule needs one
-    // real chord, so the refusal stays here.
-    assert!(
-        !blocked.is_empty(),
-        "visible command InstallAgentSkill has no key binding"
-    );
-    let expected = Action::Preferences(PreferencesAction::InstallAgentSkill);
-    assert!(
-        command_key_action(
-            &session,
-            &state,
-            &frame.geometry,
-            UiCommand::InstallAgentSkill,
-            &blocked,
-            &expected,
-            0,
-        )
-        .is_err(),
-        "a shared footer key must not use a Tab prefix to hide immediate widget ownership"
-    );
-    assert!(
-        command_key_action(
-            &session,
-            &state,
-            &frame.geometry,
-            UiCommand::InstallAgentSkill,
-            &blocked,
-            &expected,
-            64,
-        )
-        .is_ok(),
-        "the same chord must remain reachable after a deliberate focus move"
-    );
 }

@@ -36,7 +36,7 @@ use skit_tui_walker_support::{
 };
 use skit_ui::{
     Action, Effect, HealthAction, HostRequest, LibraryState, PreferencesAction,
-    PreferencesControlId, RunnerEditorAction, RunnerManagerAction, Screen, UiCommand, UiKey,
+    PreferencesControlId, RunnerEditorAction, Screen, UiCommand, UiKey,
 };
 
 use super::{

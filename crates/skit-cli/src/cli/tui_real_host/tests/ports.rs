@@ -28,6 +28,7 @@ fn preferences_drive_locale_file_discovery_install_and_raw_checkpoint_ports() {
         host.dispatch(Effect::Preferences(PreferencesEffect::Save(
             PreferencesChangeSet {
                 settings: BTreeMap::from([("shell.bash_path".to_owned(), "~/bash".to_owned(),)]),
+                runners: Vec::new(),
             },
         )))
         .unwrap(),
@@ -63,6 +64,7 @@ fn preferences_drive_locale_file_discovery_install_and_raw_checkpoint_ports() {
         host.dispatch(Effect::Preferences(PreferencesEffect::Save(
             PreferencesChangeSet {
                 settings: BTreeMap::from([("shell.bash_path".to_owned(), "~/.codex".to_owned(),)]),
+                runners: Vec::new(),
             },
         )))
         .unwrap(),
@@ -473,6 +475,7 @@ fn observations_keep_full_ui_state_unknown_config_and_port_transcripts() {
     host.dispatch(Effect::Preferences(PreferencesEffect::Save(
         skit_application::preferences::PreferencesChangeSet {
             settings: BTreeMap::from([("after_run".to_owned(), "exit".to_owned())]),
+            runners: Vec::new(),
         },
     )))
     .unwrap();

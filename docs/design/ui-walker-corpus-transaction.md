@@ -15,7 +15,7 @@ fresh-context Opus reviewer) shaped revision 31; their accepted changes are fold
 ## D1. Measurement is separate from the final-corpus policy
 
 `measured_effect_coverage_from_timeline` (G3a) tallies a timeline and also requires the exact
-required vocabulary (23 served names, 14 nested names, exact key lists). Codex's G4a
+required vocabulary (20 served names, 13 nested names, exact key lists). Codex's G4a
 `RecordedRealCorpus::new` also requires the canonical 100-operation vector. Under those rules the
 aggregate transaction can only run on the full corpus, about 495 seconds per generation. A test that
 generates twice takes about 17 minutes. It cannot be a normal `#[test]`: `.cargo/mutants.toml` sets
@@ -44,7 +44,7 @@ Decision:
 - New `validate_final_review_corpus(operations_bytes: &[u8], operation_count: usize, profile_coverage: &[(SafeProfileId, CoverageSummary)], stored: &CoverageSummary) -> Result<(), String>`
   (CLI) is the final policy: `operation_count` equals the canonical vector length (derived from
   `canonical_corpus_artifact_values()`, not a literal); `operations_bytes` equal the canonical bytes
-  from `canonical_corpus_artifact_values()` (7,839 bytes, SHA-256 `824a4273…`); every per-profile
+  from `canonical_corpus_artifact_values()` (7,436 bytes, SHA-256 `5e5d19f4…`); every per-profile
   summary passes `validate_required_effect_coverage_summary`; `stored` equals
   `merge_required_profile_effect_coverage(profile_coverage)`. Its positive unit test uses the
   canonical bytes plus `complete_required_coverage(1)` fixtures; the full-run proof is the frozen

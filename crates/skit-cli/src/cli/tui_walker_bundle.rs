@@ -70,7 +70,7 @@ const STORE_FIELDS: [&str; 6] = [
     "tree",
 ];
 
-const REQUIRED_SERVED_REQUESTS: [&str; 23] = [
+const REQUIRED_SERVED_REQUESTS: [&str; 20] = [
     "add",
     "count_run_glob",
     "edit",
@@ -81,13 +81,10 @@ const REQUIRED_SERVED_REQUESTS: [&str; 23] = [
     "open.presets",
     "open.rename",
     "open.run",
-    "open.runners",
     "open.settings",
     "preferences",
-    "refresh_preferences_after_runners",
     "reload",
     "remove",
-    "remove_runner",
     "rerun",
     "save_run_preset",
     "save_runner",
@@ -95,7 +92,7 @@ const REQUIRED_SERVED_REQUESTS: [&str; 23] = [
     "submit.run",
     "submit.settings",
 ];
-const REQUIRED_NESTED_OCCURRENCES: [&str; 14] = [
+const REQUIRED_NESTED_OCCURRENCES: [&str; 13] = [
     "add.author_draft",
     "add.cancel",
     "add.commit",
@@ -108,14 +105,15 @@ const REQUIRED_NESTED_OCCURRENCES: [&str; 14] = [
     "add.remember_runner",
     "preferences.discover_agent_skill_targets",
     "preferences.install_agent_skill",
-    "preferences.manage_agents",
     "preferences.save",
 ];
-const STATICALLY_UNSERVED_EFFECTS: [&str; 8] = [
+const STATICALLY_UNSERVED_EFFECTS: [&str; 10] = [
     "none",
     "preferences.close",
     "preferences.confirm_discard",
     "preferences.none",
+    "preferences.open_runner_editor",
+    "preferences.runner_staged",
     "quit",
     "submit.add",
     "submit.preferences",
@@ -198,8 +196,6 @@ impl EffectCoverageTally {
             | Effect::SaveRunPreset { .. }
             | Effect::HealthRebuild
             | Effect::SaveRunner { .. }
-            | Effect::RemoveRunner(_)
-            | Effect::RefreshPreferencesAfterRunners
             | Effect::Edit { .. }
             | Effect::Remove { .. } => {}
         }
@@ -401,8 +397,6 @@ fn served_effect_name(effect: &Effect) -> &'static str {
         Effect::Add(_) => "add",
         Effect::HealthRebuild => "health_rebuild",
         Effect::SaveRunner { .. } => "save_runner",
-        Effect::RemoveRunner(_) => "remove_runner",
-        Effect::RefreshPreferencesAfterRunners => "refresh_preferences_after_runners",
         Effect::Preferences(_) => "preferences",
         Effect::Edit { .. } => "edit",
         Effect::Remove { .. } => "remove",
@@ -416,7 +410,6 @@ const fn open_effect_name(request: HostRequest) -> &'static str {
         HostRequest::Settings => "open.settings",
         HostRequest::Preferences => "open.preferences",
         HostRequest::Health => "open.health",
-        HostRequest::Runners => "open.runners",
         HostRequest::Presets => "open.presets",
         HostRequest::Rename => "open.rename",
     }
@@ -454,7 +447,8 @@ fn preferences_effect_name(effect: &PreferencesEffect) -> &'static str {
         PreferencesEffect::Save(_) => "preferences.save",
         PreferencesEffect::Close => "preferences.close",
         PreferencesEffect::ConfirmDiscard => "preferences.confirm_discard",
-        PreferencesEffect::ManageAgents => "preferences.manage_agents",
+        PreferencesEffect::OpenRunnerEditor(_) => "preferences.open_runner_editor",
+        PreferencesEffect::RunnerStaged { .. } => "preferences.runner_staged",
         PreferencesEffect::DiscoverAgentSkillTargets => "preferences.discover_agent_skill_targets",
         PreferencesEffect::InstallAgentSkill { .. } => "preferences.install_agent_skill",
     }
@@ -512,22 +506,17 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (json!({"add": []}), "add"),
         (json!("health_rebuild"), "health_rebuild"),
         (
-            json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": "manager"}}),
+            json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": {"editor": "add"}}}),
             "save_runner",
         ),
         (
-            json!({"remove_runner": {"named": {"name": "runner", "expected": [], "expected_pinned_count": 0}}}),
-            "remove_runner",
+            json!({"preferences": "discover_agent_skill_targets"}),
+            "preferences",
         ),
-        (
-            json!("refresh_preferences_after_runners"),
-            "refresh_preferences_after_runners",
-        ),
-        (json!({"preferences": "manage_agents"}), "preferences"),
         (json!({"edit": {"selector": "entry"}}), "edit"),
         (json!({"remove": {"selector": "entry"}}), "remove"),
     ];
-    assert_eq!(outer.len(), 16);
+    assert_eq!(outer.len(), 14);
     for (value, expected) in outer {
         assert_eq!(served_effect_name(&effect_fixture(value)), expected);
     }
@@ -538,11 +527,10 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (HostRequest::Settings, "open.settings"),
         (HostRequest::Preferences, "open.preferences"),
         (HostRequest::Health, "open.health"),
-        (HostRequest::Runners, "open.runners"),
         (HostRequest::Presets, "open.presets"),
         (HostRequest::Rename, "open.rename"),
     ];
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 7);
     for (request, expected) in requests {
         assert_eq!(open_effect_name(request), expected);
     }
@@ -614,10 +602,27 @@ fn effect_coverage_classifier_covers_every_nested_variant() {
 
     let preferences = [
         (json!("none"), "preferences.none"),
-        (json!({"save": {"settings": {}}}), "preferences.save"),
+        (
+            json!({"save": {"settings": {}, "runners": []}}),
+            "preferences.save",
+        ),
         (json!("close"), "preferences.close"),
         (json!("confirm_discard"), "preferences.confirm_discard"),
-        (json!("manage_agents"), "preferences.manage_agents"),
+        (
+            json!({"open_runner_editor": {
+                "name": "",
+                "command": "",
+                "target": "new",
+                "focused": "name",
+                "error": null,
+                "host_error": null,
+            }}),
+            "preferences.open_runner_editor",
+        ),
+        (
+            json!({"runner_staged": {"refused": null}}),
+            "preferences.runner_staged",
+        ),
         (
             json!("discover_agent_skill_targets"),
             "preferences.discover_agent_skill_targets",
@@ -627,7 +632,7 @@ fn effect_coverage_classifier_covers_every_nested_variant() {
             "preferences.install_agent_skill",
         ),
     ];
-    assert_eq!(preferences.len(), 7);
+    assert_eq!(preferences.len(), 8);
     for (value, expected) in preferences {
         let effect: PreferencesEffect = serde_json::from_value(value).unwrap();
         assert_eq!(preferences_effect_name(&effect), expected);
@@ -642,7 +647,9 @@ fn effect_coverage_tally_counts_one_outer_request_and_every_nested_occurrence() 
         "cancel",
         {"inspect_source": {"request": 1, "path": "source.py"}},
     ]})));
-    tally.record_served_request(&Effect::Preferences(PreferencesEffect::ManageAgents));
+    tally.record_served_request(&Effect::Preferences(
+        PreferencesEffect::DiscoverAgentSkillTargets,
+    ));
     tally.record_served_request(&Effect::Reload);
 
     assert_eq!(
@@ -658,7 +665,7 @@ fn effect_coverage_tally_counts_one_outer_request_and_every_nested_occurrence() 
         BTreeMap::from([
             ("add.cancel".to_owned(), 1),
             ("add.inspect_source".to_owned(), 2),
-            ("preferences.manage_agents".to_owned(), 1),
+            ("preferences.discover_agent_skill_targets".to_owned(), 1),
         ])
     );
 
@@ -684,6 +691,8 @@ fn effect_coverage_static_exclusions_are_exact_and_lexical() {
             "preferences.close",
             "preferences.confirm_discard",
             "preferences.none",
+            "preferences.open_runner_editor",
+            "preferences.runner_staged",
             "quit",
             "submit.add",
             "submit.preferences",
@@ -774,8 +783,10 @@ fn timeline_coverage_counts_only_typed_host_requests_and_all_nested_occurrences(
         "add": coverage_add_effect_values(),
     })))
     .unwrap();
-    let preferences =
-        serde_json::to_value(Effect::Preferences(PreferencesEffect::ManageAgents)).unwrap();
+    let preferences = serde_json::to_value(Effect::Preferences(
+        PreferencesEffect::DiscoverAgentSkillTargets,
+    ))
+    .unwrap();
     let rows = vec![
         coverage_test_row(TransitionCause::Initial),
         coverage_test_row(TransitionCause::Session {
@@ -813,7 +824,7 @@ fn timeline_coverage_counts_only_typed_host_requests_and_all_nested_occurrences(
             ("add.edit_source".to_owned(), 1),
             ("add.inspect_source".to_owned(), 1),
             ("add.remember_runner".to_owned(), 1),
-            ("preferences.manage_agents".to_owned(), 1),
+            ("preferences.discover_agent_skill_targets".to_owned(), 1),
         ])
     );
 }
@@ -852,13 +863,10 @@ fn required_effect_coverage_vocabulary_is_exact_sorted_unique_and_disjoint() {
             "open.presets",
             "open.rename",
             "open.run",
-            "open.runners",
             "open.settings",
             "preferences",
-            "refresh_preferences_after_runners",
             "reload",
             "remove",
-            "remove_runner",
             "rerun",
             "save_run_preset",
             "save_runner",
@@ -882,7 +890,6 @@ fn required_effect_coverage_vocabulary_is_exact_sorted_unique_and_disjoint() {
             "add.remember_runner",
             "preferences.discover_agent_skill_targets",
             "preferences.install_agent_skill",
-            "preferences.manage_agents",
             "preferences.save",
         ]
     );
@@ -893,6 +900,8 @@ fn required_effect_coverage_vocabulary_is_exact_sorted_unique_and_disjoint() {
             "preferences.close",
             "preferences.confirm_discard",
             "preferences.none",
+            "preferences.open_runner_editor",
+            "preferences.runner_staged",
             "quit",
             "submit.add",
             "submit.preferences",
@@ -1176,7 +1185,6 @@ fn required_effect_fixtures() -> Vec<Effect> {
         "presets",
         "rename",
         "run",
-        "runners",
         "settings",
     ] {
         effects.push(effect_fixture(
@@ -1210,17 +1218,10 @@ fn required_effect_fixtures() -> Vec<Effect> {
         effect_fixture(json!({
             "save_runner": {
                 "request": {"name": "runner", "argv": ["runner"], "target": "new"},
-                "owner": "manager",
+                "owner": {"editor": "add"},
             },
         })),
-        effect_fixture(json!({
-            "remove_runner": {
-                "named": {"name": "runner", "expected": [], "expected_pinned_count": 0},
-            },
-        })),
-        effect_fixture(json!("refresh_preferences_after_runners")),
-        effect_fixture(json!({"preferences": {"save": {"settings": {}}}})),
-        effect_fixture(json!({"preferences": "manage_agents"})),
+        effect_fixture(json!({"preferences": {"save": {"settings": {}, "runners": []}}})),
         effect_fixture(json!({"preferences": "discover_agent_skill_targets"})),
         effect_fixture(json!({
             "preferences": {"install_agent_skill": {"skills_dir": "/skills"}},
@@ -1234,7 +1235,7 @@ fn required_effect_fixtures() -> Vec<Effect> {
 #[test]
 fn complete_timeline_builds_one_valid_required_profile_coverage_summary() {
     let effects = required_effect_fixtures();
-    assert_eq!(effects.len(), 26);
+    assert_eq!(effects.len(), 22);
     let rows = effects
         .iter()
         .map(|effect| {
@@ -1247,7 +1248,7 @@ fn complete_timeline_builds_one_valid_required_profile_coverage_summary() {
 
     let summary = measured_effect_coverage_from_timeline(&rows).unwrap();
     validate_required_effect_coverage_summary(&summary).unwrap();
-    assert_eq!(summary.effects.served_requests.unwrap()["preferences"], 4);
+    assert_eq!(summary.effects.served_requests.unwrap()["preferences"], 3);
 }
 
 fn required_profile_coverages(count: u64) -> Vec<(SafeProfileId, CoverageSummary)> {
@@ -1365,10 +1366,10 @@ fn measurement_without_a_host_request_is_measured_and_empty() {
 fn final_review_corpus_policy_requires_the_canonical_vector_and_vocabulary() {
     let (operations, _) = canonical_corpus_artifact_values().unwrap();
     let canonical = canonical_json_bytes(&Value::Array(operations.clone())).unwrap();
-    assert_eq!(canonical.len(), 7839);
+    assert_eq!(canonical.len(), 7436);
     assert_eq!(
         sha256_hex(&canonical),
-        "824a42732e08119f3c57286f636d3f12936e3a6b0aa99947c8da17db92d0e922"
+        "5e5d19f449521798601655bac84da68f7478d172bd24559e2bc09493a8a60813"
     );
     let profiles = required_profile_coverages(1);
     let stored = merge_required_profile_effect_coverage(&profiles).unwrap();
@@ -3348,6 +3349,32 @@ fn record_small_review_corpus(scratch: &Path) -> RecordedRealCorpus {
     .unwrap()
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn cloned_small_review_corpus_fixture() -> RecordedRealCorpus {
+    static CORPUS: std::sync::OnceLock<RecordedRealCorpus> = std::sync::OnceLock::new();
+    CORPUS
+        .get_or_init(|| {
+            let scratch = tempfile::TempDir::new().unwrap();
+            record_small_review_corpus(scratch.path())
+        })
+        .clone()
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn shared_small_review_fixture_installs_after_recording_scratch_is_gone() {
+    let first = cloned_small_review_corpus_fixture();
+    let second = cloned_small_review_corpus_fixture();
+    assert_eq!(first.profiles.len(), 4);
+    assert_eq!(second.profiles.len(), 4);
+
+    let parent = tempfile::TempDir::new().unwrap();
+    let mut fingerprint = fixed_revision();
+    let installed = install_review_corpus(parent.path(), &first, &mut fingerprint).unwrap();
+    assert_eq!(read_review_corpus(&installed).unwrap().profiles.len(), 4);
+    assert_reinstall_accepts(parent.path(), &installed, &second);
+}
+
 pub(super) fn staged_residue(parent: &Path) -> Vec<PathBuf> {
     fs::read_dir(parent)
         .unwrap()
@@ -3454,8 +3481,8 @@ fn assert_reviewer_files_refuse(
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn install_completed_small_review_corpus(scratch: &Path, parent: &Path) -> PathBuf {
-    let corpus = record_small_review_corpus(scratch);
+fn install_completed_small_review_corpus(parent: &Path) -> PathBuf {
+    let corpus = cloned_small_review_corpus_fixture();
     let mut fingerprint = fixed_revision();
     let installed = install_review_corpus(parent, &corpus, &mut fingerprint).unwrap();
     let manifest = read_review_corpus(&installed).unwrap().manifest;
@@ -3627,8 +3654,7 @@ fn installs_replays_and_rolls_back_the_small_four_profile_review_corpus() {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn source_changes_during_recording_refuse_corpus_publication() {
-    let scratch = tempfile::TempDir::new().unwrap();
-    let corpus = record_small_review_corpus(scratch.path());
+    let corpus = cloned_small_review_corpus_fixture();
     for changed_phase in [StablePairPhase::Main, StablePairPhase::Replay] {
         let parent = tempfile::TempDir::new().unwrap();
         let revision = std::cell::Cell::new("before");
@@ -3670,8 +3696,7 @@ fn source_changes_during_recording_refuse_corpus_publication() {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn review_corpus_reinstall_preserves_and_refuses_reviewer_files() {
-    let scratch = tempfile::TempDir::new().unwrap();
-    let corpus = record_small_review_corpus(scratch.path());
+    let corpus = cloned_small_review_corpus_fixture();
     let parent = tempfile::TempDir::new().unwrap();
     let mut fingerprint = fixed_revision();
     let installed = install_review_corpus(parent.path(), &corpus, &mut fingerprint).unwrap();
@@ -3857,8 +3882,7 @@ fn assert_root_document_shapes(
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn review_corpus_refuses_every_destination_difference() {
-    let scratch = tempfile::TempDir::new().unwrap();
-    let corpus = record_small_review_corpus(scratch.path());
+    let corpus = cloned_small_review_corpus_fixture();
     let parent = tempfile::TempDir::new().unwrap();
     let mut fingerprint = fixed_revision();
     let installed = install_review_corpus(parent.path(), &corpus, &mut fingerprint).unwrap();
@@ -4098,8 +4122,7 @@ fn review_corpus_refuses_every_destination_difference() {
 fn review_corpus_refuses_a_nonregular_entry_a_symlink_and_a_taken_name() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
-    let scratch = tempfile::TempDir::new().unwrap();
-    let corpus = record_small_review_corpus(scratch.path());
+    let corpus = cloned_small_review_corpus_fixture();
     let parent = tempfile::TempDir::new().unwrap();
     let mut fingerprint = fixed_revision();
     let installed = install_review_corpus(parent.path(), &corpus, &mut fingerprint).unwrap();
@@ -4170,8 +4193,7 @@ fn review_corpus_refuses_a_nonregular_entry_a_symlink_and_a_taken_name() {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn review_corpus_coverage_and_leak_validation_are_exact() {
-    let scratch = tempfile::TempDir::new().unwrap();
-    let corpus = record_small_review_corpus(scratch.path());
+    let corpus = cloned_small_review_corpus_fixture();
     let parent = tempfile::TempDir::new().unwrap();
     let mut fingerprint = fixed_revision();
     let installed = install_review_corpus(parent.path(), &corpus, &mut fingerprint).unwrap();
@@ -4312,12 +4334,11 @@ fn review_corpus_coverage_and_leak_validation_are_exact() {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn validates_one_completed_review_corpus_named_by_the_environment() {
-    let scratch = tempfile::TempDir::new().unwrap();
     let parent = tempfile::TempDir::new().unwrap();
     let expected_final = std::env::var_os("SKIT_WALKER_REVIEW").is_some();
     let root = std::env::var_os("SKIT_WALKER_REVIEW")
         .map(PathBuf::from)
-        .unwrap_or_else(|| install_completed_small_review_corpus(scratch.path(), parent.path()));
+        .unwrap_or_else(|| install_completed_small_review_corpus(parent.path()));
     let expected_revision = std::env::var("SKIT_WALKER_EXPECT_REVISION").ok();
     let corpus =
         validate_completed_review_corpus(&root, expected_revision.as_deref(), expected_final)

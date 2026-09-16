@@ -25,8 +25,8 @@ use super::{
     active_locale, edit_with_runtime, entry_parameters, human_output_width, paint_for_output,
     refuse_empty_preset_schema, remove_with_state_dir, resolve_editor_argv_with, tui_add_effect_at,
     tui_complete_at, tui_open_with_context, tui_preferences_effect_at,
-    tui_preferences_view_with_context, tui_preflight_effect_with_probe, tui_remove_runner_at,
-    tui_rerun_with_services, tui_rerunnable, tui_save_runner_at, tui_submit_at, user_home,
+    tui_preflight_effect_with_probe, tui_rerun_with_services, tui_rerunnable, tui_save_runner_at,
+    tui_submit_at, user_home,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -716,18 +716,8 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                 }))
             }
             UiEffect::SaveRunner { request, owner } => {
-                tui_save_runner_at(self.service, &self.roots.config, request, owner, locale)
+                tui_save_runner_at(&self.roots.config, request, owner, locale)
             }
-            UiEffect::RemoveRunner(request) => {
-                tui_remove_runner_at(self.service, &self.roots.config, request, locale)
-            }
-            UiEffect::RefreshPreferencesAfterRunners => Ok(UiAction::RunnerManagerClosed {
-                preferences: Box::new(tui_preferences_view_with_context(
-                    &self.roots.config,
-                    locale,
-                    self.editor_fallback(),
-                )?),
-            }),
             UiEffect::Add(effects) => {
                 let pathext = self.platform.environment.variable("PATHEXT");
                 tui_add_effect_at(
@@ -855,7 +845,7 @@ mod tests {
         Action as UiAction, AddAction, AddRequestId, AddWorkflowState, DraftKind, Effect,
         FieldValue, FormPurpose, HealthView, HostRequest, KnownEntryKind, LibrarySurface,
         PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormView,
-        RunnerManagerAction, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
+        RunnerEditorOwner, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
         SourceSnapshot,
     };
     use tempfile::TempDir;
@@ -1962,6 +1952,7 @@ mod tests {
             .serve(Effect::Preferences(PreferencesEffect::Save(
                 PreferencesChangeSet {
                     settings: BTreeMap::from([("lang".to_owned(), "zh-TW".to_owned())]),
+                    runners: Vec::new(),
                 },
             )))
             .unwrap();
@@ -2011,12 +2002,12 @@ mod tests {
                         expected: Vec::new(),
                     },
                 },
-                owner: RunnerSaveOwner::Manager,
+                owner: RunnerSaveOwner::Editor(RunnerEditorOwner::Add),
             })
             .unwrap();
         assert!(matches!(
             runner_failure,
-            skit_ui::Action::Runners(RunnerManagerAction::MutationFailed(ref message))
+            skit_ui::Action::RunnerEditorSaveFailed { ref message, .. }
                 if message == text(
                     Locale::ZhTw,
                     "The runner row changed before it could be saved; inspect again."
@@ -2070,6 +2061,7 @@ mod tests {
                         ("lang".to_owned(), "en".to_owned()),
                         ("shell.bash_path".to_owned(), "~/bash-link".to_owned()),
                     ]),
+                    runners: Vec::new(),
                 },
             )))
             .unwrap();
@@ -2105,6 +2097,7 @@ mod tests {
                         "shell.bash_path".to_owned(),
                         "~/bash-directory".to_owned(),
                     )]),
+                    runners: Vec::new(),
                 },
             )))
             .unwrap(),
@@ -4416,6 +4409,7 @@ mod tests {
             .serve(Effect::Preferences(PreferencesEffect::Save(
                 PreferencesChangeSet {
                     settings: BTreeMap::from([("lang".to_owned(), "auto".to_owned())]),
+                    runners: Vec::new(),
                 },
             )))
             .unwrap();

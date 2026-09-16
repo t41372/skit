@@ -56,7 +56,6 @@ pub(super) struct PathMap {
     pub(super) add_cause: AddProjectionCause,
     pub(super) status_provenance: Option<String>,
     pub(super) status_cause: StatusProjectionCause,
-    pub(super) runner_failure_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -171,7 +170,6 @@ impl PathMap {
             add_cause: AddProjectionCause::default(),
             status_provenance: None,
             status_cause: StatusProjectionCause::default(),
-            runner_failure_status: None,
         };
         paths.register_path_text(profile_root, paths.profile_label.clone());
         paths.artifact_facts.insert(
@@ -674,16 +672,6 @@ impl PathMap {
             self.normalize_host_text_pointer(payload, pointer)?;
         }
         Ok(())
-    }
-
-    pub(super) fn normalize_runner_manager_view(&self, runners: &mut Value) -> Result<(), String> {
-        if runners.pointer("/status").and_then(Value::as_str)
-            == self.runner_failure_status.as_deref()
-            && self.runner_failure_status.is_some()
-        {
-            self.normalize_host_text_pointer(runners, "/status")?;
-        }
-        self.normalize_host_text_pointer(runners, "/overlay/editor/host_error")
     }
 
     fn normalize_modal_artifacts(&self, value: &mut Value) -> Result<(), String> {

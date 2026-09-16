@@ -30,8 +30,8 @@ use skit_application::{
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesChangeSet, PreferencesDraft, PreferencesSnapshot, github_preset_names,
-        npm_preset_names, pypi_preset_names,
+        PreferencesChangeSet, PreferencesDraft, PreferencesError, PreferencesSnapshot,
+        RunnerChange, github_preset_names, npm_preset_names, pypi_preset_names,
     },
     prompt_selection::PromptSelectionService,
     runner_management::{EditableArgvDialect, split_editable_argv},
@@ -77,9 +77,9 @@ use skit_runtime::{
 use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
     FileConfigStore, FileFormStateStore, FilePromptSelectionStore, FileRunnerManagementStore,
-    PromptRunner, RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader,
-    expand_user_path, override_directory, platform_config_dir, platform_data_dir,
-    platform_state_dir,
+    PreferencesCommit, PromptRunner, RunnerManagementStoreError, RunnerMutation,
+    SystemDirectoryReader, expand_user_path, override_directory, platform_config_dir,
+    platform_data_dir, platform_state_dir,
 };
 use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
@@ -88,10 +88,9 @@ use skit_ui::{
     FormPurpose, FormView, HealthView, HostRequest, KnownEntryKind, PRESET_PREFIX,
     PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction,
     PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions,
-    RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest,
-    RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
-    SettingsInputs, SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot,
-    SubmittedValues, TypedValue,
+    RunFormView, RunPathContext, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
+    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
+    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 #[cfg(test)]
 use skit_ui::{HealthAction, LibraryState};
@@ -9382,9 +9381,11 @@ fn tui_preferences_effect_at(
     host: PreferenceHost<'_>,
 ) -> Result<UiAction, CliError> {
     match effect {
-        PreferencesEffect::None | PreferencesEffect::Close | PreferencesEffect::ConfirmDiscard => {
-            Ok(UiAction::ClearStatus)
-        }
+        PreferencesEffect::None
+        | PreferencesEffect::Close
+        | PreferencesEffect::ConfirmDiscard
+        | PreferencesEffect::OpenRunnerEditor(_)
+        | PreferencesEffect::RunnerStaged { .. } => Ok(UiAction::ClearStatus),
         PreferencesEffect::Save(change) => {
             let requested_language = change.settings.get("lang").cloned();
             if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
@@ -9392,12 +9393,10 @@ fn tui_preferences_effect_at(
                     error,
                 )));
             }
-            if let Err(error) = FileConfigStore::new(config_dir).set_many(&change.settings) {
-                return Ok(UiAction::SetStatus(format_text(
-                    current_locale,
-                    "Error: {}",
-                    &[&error.message().localize(current_locale)],
-                )));
+            if let Some(refusal) =
+                tui_commit_preferences(service, config_dir, &change, current_locale)?
+            {
+                return Ok(refusal);
             }
             let locale = requested_language
                 .as_deref()
@@ -9408,11 +9407,6 @@ fn tui_preferences_effect_at(
                 message: text(locale, "Preferences saved").into_owned(),
             })
         }
-        PreferencesEffect::ManageAgents => Ok(UiAction::Present(tui_runners_screen_at(
-            service,
-            config_dir,
-            current_locale,
-        )?)),
         PreferencesEffect::DiscoverAgentSkillTargets => Ok(UiAction::Preferences(
             PreferencesAction::PresentAgentSkillTargets(detect_agent_targets(
                 &agent_roots,
@@ -9464,6 +9458,7 @@ fn preference_path_is_file(path: &Path, host: PreferenceHost<'_>) -> bool {
 fn validate_preference_files(settings: &BTreeMap<String, String>) -> Result<(), CliError> {
     PreferencesChangeSet {
         settings: settings.clone(),
+        runners: Vec::new(),
     }
     .validate_files(expanded_preference_path_is_file)
     .map_err(|error| CliError::Usage(error.message()))
@@ -9674,10 +9669,9 @@ fn tui_open_with_context(
             tui_settings_screen(service, store, config_dir, state_dir, &entry, None)
         }
         HostRequest::Preferences => Ok(Screen::Preferences(Box::new(
-            tui_preferences_view_with_context(config_dir, locale, editor_fallback)?,
+            tui_preferences_view_with_context(service, config_dir, locale, editor_fallback)?,
         ))),
         HostRequest::Health => tui_health_screen(service, store, config_dir, locale, probe),
-        HostRequest::Runners => tui_runners_screen_at(service, config_dir, locale),
         // Version 0.4 has no presets screen: `s` opens entry settings deep-linked to that section
         // (`src/skit/tui.py:991-992`). One screen means one place a preset is managed.
         HostRequest::Presets => {
@@ -9949,6 +9943,7 @@ fn refreshed_draft(data_dir: &Path, path: &Path) -> Result<DraftSummary, CliErro
 }
 
 fn tui_preferences_view_with_context(
+    service: &LibraryService<FileStore>,
     config_dir: &Path,
     locale: Locale,
     editor_fallback: Option<String>,
@@ -9981,11 +9976,9 @@ fn tui_preferences_view_with_context(
             _ => JavascriptChoice::Automatic,
         },
         bash_path: cfg!(target_os = "windows").then(|| setting("shell.bash_path")),
-        runner_names: config
-            .runners()?
-            .into_iter()
-            .map(|runner| runner.name)
-            .collect(),
+        // Opening Preferences must never write: `runner_rows` reports the virtual default rows,
+        // and the save transaction materializes them with byte-identical tables.
+        runners: tui_runner_rows_from(&config, service, locale)?,
         mirror: MirrorConfiguration {
             enabled: mirror.enabled,
             pypi: mirror.pypi,
@@ -10202,31 +10195,26 @@ fn health_size_text(size: u64) -> String {
     format!("{value:.1} GB")
 }
 
-fn tui_runners_screen_at(
-    service: &LibraryService<FileStore>,
-    config_dir: &Path,
-    locale: Locale,
-) -> Result<Screen, CliError> {
-    Ok(Screen::Runners(Box::new(RunnerManagerView::new(
-        tui_runner_rows_at(service, config_dir, locale)?,
-    ))))
-}
-
+/// Project the stored runner rows after the shipped defaults are materialized.
 #[cfg(test)]
 fn tui_runner_rows(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
 ) -> Result<Vec<RunnerRow>, CliError> {
-    tui_runner_rows_at(service, config_dir, active_locale())
-}
-
-fn tui_runner_rows_at(
-    service: &LibraryService<FileStore>,
-    config_dir: &Path,
-    locale: Locale,
-) -> Result<Vec<RunnerRow>, CliError> {
     let config = FileConfigStore::new(config_dir);
     config.ensure_runners_seeded()?;
+    tui_runner_rows_from(&config, service, active_locale())
+}
+
+/// Project the stored runner rows without materializing the shipped defaults.
+///
+/// A read never writes. `runner_rows` already reports the default rows with real indices and raw
+/// tables, so the save transaction can compare and swap them after it materializes them.
+fn tui_runner_rows_from(
+    config: &FileConfigStore,
+    service: &LibraryService<FileStore>,
+    locale: Locale,
+) -> Result<Vec<RunnerRow>, CliError> {
     let rows = config.runner_rows()?;
     let mut pinned = BTreeMap::<String, usize>::new();
     for summary in service
@@ -10285,16 +10273,14 @@ fn tui_runner_rows_at(
 
 #[cfg(test)]
 fn tui_save_runner(
-    service: &LibraryService<FileStore>,
     config_dir: &Path,
     request: RunnerSaveRequest,
     owner: RunnerSaveOwner,
 ) -> Result<UiAction, CliError> {
-    tui_save_runner_at(service, config_dir, request, owner, active_locale())
+    tui_save_runner_at(config_dir, request, owner, active_locale())
 }
 
 fn tui_save_runner_at(
-    service: &LibraryService<FileStore>,
     config_dir: &Path,
     request: RunnerSaveRequest,
     owner: RunnerSaveOwner,
@@ -10350,25 +10336,17 @@ fn tui_save_runner_at(
         template,
         &[&request.name, &runner_command_text(&request.argv)],
     );
-    Ok(match owner {
-        RunnerSaveOwner::Manager => UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            rows: tui_runner_rows_at(service, config_dir, locale)?,
-            selected_name: Some(request.name),
-            message,
-        }),
-        RunnerSaveOwner::Editor(owner) => UiAction::RunnerEditorSaved {
-            owner,
-            name: request.name,
-            message,
-        },
+    let RunnerSaveOwner::Editor(owner) = owner;
+    Ok(UiAction::RunnerEditorSaved {
+        owner,
+        name: request.name,
+        message,
     })
 }
 
 fn tui_runner_save_failure(owner: RunnerSaveOwner, message: String) -> UiAction {
-    match owner {
-        RunnerSaveOwner::Manager => UiAction::Runners(RunnerManagerAction::MutationFailed(message)),
-        RunnerSaveOwner::Editor(owner) => UiAction::RunnerEditorSaveFailed { owner, message },
-    }
+    let RunnerSaveOwner::Editor(owner) = owner;
+    UiAction::RunnerEditorSaveFailed { owner, message }
 }
 
 fn project_runner_save_result(
@@ -10393,110 +10371,118 @@ fn project_runner_save_result(
     }
 }
 
-fn project_named_runner_removal(
-    result: Result<RunnerRemovalCas, RunnerManagementStoreError>,
+/// Write the scalar settings, and every staged agent mutation, as one configuration transaction.
+///
+/// A clean Preferences save keeps the historical `set_many` path byte for byte. A staged agent
+/// list takes the runner transaction instead, so a stale row or pin count writes nothing at all.
+fn tui_commit_preferences(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    change: &PreferencesChangeSet,
+    locale: Locale,
+) -> Result<Option<UiAction>, CliError> {
+    if change.runners.is_empty() {
+        return Ok(
+            match FileConfigStore::new(config_dir).set_many(&change.settings) {
+                Ok(()) => None,
+                Err(error) => Some(UiAction::SetStatus(format_text(
+                    locale,
+                    "Error: {}",
+                    &[&error.message().localize(locale)],
+                ))),
+            },
+        );
+    }
+    let config = FileConfigStore::new(config_dir);
+    let current = config.runner_rows()?;
+    let Some(mutations) = runner_mutations(&current, &change.runners) else {
+        return Ok(Some(runners_changed_refusal()));
+    };
+    let management = FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
+    Ok(project_preferences_commit(
+        management.commit_preferences(&change.settings, &mutations),
+        locale,
+    ))
+}
+
+/// Project one transaction outcome into the typed refusal that Preferences shows.
+fn project_preferences_commit(
+    result: Result<PreferencesCommit, RunnerManagementStoreError>,
     locale: Locale,
 ) -> Option<UiAction> {
     let message = match result {
-        Ok(RunnerRemovalCas::Removed) => return None,
-        Ok(RunnerRemovalCas::RowsChanged) => text(
-            locale,
-            "The runner row changed before it could be removed; inspect again.",
-        )
-        .into_owned(),
-        Ok(RunnerRemovalCas::PinsChanged { .. }) => text(
-            locale,
-            "The prompt pins changed before the runner could be removed; inspect again.",
-        )
-        .into_owned(),
+        Ok(PreferencesCommit::Committed) => return None,
+        Ok(PreferencesCommit::RowsChanged) => return Some(runners_changed_refusal()),
+        Ok(PreferencesCommit::PinsChanged { name, actual }) => {
+            return Some(UiAction::Preferences(PreferencesAction::ValidationFailed(
+                PreferencesError::RunnerPinsChanged { name, actual },
+            )));
+        }
         Err(RunnerManagementStoreError::Library(error)) => error.message().localize(locale),
         Err(RunnerManagementStoreError::Config(error)) => error.message().localize(locale),
     };
-    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
-        message,
+    Some(UiAction::SetStatus(format_text(
+        locale,
+        "Error: {}",
+        &[&message],
     )))
 }
 
-fn project_raw_runner_removal(
-    result: Result<bool, ConfigError>,
-    locale: Locale,
-) -> Option<UiAction> {
-    let message = match result {
-        Ok(true) => return None,
-        Ok(false) => text(
-            locale,
-            "The runner row changed before it could be removed; inspect again.",
-        )
-        .into_owned(),
-        Err(error) => error.message().localize(locale),
-    };
-    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
-        message,
-    )))
+fn runners_changed_refusal() -> UiAction {
+    UiAction::Preferences(PreferencesAction::ValidationFailed(
+        PreferencesError::RunnersChanged,
+    ))
 }
 
-fn tui_remove_runner_at(
-    service: &LibraryService<FileStore>,
-    config_dir: &Path,
-    request: RunnerRemoveRequest,
-    locale: Locale,
-) -> Result<UiAction, CliError> {
-    let config = FileConfigStore::new(config_dir);
-    let current = config.runner_rows()?;
-    match &request {
-        RunnerRemoveRequest::Named {
-            name,
-            expected,
-            expected_pinned_count,
-        } => {
-            let Some(expected) = resolve_runner_rows(&current, expected) else {
-                return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    text(
-                        locale,
-                        "The runner row changed before it could be removed; inspect again.",
-                    )
-                    .into_owned(),
-                )));
-            };
-            let management =
-                FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
-            let result =
-                management.remove_named_if_unchanged(name, &expected, *expected_pinned_count);
-            if let Some(failure) = project_named_runner_removal(result, locale) {
-                return Ok(failure);
-            }
-            Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                rows: tui_runner_rows_at(service, config_dir, locale)?,
-                selected_name: None,
-                message: format_text(locale, "Runner {} removed.", &[name]),
-            }))
-        }
-        RunnerRemoveRequest::RawRow { expected } => {
-            let Some(row) = resolve_runner_row(&current, expected) else {
-                return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    text(
-                        locale,
-                        "The runner row changed before it could be removed; inspect again.",
-                    )
-                    .into_owned(),
-                )));
-            };
-            let message = row.index.map_or_else(
-                || text(locale, "Malformed prompt runner container removed.").into_owned(),
-                |index| format_text(locale, "Malformed runner row {} removed.", &[&index]),
-            );
-            let result = config.remove_runner_row_if_unchanged(row);
-            project_raw_runner_removal(result, locale).map_or_else(
-                || {
-                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                        rows: tui_runner_rows_at(service, config_dir, locale)?,
-                        selected_name: None,
-                        message,
-                    }))
-                },
-                Ok,
-            )
-        }
+/// Resolve every staged row identity against the current configuration read.
+///
+/// An identity that no longer resolves means the file changed, so the complete save is refused.
+fn runner_mutations(
+    current: &[skit_store::PromptRunnerRow],
+    changes: &[RunnerChange],
+) -> Option<Vec<RunnerMutation>> {
+    changes
+        .iter()
+        .map(|change| match change {
+            RunnerChange::Add { name, argv } => Some(RunnerMutation::Add {
+                runner: prompt_runner(name, argv),
+            }),
+            RunnerChange::ReplaceNamed {
+                name,
+                argv,
+                expected,
+            } => Some(RunnerMutation::ReplaceNamed {
+                runner: prompt_runner(name, argv),
+                expected: resolve_runner_rows(current, expected)?,
+            }),
+            RunnerChange::RepairRow {
+                name,
+                argv,
+                expected,
+            } => Some(RunnerMutation::RepairRow {
+                runner: prompt_runner(name, argv),
+                expected: resolve_runner_row(current, expected)?.clone(),
+            }),
+            RunnerChange::RemoveNamed {
+                name,
+                expected,
+                expected_pinned_count,
+            } => Some(RunnerMutation::RemoveNamed {
+                name: name.clone(),
+                expected: resolve_runner_rows(current, expected)?,
+                expected_pinned_count: *expected_pinned_count,
+            }),
+            RunnerChange::RemoveRow { expected } => Some(RunnerMutation::RemoveRow {
+                expected: resolve_runner_row(current, expected)?.clone(),
+            }),
+        })
+        .collect()
+}
+
+fn prompt_runner(name: &str, argv: &[String]) -> PromptRunner {
+    PromptRunner {
+        name: name.to_owned(),
+        argv: argv.to_vec(),
     }
 }
 
@@ -10787,6 +10773,7 @@ fn tui_submit_at(
                 .collect();
             PreferencesChangeSet {
                 settings: settings.clone(),
+                runners: Vec::new(),
             }
             .validate_files(|path| preference_path_is_file(path, preference_host))
             .map_err(|error| CliError::Usage(error.message()))?;

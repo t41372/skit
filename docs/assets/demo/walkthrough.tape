@@ -158,13 +158,6 @@ Escape
 Wait+Screen /banner/
 Sleep 2s
 
-Type "R"
-Wait+Screen /codex/
-Sleep 4s
-Escape
-Wait+Screen /banner/
-Sleep 2s
-
 # ---------------------------------------------------------------- 9. the add flow
 
 Type "a"

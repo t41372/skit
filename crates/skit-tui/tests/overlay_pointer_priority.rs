@@ -165,7 +165,7 @@ fn preferences() -> PreferencesView {
         after_run: AfterRunChoice::Exit,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names: Vec::new(),
+        runners: Vec::new(),
         mirror: MirrorConfiguration::default(),
     }))
 }

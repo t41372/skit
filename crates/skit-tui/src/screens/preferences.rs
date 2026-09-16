@@ -23,24 +23,31 @@ use ratatui_interact::{
 use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesField,
+    RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, runner_row_taken_by_its_key,
 };
+use skit_application::runner_management::{EditableArgvDialect, join_editable_argv};
 use skit_application::{AgentScope, AgentTarget};
 use skit_i18n::{Locale, Localize, format_text, text};
 use skit_ui::{
     ChoicePresentation, PreferencesAction, PreferencesControl, PreferencesControlId,
-    PreferencesControlKind, PreferencesDisplayText, PreferencesTextPlacement, PreferencesView,
+    PreferencesControlKind, PreferencesDisplayText, PreferencesRunnerListControl,
+    PreferencesTextPlacement, PreferencesView,
 };
 use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
+use unicode_segmentation::UnicodeSegmentation as _;
+
 use crate::{
-    ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit, ScreenTargetInventory,
+    RunnerChip, ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit,
+    ScreenTargetInventory,
     agent_review::{
         AgentReviewNode, AgentReviewSnapshotError, button as snapshot_button,
         focus as snapshot_focus, list_picker as snapshot_list_picker, node as snapshot_node,
         path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
         select as snapshot_select, value as snapshot_value,
     },
+    footer::ActionFooterStyle,
     pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
     rowclip::RowClip,
     session::{radio_option_width, render_line_input_band, render_radio_option, select_style},
@@ -131,7 +138,7 @@ mod agent_review_tests {
                     },
                 ),
                 (
-                    PreferencesControlId::ManageAgents,
+                    PreferencesControlId::NewRunner,
                     PreferencesControlShape::Button,
                 ),
             ])),
@@ -179,6 +186,20 @@ mod agent_review_tests {
                 option: 0,
             },
         );
+        session
+            .clicks
+            .register(Rect::new(3, 0, 1, 1), PreferencesHit::RunnerRow(0));
+        session.clicks.register(
+            Rect::new(4, 0, 1, 1),
+            PreferencesHit::RunnerChip {
+                index: 0,
+                chip: RunnerChip::Edit,
+            },
+        );
+        session.runner_row_areas.push((0, Rect::new(0, 3, 4, 1)));
+        session
+            .runner_chip_areas
+            .push((0, RunnerChip::Remove, Rect::new(2, 3, 2, 1)));
         session
             .agent_clicks
             .register(Rect::new(0, 1, 1, 1), AgentSkillHit::Target(0));
@@ -233,6 +254,10 @@ mod agent_review_tests {
             "dropdown",
             "dropdown_panel",
             "dropdown_regions",
+            "runner_row",
+            "runner_chip",
+            "runner_row_areas",
+            "runner_chip_areas",
             "agent_clicks",
             "agent_signature",
             "alignment",
@@ -254,11 +279,15 @@ enum PreferencesControlShape {
         presentation: ChoicePresentation,
     },
     Button,
+    RunnerList {
+        rows: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
 enum PreferencesWidget {
     Input(LineInput),
+    RunnerList(PreferencesRunnerListControl),
     Choice {
         state: SelectState,
         values: Vec<String>,
@@ -282,6 +311,13 @@ enum PreferencesHit {
     Dropdown {
         id: PreferencesControlId,
         option: usize,
+    },
+    /// One agent row, which the click moves the cursor to.
+    RunnerRow(usize),
+    /// One command chip of the agent-list cursor row.
+    RunnerChip {
+        index: usize,
+        chip: RunnerChip,
     },
 }
 
@@ -317,6 +353,8 @@ pub(crate) struct PreferencesWidgetSession {
     visible_height: usize,
     content_height: usize,
     control_areas: Vec<(PreferencesControlId, Rect)>,
+    runner_row_areas: Vec<(usize, Rect)>,
+    runner_chip_areas: Vec<(usize, RunnerChip, Rect)>,
     editables: HashMap<PreferencesControlId, EditableGeometry>,
     clicks: ClickRegionRegistry<PreferencesHit>,
     click: ClickTracker<PreferencesHit>,
@@ -406,22 +444,68 @@ impl PreferencesWidgetSession {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let hits = self
+        let visible = |rect: &Rect| {
+            !rect.is_empty()
+                && dropdowns
+                    .iter()
+                    .all(|dropdown| rect.intersection(*dropdown).is_empty())
+        };
+        let rows = view.draft().runner_rows();
+        let mut hits = self
             .control_areas
             .iter()
-            .filter(|(_, rect)| {
-                !rect.is_empty()
-                    && dropdowns
-                        .iter()
-                        .all(|dropdown| rect.intersection(*dropdown).is_empty())
-            })
+            // The agent list publishes one target per row, so the list rect is not a target.
+            .filter(|(id, rect)| *id != PreferencesControlId::Runners && visible(rect))
             .map(|(id, rect)| ScreenTargetHit {
                 target: ScreenTarget::Preferences(*id),
                 rect: *rect,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        for (index, rect) in self
+            .runner_row_areas
+            .iter()
+            .filter(|(_, rect)| visible(rect))
+        {
+            hits.push(ScreenTargetHit {
+                target: runner_row_target(rows, *index)?,
+                rect: *rect,
+            });
+        }
+        for (index, chip, rect) in self
+            .runner_chip_areas
+            .iter()
+            .filter(|(_, _, rect)| visible(rect))
+        {
+            hits.push(ScreenTargetHit {
+                target: ScreenTarget::RunnerChip {
+                    row: *index,
+                    chip: *chip,
+                },
+                rect: *rect,
+            });
+        }
+        let mut available = order.clone();
+        available.extend(
+            (0..rows.len())
+                .map(|index| runner_row_target(rows, index))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        // Only the focused list paints chips, so only it advertises them.
+        if view.focused() == PreferencesControlId::Runners {
+            let cursor = view.runner_cursor();
+            available.extend(
+                rows.get(cursor)
+                    .map(|row| runner_row_chips(row, runner_row_taken_by_its_key(rows, cursor)))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|chip| ScreenTarget::RunnerChip {
+                        row: cursor,
+                        chip: chip.chip,
+                    }),
+            );
+        }
         Ok(ScreenTargetInventory {
-            available: order.clone(),
+            available,
             focus: Some(ScreenFocusInventory { current, order }),
             hits,
         })
@@ -453,6 +537,8 @@ impl PreferencesWidgetSession {
             visible_height,
             content_height,
             control_areas,
+            runner_row_areas,
+            runner_chip_areas,
             editables,
             clicks,
             click,
@@ -525,6 +611,10 @@ impl PreferencesWidgetSession {
                     PreferencesWidget::Button(state) => serde_json::json!({
                         "kind": "button",
                         "state": snapshot_button(state),
+                    }),
+                    PreferencesWidget::RunnerList(list) => serde_json::json!({
+                        "kind": "runner_list",
+                        "state": snapshot_value("preferences.widget.runner_list", list)?,
                     }),
                 };
                 Ok((
@@ -606,6 +696,10 @@ impl PreferencesWidgetSession {
             .iter()
             .map(|(index, area)| serde_json::json!({"index": index, "area": snapshot_rect(*area)}))
             .collect::<Vec<_>>();
+        let runner_row_areas = runner_row_areas
+            .iter()
+            .map(|(index, area)| serde_json::json!({"index": index, "area": snapshot_rect(*area)}))
+            .collect::<Vec<_>>();
         Ok(snapshot_node(
             "preferences",
             [
@@ -624,6 +718,11 @@ impl PreferencesWidgetSession {
                 ("visible_height", serde_json::json!(visible_height)),
                 ("content_height", serde_json::json!(content_height)),
                 ("control_areas", serde_json::json!(control_areas)),
+                ("runner_row_areas", serde_json::json!(runner_row_areas)),
+                (
+                    "runner_chip_areas",
+                    runner_chip_areas_snapshot(runner_chip_areas)?,
+                ),
                 ("editables", serde_json::json!(editables)),
                 ("clicks", preferences_clicks_snapshot(clicks)?),
                 ("click", click),
@@ -656,14 +755,7 @@ impl PreferencesWidgetSession {
     pub(crate) fn focused_owns_vertical_navigation(&self, view: &PreferencesView) -> bool {
         matches!(
             self.widgets.get(&view.focused()),
-            Some(PreferencesWidget::Choice { .. })
-        )
-    }
-
-    pub(crate) fn focused_is_input(&self, view: &PreferencesView) -> bool {
-        matches!(
-            self.widgets.get(&view.focused()),
-            Some(PreferencesWidget::Input(_))
+            Some(PreferencesWidget::Choice { .. } | PreferencesWidget::RunnerList(_))
         )
     }
 
@@ -690,6 +782,8 @@ impl PreferencesWidgetSession {
         self.clicks.clear();
         self.editables.clear();
         self.control_areas.clear();
+        self.runner_row_areas.clear();
+        self.runner_chip_areas.clear();
         for widget in self.widgets.values_mut() {
             if let PreferencesWidget::Choice {
                 presentation: ChoicePresentation::Picker,
@@ -889,7 +983,9 @@ impl PreferencesWidgetSession {
                             state.close();
                             values.get(option)
                         }
-                        PreferencesWidget::Input(_) | PreferencesWidget::Button(_) => None,
+                        PreferencesWidget::Input(_)
+                        | PreferencesWidget::Button(_)
+                        | PreferencesWidget::RunnerList(_) => None,
                     })
                     .map_or(PreferencesEventHandling::Consumed, |value| {
                         choice_action(id, value)
@@ -932,24 +1028,6 @@ impl PreferencesWidgetSession {
                 let _ = handle_scrollable_content_key(&mut self.scroll, &key, self.visible_height);
                 return PreferencesEventHandling::Consumed;
             }
-            (KeyCode::Char('o'), modifiers)
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    && !matches!(
-                        self.widgets.get(&focused),
-                        Some(PreferencesWidget::Input(_))
-                    ) =>
-            {
-                return PreferencesEventHandling::Action(PreferencesAction::ManageAgents);
-            }
-            (KeyCode::Char('k'), modifiers)
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    && !matches!(
-                        self.widgets.get(&focused),
-                        Some(PreferencesWidget::Input(_))
-                    ) =>
-            {
-                return PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill);
-            }
             _ => {}
         }
 
@@ -991,6 +1069,11 @@ impl PreferencesWidgetSession {
                 if matches!(key.code, KeyCode::Down | KeyCode::Up) =>
             {
                 return self.move_focus(key.code == KeyCode::Down);
+            }
+            Some(PreferencesWidget::RunnerList(_)) => {
+                if let Some(action) = runner_list_action(key.code) {
+                    return PreferencesEventHandling::Action(action);
+                }
             }
             Some(PreferencesWidget::Choice { .. })
             | Some(PreferencesWidget::Button(_))
@@ -1399,6 +1482,20 @@ impl PreferencesWidgetSession {
                 );
                 state.ensure_visible(1);
             }
+            PreferencesWidget::RunnerList(list) => {
+                render_runner_list(
+                    frame,
+                    clip,
+                    list,
+                    focused,
+                    locale,
+                    &mut RunnerListTargets {
+                        clicks: &mut self.clicks,
+                        rows: &mut self.runner_row_areas,
+                        chips: &mut self.runner_chip_areas,
+                    },
+                );
+            }
             PreferencesWidget::Button(state) => {
                 if focused {
                     paint_focus_marker(frame, area);
@@ -1536,19 +1633,31 @@ impl PreferencesWidgetSession {
                     presentation: ChoicePresentation::Radio,
                     ..
                 }) => PreferencesEventHandling::Action(PreferencesAction::Focus(id)),
-                None => PreferencesEventHandling::Ignored,
+                // The agent list registers one target per row, so no click names the list itself.
+                Some(PreferencesWidget::RunnerList(_)) | None => PreferencesEventHandling::Ignored,
             },
             PreferencesHit::Radio { id, option } => self
                 .widgets
                 .get(&id)
                 .and_then(|widget| match widget {
                     PreferencesWidget::Choice { values, .. } => values.get(option),
-                    PreferencesWidget::Input(_) | PreferencesWidget::Button(_) => None,
+                    PreferencesWidget::Input(_)
+                    | PreferencesWidget::Button(_)
+                    | PreferencesWidget::RunnerList(_) => None,
                 })
                 .map_or(PreferencesEventHandling::Ignored, |value| {
                     choice_action(id, value)
                 }),
             PreferencesHit::Dropdown { .. } => PreferencesEventHandling::Consumed,
+            PreferencesHit::RunnerRow(index) => {
+                PreferencesEventHandling::Action(PreferencesAction::RunnerCursor(index))
+            }
+            PreferencesHit::RunnerChip { chip, .. } => {
+                PreferencesEventHandling::Action(match chip {
+                    RunnerChip::Edit => PreferencesAction::EditRunner,
+                    RunnerChip::Remove => PreferencesAction::ToggleRunnerRemoval,
+                })
+            }
         }
     }
 
@@ -1651,6 +1760,9 @@ fn preferences_signature_snapshot(
                     })
                 }
                 PreferencesControlShape::Button => serde_json::json!("button"),
+                PreferencesControlShape::RunnerList { rows } => {
+                    serde_json::json!({ "runner_list": { "rows": rows } })
+                }
             };
             Ok(serde_json::json!({
                 "id": snapshot_value("preferences.signature.id", id)?,
@@ -1680,7 +1792,30 @@ fn preferences_hit_snapshot(
                 "option": option,
             }
         })),
+        PreferencesHit::RunnerRow(index) => Ok(serde_json::json!({ "runner_row": index })),
+        PreferencesHit::RunnerChip { index, chip } => Ok(serde_json::json!({
+            "runner_chip": {
+                "index": index,
+                "chip": snapshot_value("preferences.hit.runner_chip.chip", chip)?,
+            }
+        })),
     }
+}
+
+fn runner_chip_areas_snapshot(
+    areas: &[(usize, RunnerChip, Rect)],
+) -> Result<serde_json::Value, AgentReviewSnapshotError> {
+    areas
+        .iter()
+        .map(|(index, chip, area)| {
+            Ok(serde_json::json!({
+                "index": index,
+                "chip": snapshot_value("preferences.runner_chip_area.chip", chip)?,
+                "area": snapshot_rect(*area),
+            }))
+        })
+        .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()
+        .map(serde_json::Value::Array)
 }
 
 fn preferences_clicks_snapshot(
@@ -1842,6 +1977,514 @@ fn focus_marker_row(
         .or_else(|| clip.rows().next().map(|(_, row)| row))
 }
 
+/// Return the walker target of one agent row.
+fn runner_row_target(
+    rows: &[RunnerDraftRow],
+    index: usize,
+) -> Result<ScreenTarget, ScreenTargetError> {
+    let row = rows.get(index).ok_or(ScreenTargetError::StaleSession)?;
+    Ok(ScreenTarget::Runner {
+        row: index,
+        name: row.name().map(str::to_owned),
+    })
+}
+
+/// Cells between two neighbouring command chips of one agent row.
+const RUNNER_CHIP_GAP: u16 = 1;
+
+/// The cells one agent row keeps for its own text: a name column, a command column, and one
+/// separator each. A row with fewer cells beside its chips is too short to hold them.
+const RUNNER_ROW_MINIMUM_CELLS: u16 = 18;
+
+/// The cells one agent row keeps for its own name beside a staging note.
+const RUNNER_ROW_NAME_CELLS: usize = 6;
+
+/// The cells between the text of one agent row and its staging note.
+const RUNNER_NOTE_GAP: usize = 2;
+
+/// One painted source row of the agent list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunnerListRow {
+    /// One staged draft row.
+    Row(usize),
+    /// One line of the command chips of one draft row.
+    Chips(usize, usize),
+}
+
+/// One command the agent-list cursor row offers.
+#[derive(Clone, Copy, Debug)]
+struct RunnerRowChip {
+    chip: RunnerChip,
+    key: &'static str,
+    label: &'static str,
+}
+
+/// The click and walker targets one painted agent list publishes.
+struct RunnerListTargets<'a> {
+    clicks: &'a mut ClickRegionRegistry<PreferencesHit>,
+    rows: &'a mut Vec<(usize, Rect)>,
+    chips: &'a mut Vec<(usize, RunnerChip, Rect)>,
+}
+
+/// Return the commands of one agent row in paint order.
+///
+/// Every key the row accepts has a chip, so a pointer user needs no key and a keyboard user needs
+/// no memory. A row that no editor can open offers the removal alone.
+fn runner_row_chips(row: &RunnerDraftRow, taken: bool) -> Vec<RunnerRowChip> {
+    // The change on the key already takes this row, so the row commands nothing of its own.
+    if taken {
+        return Vec::new();
+    }
+    let mut chips = Vec::with_capacity(2);
+    if row.is_editable() {
+        chips.push(RunnerRowChip {
+            chip: RunnerChip::Edit,
+            key: "Enter",
+            label: "Edit",
+        });
+    }
+    chips.push(RunnerRowChip {
+        chip: RunnerChip::Remove,
+        key: "Del",
+        label: if row.is_removed() {
+            "Restore"
+        } else {
+            "Remove"
+        },
+    });
+    chips
+}
+
+/// Return the painted width of one command chip.
+fn runner_chip_width(chip: &RunnerRowChip, locale: Locale) -> u16 {
+    u16::try_from(
+        chip.key
+            .width()
+            .saturating_add(text(locale, chip.label).as_ref().width())
+            .saturating_add(3),
+    )
+    .unwrap_or(u16::MAX)
+}
+
+/// Return the cells every command chip of one row takes together.
+fn runner_chips_width(chips: &[RunnerRowChip], locale: Locale) -> u16 {
+    chips
+        .iter()
+        .map(|chip| runner_chip_width(chip, locale))
+        .reduce(|total, width| total.saturating_add(RUNNER_CHIP_GAP).saturating_add(width))
+        .unwrap_or_default()
+}
+
+/// Place the command chips of one row: beside it while they fit, and on lines below otherwise.
+///
+/// The chips keep the row when the row can still hold a name column, a command column, one
+/// separator each, and the staging marker the row carries. A row too short for all of them moves
+/// its chips below, where they take as many lines as they need: a chip names the key it answers,
+/// so a dropped chip would take the mouse path to that key away. The test is the fit, not the
+/// terminal tier, so every row wide enough keeps its commands in place.
+fn runner_chip_placement(
+    width: u16,
+    row: &RunnerDraftRow,
+    taken: bool,
+    locale: Locale,
+) -> RunnerChipPlacement {
+    let chips = runner_row_chips(row, taken);
+    let band = width.saturating_sub(FOCUS_GUTTER_CELLS);
+    if band
+        >= RUNNER_ROW_MINIMUM_CELLS
+            .saturating_add(runner_chips_width(&chips, locale))
+            .saturating_add(runner_marker_cells(row, taken, locale))
+    {
+        return RunnerChipPlacement::Inline(chips);
+    }
+    RunnerChipPlacement::Below(runner_chip_lines(&chips, band, locale))
+}
+
+/// Where the command chips of one agent row go.
+#[derive(Debug)]
+enum RunnerChipPlacement {
+    /// Beside the text of the row, in paint order.
+    Inline(Vec<RunnerRowChip>),
+    /// On lines of their own. No line means the band holds no complete chip.
+    Below(Vec<Vec<RunnerRowChip>>),
+}
+
+impl RunnerChipPlacement {
+    /// Return the lines the chips take below their row, and zero while they sit beside it.
+    fn below_lines(&self) -> usize {
+        match self {
+            Self::Inline(_) => 0,
+            Self::Below(lines) => lines.len(),
+        }
+    }
+}
+
+/// Place the command chips of the cursor row of one focused agent list.
+///
+/// Only the cursor row of the focused list carries chips, so the layout and the paint each place
+/// them once and share the result.
+fn runner_cursor_placement(
+    list: &PreferencesRunnerListControl,
+    focused: bool,
+    width: u16,
+    locale: Locale,
+) -> Option<RunnerChipPlacement> {
+    let row = focused.then(|| list.rows.get(list.cursor)).flatten()?;
+    Some(runner_chip_placement(
+        width,
+        row,
+        runner_row_taken_by_its_key(&list.rows, list.cursor),
+        locale,
+    ))
+}
+
+/// Pack the command chips of one row into the lines one band can hold.
+///
+/// Only a chip wider than a line of its own has nowhere to go.
+fn runner_chip_lines(
+    chips: &[RunnerRowChip],
+    width: u16,
+    locale: Locale,
+) -> Vec<Vec<RunnerRowChip>> {
+    let mut lines: Vec<Vec<RunnerRowChip>> = Vec::new();
+    let mut used = 0_u16;
+    for chip in chips {
+        let cells = runner_chip_width(chip, locale);
+        if cells > width {
+            continue;
+        }
+        let next = used.saturating_add(RUNNER_CHIP_GAP).saturating_add(cells);
+        match lines.last_mut() {
+            Some(line) if next <= width => {
+                line.push(*chip);
+                used = next;
+            }
+            _ => {
+                lines.push(vec![*chip]);
+                used = cells;
+            }
+        }
+    }
+    lines
+}
+
+/// Return the cells the staging marker of one row keeps at the right end, with its separator.
+fn runner_marker_cells(row: &RunnerDraftRow, taken: bool, locale: Locale) -> u16 {
+    runner_row_notes(row, taken, locale)
+        .last()
+        .map_or(0, |marker| {
+            u16::try_from(marker.width().saturating_add(RUNNER_NOTE_GAP)).unwrap_or(u16::MAX)
+        })
+}
+
+/// Place every source row of one agent list, with `below` chip lines under the cursor row.
+///
+/// The layout and the paint both use this function, so a row count and a painted row always agree.
+fn runner_list_rows(list: &PreferencesRunnerListControl, below: usize) -> Vec<RunnerListRow> {
+    let mut rows = Vec::with_capacity(list.rows.len().saturating_add(below));
+    for index in 0..list.rows.len() {
+        rows.push(RunnerListRow::Row(index));
+        if index == list.cursor {
+            rows.extend((0..below).map(|line| RunnerListRow::Chips(index, line)));
+        }
+    }
+    rows
+}
+
+/// Paint one agent row for every staged draft row, with the commands of the cursor row.
+///
+/// Every key the list accepts is one typed reducer action, so the row itself carries no state.
+/// The focus marker follows the cursor row, and keeps the first visible row when a scroll moved
+/// that row off screen. This is the rule every radio band follows.
+fn render_runner_list(
+    frame: &mut Frame,
+    clip: RowClip,
+    list: &PreferencesRunnerListControl,
+    focused: bool,
+    locale: Locale,
+    targets: &mut RunnerListTargets<'_>,
+) {
+    let placement = runner_cursor_placement(list, focused, clip.area().width, locale);
+    let sources = runner_list_rows(
+        list,
+        placement
+            .as_ref()
+            .map_or(0, RunnerChipPlacement::below_lines),
+    );
+    if focused
+        && let Some(marker) = sources
+            .iter()
+            .position(|source| *source == RunnerListRow::Row(list.cursor))
+            .and_then(|source| clip.row(source))
+            .or_else(|| clip.rows().next().map(|(_, row)| row))
+    {
+        paint_focus_marker(frame, marker);
+    }
+    for (source, painted) in sources.iter().enumerate() {
+        let Some(row_area) = clip.row(source) else {
+            continue;
+        };
+        let (RunnerListRow::Row(index) | RunnerListRow::Chips(index, _)) = *painted;
+        let row = &list.rows[index];
+        let taken = runner_row_taken_by_its_key(&list.rows, index);
+        let band = options_band(row_area);
+        let mut content = band;
+        if let Some(placement) = placement.as_ref().filter(|_| index == list.cursor) {
+            let painted_chips: &[RunnerRowChip] = match (painted, placement) {
+                (RunnerListRow::Chips(_, line), RunnerChipPlacement::Below(lines)) => {
+                    lines.get(*line).map_or(&[], Vec::as_slice)
+                }
+                (RunnerListRow::Row(_), RunnerChipPlacement::Inline(chips)) => {
+                    content.width = content
+                        .width
+                        .saturating_sub(runner_chips_width(chips, locale));
+                    chips
+                }
+                // The layout plans a chip line only below a row whose chips moved there.
+                _ => &[],
+            };
+            if !painted_chips.is_empty() {
+                paint_runner_chips(frame, band, index, painted_chips, locale, targets);
+            }
+        }
+        // A click anywhere on the row, its gutter, or its chip line moves the cursor to it. The
+        // walker addresses one rectangle per draft row, so only the row itself is a target.
+        targets
+            .clicks
+            .register(row_area, PreferencesHit::RunnerRow(index));
+        if matches!(painted, RunnerListRow::Row(_)) {
+            frame.render_widget(
+                Paragraph::new(Line::from(runner_row_spans(
+                    row,
+                    taken,
+                    locale,
+                    content.width,
+                ))),
+                content,
+            );
+            targets.rows.push((index, row_area));
+        }
+    }
+}
+
+/// Paint the command chips of one agent row at the right end of `band`.
+fn paint_runner_chips(
+    frame: &mut Frame,
+    band: Rect,
+    index: usize,
+    chips: &[RunnerRowChip],
+    locale: Locale,
+    targets: &mut RunnerListTargets<'_>,
+) {
+    let total = runner_chips_width(chips, locale);
+    let mut x = band.x.saturating_add(band.width.saturating_sub(total));
+    let style = ActionFooterStyle::default().button();
+    for chip in chips {
+        let width = runner_chip_width(chip, locale);
+        let label = text(locale, chip.label);
+        let region = Button::new(label.as_ref(), &ButtonState::enabled())
+            .icon(chip.key)
+            .variant(ButtonVariant::SingleLine)
+            .style(style.clone())
+            .render_stateful(Rect::new(x, band.y, width, 1), frame.buffer_mut());
+        targets.clicks.register(
+            region.area,
+            PreferencesHit::RunnerChip {
+                index,
+                chip: chip.chip,
+            },
+        );
+        targets.chips.push((index, chip.chip, region.area));
+        x = x.saturating_add(width).saturating_add(RUNNER_CHIP_GAP);
+    }
+}
+
+/// Build the complete text of one agent row inside `width` cells.
+///
+/// The name keeps its cells first, the staging note keeps the right end, and the command column
+/// takes what is left with an ellipsis. A note that leaves no room for a name is dropped.
+fn runner_row_spans(
+    row: &RunnerDraftRow,
+    taken: bool,
+    locale: Locale,
+    width: u16,
+) -> Vec<Span<'static>> {
+    let cells = usize::from(width);
+    // The notes come widest first, so a row too short for the prompt count still keeps the marker
+    // that says what the save does to the row.
+    let (note, reserved) = runner_row_notes(row, taken, locale)
+        .into_iter()
+        .find(|note| note.width().saturating_add(RUNNER_ROW_NAME_CELLS) <= cells)
+        .map_or_else(
+            || (String::new(), 0),
+            |note| {
+                let reserved = note.width().saturating_add(RUNNER_NOTE_GAP);
+                (note, reserved)
+            },
+        );
+    let body = cells.saturating_sub(reserved);
+    let label = clip_cells(&runner_row_label(row), body);
+    let mut used = label.width();
+    let mut spans = vec![Span::styled(label, Style::default().fg(Color::White))];
+    for (value, color) in [
+        (
+            row.argv().map_or_else(String::new, |argv| {
+                join_editable_argv(argv, EditableArgvDialect::host())
+            }),
+            Color::DarkGray,
+        ),
+        (runner_row_reason(row, locale), Color::Red),
+    ] {
+        let room = body.saturating_sub(used).saturating_sub(2);
+        if value.is_empty() || room == 0 {
+            continue;
+        }
+        let shown = clip_cells(&value, room);
+        used = used.saturating_add(shown.width()).saturating_add(2);
+        spans.push(Span::styled(
+            format!("  {shown}"),
+            Style::default().fg(color),
+        ));
+    }
+    if reserved > 0 {
+        let pad = cells.saturating_sub(used).saturating_sub(note.width());
+        spans.push(Span::styled(
+            format!("{}{note}", " ".repeat(pad)),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans
+}
+
+/// Return the staging notes of one agent row, widest first.
+///
+/// The prompts a removal strands are an extra on the staging marker. A row with room for one note
+/// only keeps the marker, because the marker says what the save does to the row.
+fn runner_row_notes(row: &RunnerDraftRow, taken: bool, locale: Locale) -> Vec<String> {
+    // The save takes this row with the key it repeats, whatever the row itself carries.
+    let marker = if taken {
+        Some(RunnerDraftMarker::Removed)
+    } else {
+        row.marker()
+    };
+    let Some(marker) = marker else {
+        return Vec::new();
+    };
+    let marker = text(locale, runner_marker_key(marker)).into_owned();
+    let pinned = match row {
+        RunnerDraftRow::Existing { row: stored, .. } if row.is_removed() => stored.pinned_count,
+        RunnerDraftRow::Existing { .. } | RunnerDraftRow::Added { .. } => 0,
+    };
+
+    if pinned == 0 {
+        return vec![marker];
+    }
+    vec![
+        format!("{marker} · {}", runner_pin_note(pinned, locale)),
+        marker,
+    ]
+}
+
+/// Return the note that counts the prompts one staged removal leaves without an agent.
+fn runner_pin_note(pinned: usize, locale: Locale) -> String {
+    let template = if pinned == 1 {
+        "{} prompt pins this runner and will need another runner before it can run again."
+    } else {
+        "{} prompts pin this runner and will need another runner before they can run again."
+    };
+    format_text(locale, template, &[&pinned])
+}
+
+/// Return the localized reason of one malformed row that keeps its stored shape.
+fn runner_row_reason(row: &RunnerDraftRow, locale: Locale) -> String {
+    match row {
+        RunnerDraftRow::Existing { row: stored, state } => stored
+            .reason
+            .as_deref()
+            .filter(|_| !matches!(state, RunnerDraftState::Edited(_)))
+            .map_or_else(String::new, |code| runner_reason(code, locale)),
+        RunnerDraftRow::Added { .. } => String::new(),
+    }
+}
+
+/// Return `value` inside `cells` display columns, with `…` when it loses content.
+fn clip_cells(value: &str, cells: usize) -> String {
+    if value.width() <= cells {
+        return value.to_owned();
+    }
+    let mut shown = String::new();
+    let mut used = 0_usize;
+    for grapheme in value.graphemes(true) {
+        let next = used.saturating_add(grapheme.width());
+        if next > cells.saturating_sub(1) {
+            break;
+        }
+        shown.push_str(grapheme);
+        used = next;
+    }
+    if cells > 0 {
+        shown.push('…');
+    }
+    shown
+}
+
+/// Return the localized text of one malformed-row reason code.
+pub(crate) fn runner_reason(code: &str, locale: Locale) -> String {
+    let message = match code {
+        "prompt-section-not-table" => {
+            "the prompt value is not a table; repair it before runner management"
+        }
+        "runners-not-list" => {
+            "the prompt.runners value is not a list; repair it before runner management"
+        }
+        "empty" => "Type the agent's command, e.g. mycli run {{prompt}}",
+        "prompt-slot-count" => {
+            "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."
+        }
+        "prompt-in-binary" => {
+            "{{prompt}} can't be the command itself — the first word must be the program to run."
+        }
+        "stray-hole" => {
+            "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."
+        }
+        "name" => "A name is required.",
+        "argv-type" => "The command must be a list of text arguments.",
+        "row-not-table" => "This runner row isn't a table.",
+        "duplicate" => "Another row already uses this runner name.",
+        _ => "This runner row is malformed.",
+    };
+    text(locale, message).into_owned()
+}
+
+/// Return the stable row label: the agent name, or the raw shape of a malformed row.
+fn runner_row_label(row: &RunnerDraftRow) -> String {
+    match row {
+        RunnerDraftRow::Existing { row: stored, .. } => row
+            .name()
+            .map_or_else(|| format!("⚠ {}", stored.descriptor), str::to_owned),
+        RunnerDraftRow::Added { name, .. } => name.clone(),
+    }
+}
+
+const fn runner_marker_key(marker: RunnerDraftMarker) -> &'static str {
+    match marker {
+        RunnerDraftMarker::Added => "Added",
+        RunnerDraftMarker::Edited => "Edited",
+        RunnerDraftMarker::Removed => "Will be removed",
+    }
+}
+
+/// Map one key on the focused agent list to its typed reducer action.
+fn runner_list_action(code: KeyCode) -> Option<PreferencesAction> {
+    match code {
+        KeyCode::Up => Some(PreferencesAction::RunnerCursorPrevious),
+        KeyCode::Down => Some(PreferencesAction::RunnerCursorNext),
+        KeyCode::Enter => Some(PreferencesAction::EditRunner),
+        KeyCode::Delete | KeyCode::Backspace => Some(PreferencesAction::ToggleRunnerRemoval),
+        _ => None,
+    }
+}
+
 /// Return the cells of one control row that hold content instead of the focus marker.
 fn options_band(row: Rect) -> Rect {
     Rect::new(
@@ -1904,27 +2547,25 @@ fn layout_items(view: &PreferencesView, locale: Locale, width: u16) -> Vec<Posit
             }
         }
         for control in section.controls {
-            let height = control_height(&control, locale, width);
+            let height = control_height(&control, locale, width, view.focused() == control.id);
             push_item(
                 &mut positioned,
                 &mut start,
                 RenderItem::Control(control),
                 height,
             );
-            if view.error().is_some() && positioned.last().is_some_and(|item| {
-                matches!(&item.item, RenderItem::Control(control) if control.id == view.focused())
-            }) {
+            if view.error().is_some()
+                && positioned.last().is_some_and(|item| {
+                    matches!(&item.item, RenderItem::Control(control)
+                        if Some(control.id) == view.error_control())
+                })
+            {
                 let error = view
                     .error()
                     .expect("validation error was checked")
                     .message()
                     .localize(locale);
-                push_item(
-                    &mut positioned,
-                    &mut start,
-                    RenderItem::Copy(error),
-                    1,
-                );
+                push_item(&mut positioned, &mut start, RenderItem::Copy(error), 1);
             }
         }
         if section.status_placement == PreferencesTextPlacement::AfterControls {
@@ -1971,7 +2612,12 @@ fn push_item(
     *start = start.saturating_add(height);
 }
 
-fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> usize {
+fn control_height(
+    control: &PreferencesControl,
+    locale: Locale,
+    width: u16,
+    focused: bool,
+) -> usize {
     match &control.kind {
         PreferencesControlKind::Text(_) => 3,
         PreferencesControlKind::Choice(choice)
@@ -1995,6 +2641,12 @@ fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> u
             usize::from(!control.label.is_empty()).saturating_add(rows)
         }
         PreferencesControlKind::Button => 1,
+        // The reducer omits the list when the draft has no rows, so the list is never empty.
+        PreferencesControlKind::RunnerList(list) => list.rows.len().saturating_add(
+            runner_cursor_placement(list, focused, width, locale)
+                .as_ref()
+                .map_or(0, RunnerChipPlacement::below_lines),
+        ),
     }
 }
 
@@ -2071,6 +2723,9 @@ fn control_shape(control: &PreferencesControl) -> PreferencesControlShape {
             presentation: choice.presentation,
         },
         PreferencesControlKind::Button => PreferencesControlShape::Button,
+        PreferencesControlKind::RunnerList(list) => PreferencesControlShape::RunnerList {
+            rows: list.rows.len(),
+        },
     }
 }
 
@@ -2111,6 +2766,7 @@ fn widget(control: &PreferencesControl, locale: Locale) -> PreferencesWidget {
             }
         }
         PreferencesControlKind::Button => PreferencesWidget::Button(ButtonState::enabled()),
+        PreferencesControlKind::RunnerList(list) => PreferencesWidget::RunnerList(list.clone()),
     }
 }
 
@@ -2147,9 +2803,13 @@ fn sync_widget(widget: &mut PreferencesWidget, control: &PreferencesControl, loc
                 .map(|option| text(locale, &option.label).into_owned())
                 .collect();
         }
+        (PreferencesWidget::RunnerList(state), PreferencesControlKind::RunnerList(list)) => {
+            *state = list.clone();
+        }
         (PreferencesWidget::Input(_), _)
         | (PreferencesWidget::Choice { .. }, _)
-        | (PreferencesWidget::Button(_), _) => {}
+        | (PreferencesWidget::Button(_), _)
+        | (PreferencesWidget::RunnerList(_), _) => {}
     }
 }
 
@@ -2167,6 +2827,7 @@ fn set_widget_focus(widget: &mut PreferencesWidget, focused: bool) {
             }
         }
         PreferencesWidget::Button(state) => state.set_focused(focused),
+        PreferencesWidget::RunnerList(_) => {}
     }
 }
 
@@ -2190,7 +2851,8 @@ fn input_action(id: PreferencesControlId, value: String) -> PreferencesEventHand
         | PreferencesControlId::InteractiveForm
         | PreferencesControlId::AfterRun
         | PreferencesControlId::Javascript
-        | PreferencesControlId::ManageAgents
+        | PreferencesControlId::Runners
+        | PreferencesControlId::NewRunner
         | PreferencesControlId::InstallAgentSkill
         | PreferencesControlId::MirrorMaster
         | PreferencesControlId::PypiChoice
@@ -2236,7 +2898,8 @@ fn choice_action(id: PreferencesControlId, value: &str) -> PreferencesEventHandl
         },
         PreferencesControlId::Editor
         | PreferencesControlId::BashPath
-        | PreferencesControlId::ManageAgents
+        | PreferencesControlId::Runners
+        | PreferencesControlId::NewRunner
         | PreferencesControlId::InstallAgentSkill
         | PreferencesControlId::PypiUrl
         | PreferencesControlId::GithubUrl
@@ -2255,8 +2918,8 @@ fn mirror_choice(value: &str) -> MirrorChoice {
 
 fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
     match id {
-        PreferencesControlId::ManageAgents => {
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        PreferencesControlId::NewRunner => {
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
         }
         PreferencesControlId::InstallAgentSkill => {
             PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
@@ -2267,6 +2930,7 @@ fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
         | PreferencesControlId::AfterRun
         | PreferencesControlId::Javascript
         | PreferencesControlId::BashPath
+        | PreferencesControlId::Runners
         | PreferencesControlId::MirrorMaster
         | PreferencesControlId::PypiChoice
         | PreferencesControlId::PypiUrl
@@ -2312,6 +2976,37 @@ mod tests {
     }
     use crate::theme::{ACCENT, BOX_INDIGO, SELECT_BG};
 
+    /// Return the editable command one argv gets on this host, with both dialects pinned.
+    ///
+    /// The agent list paints its command column through [`EditableArgvDialect::host()`], so the
+    /// quoting follows the platform. The two assertions keep the POSIX text and the Windows text
+    /// of the same argv under test on every host, and the return value is what this host paints.
+    fn host_editable_command(argv: &[&str], posix: &str, windows: &str) -> String {
+        let argv: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+        assert_eq!(join_editable_argv(&argv, EditableArgvDialect::Posix), posix);
+        assert_eq!(
+            join_editable_argv(&argv, EditableArgvDialect::Windows),
+            windows
+        );
+        join_editable_argv(&argv, EditableArgvDialect::host())
+    }
+
+    fn preferences_runner_row(index: usize, name: &str) -> skit_ui::RunnerRow {
+        let identity = skit_ui::RunnerRowIdentity {
+            index: Some(index),
+            snapshot_token: format!("token-{index}"),
+        };
+        skit_ui::RunnerRow {
+            key_identities: vec![identity.clone()],
+            identity,
+            name: Some(name.to_owned()),
+            argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+            reason: None,
+            descriptor: format!("prompt.runners[{index}]"),
+            pinned_count: 0,
+        }
+    }
+
     fn view() -> PreferencesView {
         PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
             language: String::new(),
@@ -2323,7 +3018,10 @@ mod tests {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
-            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+            runners: vec![
+                preferences_runner_row(0, "claude"),
+                preferences_runner_row(1, "codex"),
+            ],
             mirror: MirrorConfiguration::default(),
         }))
     }
@@ -2339,7 +3037,10 @@ mod tests {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: Some(String::new()),
-            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+            runners: vec![
+                preferences_runner_row(0, "claude"),
+                preferences_runner_row(1, "codex"),
+            ],
             mirror: MirrorConfiguration::default(),
         }));
         for field in [
@@ -2373,6 +3074,10 @@ mod tests {
             PreferencesHit::Control(id)
             | PreferencesHit::Radio { id, .. }
             | PreferencesHit::Dropdown { id, .. } => *id,
+            // Every agent row and every row chip belongs to the agent list.
+            PreferencesHit::RunnerRow(_) | PreferencesHit::RunnerChip { .. } => {
+                PreferencesControlId::Runners
+            }
         }
     }
 
@@ -2397,6 +3102,1067 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn the_agent_list_paints_one_row_per_draft_row_with_its_staging_marker() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(
+            skit_ui::RunnerSaveRequest {
+                name: "my-agent".to_owned(),
+                argv: vec!["my-agent".to_owned(), "{{prompt}}".to_owned()],
+                target: skit_ui::RunnerSaveTarget::New,
+            },
+        ));
+        view.update(PreferencesAction::RunnerCursor(1));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::RunnerStaged(
+            skit_ui::RunnerSaveRequest {
+                name: "claude".to_owned(),
+                argv: vec![
+                    "claude".to_owned(),
+                    "--fast".to_owned(),
+                    "{{prompt}}".to_owned(),
+                ],
+                target: skit_ui::RunnerSaveTarget::Named {
+                    name: "claude".to_owned(),
+                    expected: Vec::new(),
+                },
+            },
+        ));
+
+        let terminal = draw(&mut session, &view, 80, 40, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(rendered.contains("claude"), "{rendered}");
+        let painted = host_editable_command(
+            &["claude", "--fast", "{{prompt}}"],
+            "claude --fast '{{prompt}}'",
+            "claude --fast {{prompt}}",
+        );
+        assert!(rendered.contains(&painted), "{rendered}");
+        assert!(rendered.contains("Will be removed"), "{rendered}");
+        assert!(rendered.contains("Added"), "{rendered}");
+        assert!(rendered.contains("Edited"), "{rendered}");
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        // Three draft rows: a row this wide still holds the chips of the cursor row.
+        assert_eq!(area.height, 3);
+        // A row too short for its chips takes a line for them, and it leaves with the focus.
+        let _ = draw(&mut session, &view, 46, 40, Locale::En);
+        assert_eq!(
+            session
+                .control_area(PreferencesControlId::Runners)
+                .expect("the agent list is visible")
+                .height,
+            4
+        );
+        view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
+        let _ = draw(&mut session, &view, 46, 40, Locale::En);
+        assert_eq!(
+            session
+                .control_area(PreferencesControlId::Runners)
+                .expect("the agent list is visible")
+                .height,
+            3
+        );
+    }
+
+    #[test]
+    fn the_agent_cursor_marker_follows_the_focused_row_and_leaves_with_the_focus() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+
+        let terminal = draw(&mut session, &view, 80, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        let markers = |terminal: &Terminal<TestBackend>| {
+            let buffer = terminal.backend().buffer();
+            (buffer.area.y..buffer.area.bottom())
+                .flat_map(|row| {
+                    (buffer.area.x..buffer.area.right()).map(move |column| (column, row))
+                })
+                .filter(|position| buffer[*position].symbol() == "▶")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(markers(&terminal), [(area.x, area.y)]);
+
+        view.update(PreferencesAction::RunnerCursorNext);
+        let terminal = draw(&mut session, &view, 80, 40, Locale::En);
+        assert_eq!(markers(&terminal), [(area.x, area.y + 1)]);
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
+        let terminal = draw(&mut session, &view, 80, 40, Locale::En);
+        let door = session
+            .control_area(PreferencesControlId::NewRunner)
+            .expect("the new-agent door is visible");
+        assert_eq!(markers(&terminal), [(door.x.saturating_sub(2), door.y)]);
+    }
+
+    /// A scroll can hide the cursor row while the rest of the list stays. The cue must survive.
+    #[test]
+    fn a_clipped_agent_list_keeps_its_focus_cue_on_the_first_visible_row() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let _ = draw(&mut session, &view, 80, 40, Locale::En);
+        let control = view
+            .control(PreferencesControlId::Runners)
+            .expect("the agent list is reachable");
+
+        let height = control_height(&control, Locale::En, 44, true);
+        assert_eq!(
+            height, 3,
+            "the focused cursor row keeps a chip line at 44 cells"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(44, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render_control(
+                    frame,
+                    RowClip::new(height, height - 1, frame.area()),
+                    &control,
+                    &view,
+                    Locale::En,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "▶");
+        assert_eq!(buffer[(0, 0)].fg, ACCENT);
+        let row = (0..buffer.area.width)
+            .map(|column| buffer[(column, 0)].symbol())
+            .collect::<String>();
+        assert!(row.contains("codex"), "{row}");
+    }
+
+    /// Return the rectangle of every chip the latest frame painted.
+    fn chip_areas(session: &PreferencesWidgetSession) -> Vec<(usize, RunnerChip, Rect)> {
+        session.runner_chip_areas.clone()
+    }
+
+    /// Return the text of one painted terminal row.
+    fn row_text(buffer: &Buffer, row: u16) -> String {
+        (buffer.area.x..buffer.area.right())
+            .map(|column| buffer[(column, row)].symbol())
+            .collect()
+    }
+
+    /// Return the text of one painted terminal row without the filler cell of a wide glyph.
+    fn row_glyphs(buffer: &Buffer, row: u16) -> String {
+        let mut rendered = String::new();
+        let mut column = buffer.area.x;
+        while column < buffer.area.right() {
+            let symbol = buffer[(column, row)].symbol();
+            rendered.push_str(symbol);
+            column = column.saturating_add(u16::try_from(symbol.width().max(1)).unwrap_or(1));
+        }
+        rendered
+    }
+
+    #[test]
+    fn only_the_cursor_row_of_the_focused_list_offers_its_command_chips() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let _ = draw(&mut session, &view, 120, 40, Locale::En);
+        assert!(
+            chip_areas(&session).is_empty(),
+            "an unfocused list advertises no chip"
+        );
+        assert!(
+            session
+                .screen_target_inventory(&view)
+                .unwrap()
+                .available
+                .iter()
+                .all(|target| !matches!(target, ScreenTarget::RunnerChip { .. })),
+            "an unfocused list publishes no chip target"
+        );
+
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let terminal = draw(&mut session, &view, 120, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        // A wide tier keeps the chips beside the cursor row.
+        assert_eq!(area.height, 2);
+        let chips = chip_areas(&session);
+        assert_eq!(
+            chips
+                .iter()
+                .map(|(index, chip, area)| (*index, *chip, area.y))
+                .collect::<Vec<_>>(),
+            [
+                (0, RunnerChip::Edit, area.y),
+                (0, RunnerChip::Remove, area.y),
+            ]
+        );
+        let cursor_row = row_text(terminal.backend().buffer(), area.y);
+        assert!(cursor_row.contains("Enter Edit"), "{cursor_row}");
+        assert!(cursor_row.contains("Del Remove"), "{cursor_row}");
+        let next_row = row_text(terminal.backend().buffer(), area.y + 1);
+        assert!(!next_row.contains("Edit"), "{next_row}");
+
+        view.update(PreferencesAction::RunnerCursorNext);
+        let _ = draw(&mut session, &view, 120, 40, Locale::En);
+        assert!(
+            chip_areas(&session)
+                .iter()
+                .all(|(index, _, chip_area)| *index == 1 && chip_area.y == area.y + 1)
+        );
+    }
+
+    #[test]
+    fn every_agent_chip_click_dispatches_the_action_of_its_key() {
+        for (chip, expected) in [
+            (RunnerChip::Edit, PreferencesAction::EditRunner),
+            (RunnerChip::Remove, PreferencesAction::ToggleRunnerRemoval),
+        ] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+            let _ = draw(&mut session, &view, 120, 40, Locale::En);
+            let area = chip_areas(&session)
+                .into_iter()
+                .find_map(|(_, painted, area)| (painted == chip).then_some(area))
+                .expect("the cursor row paints both chips");
+
+            let mut handling = PreferencesEventHandling::Ignored;
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                handling = session.handle_event(mouse(area, kind), &view);
+            }
+            assert_eq!(handling, PreferencesEventHandling::Action(expected));
+        }
+    }
+
+    #[test]
+    fn a_row_staged_for_removal_offers_the_restore_chip_alone() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+
+        let terminal = draw(&mut session, &view, 120, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        let cursor_row = row_text(terminal.backend().buffer(), area.y);
+
+        assert!(cursor_row.contains("Del Restore"), "{cursor_row}");
+        assert!(!cursor_row.contains("Enter Edit"), "{cursor_row}");
+        assert_eq!(
+            chip_areas(&session)
+                .iter()
+                .map(|(_, chip, _)| *chip)
+                .collect::<Vec<_>>(),
+            [RunnerChip::Remove]
+        );
+
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        let terminal = draw(&mut session, &view, 120, 40, Locale::En);
+        let cursor_row = row_text(terminal.backend().buffer(), area.y);
+        assert!(cursor_row.contains("Enter Edit"), "{cursor_row}");
+        assert!(cursor_row.contains("Del Remove"), "{cursor_row}");
+    }
+
+    /// The fit rule pins one exact cell: a name column, a command column, and their separators.
+    #[test]
+    fn the_chip_line_appears_one_cell_below_the_row_that_still_fits_its_chips() {
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let control = view
+            .control(PreferencesControlId::Runners)
+            .expect("the agent list is reachable");
+        // "Enter Edit" and "Del Remove" take 25 cells, and the row keeps 18 of its own.
+        assert_eq!(
+            control_height(&control, Locale::En, 45, true),
+            2,
+            "the exact fit must keep the chips on the cursor row"
+        );
+        assert_eq!(
+            control_height(&control, Locale::En, 44, true),
+            3,
+            "one cell less than the exact fit must move the chips below"
+        );
+    }
+
+    /// A row with room for its name, its command, and its chips keeps every chip on the row.
+    #[test]
+    fn a_row_that_can_hold_its_chips_keeps_them_beside_the_command_column() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+            let terminal = draw(&mut session, &view, 80, 40, locale);
+            let area = session
+                .control_area(PreferencesControlId::Runners)
+                .expect("the agent list is visible");
+            assert_eq!(area.height, 2, "{locale:?}: two rows and no chip line");
+            let cursor_row = row_glyphs(terminal.backend().buffer(), area.y);
+            assert!(cursor_row.contains("claude"), "{locale:?}: {cursor_row}");
+            for label in ["Edit", "Remove"] {
+                assert!(
+                    cursor_row.contains(skit_i18n::text(locale, label).as_ref()),
+                    "{locale:?}: {cursor_row}"
+                );
+            }
+            let chips = chip_areas(&session);
+            assert!(
+                chips
+                    .iter()
+                    .all(|(index, _, chip)| *index == 0 && chip.y == area.y),
+                "{locale:?}: {chips:?}"
+            );
+        }
+    }
+
+    /// A narrow terminal has no room beside the command column, so the chips take their own line.
+    #[test]
+    fn a_narrow_tier_moves_the_chips_below_the_cursor_row_and_keeps_the_name() {
+        // 46 cells hold both chips on one line below the row; 24 need a line for each.
+        for (width, chip_lines) in [(46_u16, 1_u16), (24, 2)] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+            let terminal = draw(&mut session, &view, width, 40, Locale::En);
+            let buffer = terminal.backend().buffer();
+            let area = session
+                .control_area(PreferencesControlId::Runners)
+                .expect("the agent list is visible");
+            assert_eq!(area.height, 2 + chip_lines, "{width}");
+
+            let cursor_row = row_text(buffer, area.y);
+            assert!(cursor_row.contains("claude"), "{width}: {cursor_row}");
+            assert!(!cursor_row.contains("Edit"), "{width}: {cursor_row}");
+            let chips = chip_areas(&session);
+            assert_eq!(chips.len(), 2, "{width}: {chips:?}");
+            assert!(
+                chips.iter().all(|(index, _, chip_area)| *index == 0
+                    && (area.y + 1..area.y + 1 + chip_lines).contains(&chip_area.y)
+                    && chip_area.right() <= buffer.area.right()
+                    && !chip_area.is_empty()),
+                "{width}: {chips:?}"
+            );
+            // The second draft row keeps the line below the chips.
+            assert!(
+                row_text(buffer, area.y + 1 + chip_lines).contains("codex"),
+                "{width}"
+            );
+            // The chip line belongs to its row, and the walker still sees one rect per row.
+            assert_eq!(session.runner_row_areas.len(), 2, "{width}");
+            assert_eq!(
+                session
+                    .clicks
+                    .handle_click(area.x, area.y + 1)
+                    .expect("the chip line moves the cursor"),
+                &PreferencesHit::RunnerRow(0),
+                "{width}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_command_column_loses_its_cells_before_the_name_column_does() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let terminal = draw(&mut session, &view, 30, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        let cursor_row = row_text(terminal.backend().buffer(), area.y);
+
+        assert!(cursor_row.contains("claude"), "{cursor_row}");
+        assert!(cursor_row.contains('…'), "{cursor_row}");
+        assert!(!cursor_row.contains("{{prompt}}"), "{cursor_row}");
+    }
+
+    #[test]
+    fn a_tiny_terminal_paints_the_agent_list_without_a_panic() {
+        for width in 1_u16..=12 {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+            view.update(PreferencesAction::ToggleRunnerRemoval);
+            let terminal = draw(&mut session, &view, width, 12, Locale::En);
+            let buffer = terminal.backend().buffer();
+            assert!(
+                chip_areas(&session)
+                    .iter()
+                    .all(|(_, _, area)| area.right() <= buffer.area.right()),
+                "{width}"
+            );
+        }
+    }
+
+    /// A chip is the mouse path to its key, so a short band wraps the chips instead of dropping one.
+    #[test]
+    fn a_short_chip_band_wraps_the_chips_and_keeps_every_key_clickable() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            let mut session = PreferencesWidgetSession::default();
+            let mut view = view();
+            view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+            let terminal = draw(&mut session, &view, 24, 12, locale);
+            let buffer = terminal.backend().buffer();
+            let chips = chip_areas(&session);
+
+            assert_eq!(chips.len(), 2, "{locale:?}: {chips:?}");
+            for (index, chip, area) in &chips {
+                assert_eq!(*index, 0, "{locale:?}");
+                let label = match chip {
+                    RunnerChip::Edit => "Edit",
+                    RunnerChip::Remove => "Remove",
+                };
+                let painted = row_glyphs(buffer, area.y);
+                assert!(
+                    painted.contains(skit_i18n::text(locale, label).as_ref()),
+                    "{locale:?}: {painted}"
+                );
+                assert!(area.right() <= buffer.area.right(), "{locale:?}: {area:?}");
+                assert_eq!(
+                    session.clicks.handle_click(area.x, area.y),
+                    Some(&PreferencesHit::RunnerChip {
+                        index: 0,
+                        chip: *chip
+                    }),
+                    "{locale:?}: {chip:?} is not clickable"
+                );
+            }
+            // Each chip took a line of its own, and the rows below still follow.
+            assert_ne!(chips[0].2.y, chips[1].2.y, "{locale:?}");
+        }
+    }
+
+    #[test]
+    fn a_staged_removal_counts_the_prompts_it_leaves_without_an_agent() {
+        for (pinned, expected) in [
+            (
+                1_usize,
+                "1 prompt pins this runner and will need another runner before it can run again.",
+            ),
+            (
+                3,
+                "3 prompts pin this runner and will need another runner before they can run again.",
+            ),
+        ] {
+            let mut pinned_row = preferences_runner_row(0, "claude");
+            pinned_row.pinned_count = pinned;
+            let mut view =
+                PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+                    language: String::new(),
+                    available_languages: vec!["en".to_owned()],
+                    effective_language: "en".to_owned(),
+                    editor: String::new(),
+                    editor_fallback: None,
+                    form: InteractiveFormChoice::Tui,
+                    after_run: AfterRunChoice::Exit,
+                    javascript: JavascriptChoice::Automatic,
+                    bash_path: None,
+                    runners: vec![pinned_row],
+                    mirror: MirrorConfiguration::default(),
+                }));
+            let mut session = PreferencesWidgetSession::default();
+            let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+            assert!(!text(terminal.backend().buffer()).contains(expected));
+
+            view.update(PreferencesAction::ToggleRunnerRemoval);
+            let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+            let rendered = text(terminal.backend().buffer());
+            assert!(rendered.contains(expected), "{rendered}");
+        }
+    }
+
+    /// The prompt count is an extra on the staging marker, so a short row drops the count first.
+    #[test]
+    fn a_short_agent_row_drops_its_prompt_count_before_its_staging_marker() {
+        let mut pinned_row = preferences_runner_row(0, "claude");
+        pinned_row.pinned_count = 2;
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: None,
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runners: vec![pinned_row],
+            mirror: MirrorConfiguration::default(),
+        }));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        let rows = view.draft().runner_rows();
+        let painted = |width| {
+            runner_row_spans(&rows[0], false, Locale::En, width)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        let wide = painted(200);
+        assert!(wide.contains("Will be removed · 2 prompts pin"), "{wide}");
+        let short = painted(30);
+        assert!(short.contains("Will be removed"), "{short}");
+        assert!(!short.contains("prompts pin"), "{short}");
+        // A row too short for the marker alone keeps its name and drops every note.
+        let tiny = painted(8);
+        assert!(tiny.contains("claude"), "{tiny}");
+        assert!(!tiny.contains("Will be"), "{tiny}");
+    }
+
+    /// The staging marker outranks the command chips, so a removal always says what the save does.
+    #[test]
+    fn a_staged_removal_keeps_its_marker_at_the_width_that_still_fits_the_chips() {
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        let mut session = PreferencesWidgetSession::default();
+        let terminal = draw(&mut session, &view, 47, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(rendered.contains("Will be removed"), "{rendered}");
+        // The chips take the line below, because the row itself now carries the marker.
+        assert_eq!(area.height, 3, "two rows and one chip line");
+        let chips = chip_areas(&session);
+        assert!(!chips.is_empty(), "the chips stay reachable");
+        assert!(
+            chips
+                .iter()
+                .all(|(index, _, chip)| *index == 0 && chip.y == area.y + 1),
+            "{chips:?}"
+        );
+    }
+
+    /// A duplicate row goes with the key it repeats, so it says so and commands nothing.
+    #[test]
+    fn a_row_the_key_change_takes_says_so_and_offers_no_command() {
+        let mut duplicate = preferences_runner_row(1, "claude");
+        duplicate.reason = Some("duplicate".to_owned());
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: None,
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runners: vec![preferences_runner_row(0, "claude"), duplicate],
+            mirror: MirrorConfiguration::default(),
+        }));
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let mut session = PreferencesWidgetSession::default();
+
+        // Nothing is staged yet, so the duplicate row keeps its own commands.
+        view.update(PreferencesAction::RunnerCursor(1));
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        assert!(!row_text(terminal.backend().buffer(), area.y + 1).contains("Will be removed"));
+        assert!(!chip_areas(&session).is_empty());
+
+        // The key removal takes the duplicate with it.
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::RunnerCursor(1));
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let buffer = terminal.backend().buffer();
+
+        for row in [area.y, area.y + 1] {
+            let painted = row_text(buffer, row);
+            assert!(painted.contains("Will be removed"), "{painted}");
+        }
+        assert!(
+            chip_areas(&session).is_empty(),
+            "a row the key takes offers no command of its own"
+        );
+        // The walker sees the same list, so it advertises no command for that row either.
+        let inventory = session.screen_target_inventory(&view).unwrap();
+        assert!(
+            !inventory
+                .available
+                .iter()
+                .any(|target| matches!(target, ScreenTarget::RunnerChip { .. })),
+            "{:?}",
+            inventory.available
+        );
+
+        // A narrow terminal keeps no line for chips the row does not have.
+        let _ = draw(&mut session, &view, 30, 40, Locale::En);
+        assert_eq!(
+            session
+                .control_area(PreferencesControlId::Runners)
+                .expect("the agent list is visible")
+                .height,
+            2,
+            "a row with no chips takes no chip line"
+        );
+    }
+
+    /// The chips pack into lines: the exact fit keeps one line, one cell less takes two.
+    #[test]
+    fn the_chip_packing_pins_the_cell_that_separates_one_line_from_two() {
+        let chips = [
+            RunnerRowChip {
+                chip: RunnerChip::Edit,
+                key: "Enter",
+                label: "Edit",
+            },
+            RunnerRowChip {
+                chip: RunnerChip::Remove,
+                key: "Del",
+                label: "Remove",
+            },
+        ];
+        let exact = runner_chips_width(&chips, Locale::En);
+
+        assert_eq!(runner_chip_lines(&chips, exact, Locale::En).len(), 1);
+        assert_eq!(runner_chip_lines(&chips, exact - 1, Locale::En).len(), 2);
+        // A band too short for one complete chip holds none of them.
+        let widest = runner_chip_width(&chips[1], Locale::En);
+        assert_eq!(runner_chip_lines(&chips[1..], widest, Locale::En).len(), 1);
+        assert!(runner_chip_lines(&chips[1..], widest - 1, Locale::En).is_empty());
+    }
+
+    /// A row no prompt pins must not invent a dependency warning of its own.
+    #[test]
+    fn an_unpinned_staged_removal_prints_no_pin_warning() {
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        let mut session = PreferencesWidgetSession::default();
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(rendered.contains("Will be removed"), "{rendered}");
+        assert!(!rendered.contains("0 prompt"), "{rendered}");
+        assert!(!rendered.contains("prompts pin"), "{rendered}");
+        assert!(!rendered.contains("prompt pins"), "{rendered}");
+    }
+
+    /// A refused restore must say why, on the row band the user is looking at.
+    #[test]
+    fn a_refused_restore_prints_its_reason_under_the_agent_list() {
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(
+            skit_ui::RunnerSaveRequest {
+                name: "claude".to_owned(),
+                argv: vec!["claude".to_owned(), "{{prompt}}".to_owned()],
+                target: skit_ui::RunnerSaveTarget::New,
+            },
+        ));
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+
+        let mut session = PreferencesWidgetSession::default();
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("Another row already uses this runner name."),
+            "{rendered}"
+        );
+
+        // The refusal outlives the keystroke that raised it, so it must keep naming the agent
+        // list instead of following the focus onto a control it says nothing about.
+        view.update(PreferencesAction::Next);
+        view.update(PreferencesAction::Next);
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let list = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+        let reason = (0..terminal.backend().buffer().area.height)
+            .find(|row| row_text(terminal.backend().buffer(), *row).contains("Another row already"))
+            .expect("the refusal stays on screen");
+        assert_eq!(reason, list.bottom(), "the refusal left the agent list");
+        assert_ne!(view.focused(), PreferencesControlId::Runners);
+    }
+
+    #[test]
+    fn a_malformed_row_keeps_its_raw_shape_visible_and_has_no_command_column() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: None,
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runners: vec![skit_ui::RunnerRow {
+                identity: skit_ui::RunnerRowIdentity {
+                    index: None,
+                    snapshot_token: "container".to_owned(),
+                },
+                name: None,
+                argv: None,
+                reason: Some("row-not-table".to_owned()),
+                descriptor: "prompt.runners".to_owned(),
+                key_identities: Vec::new(),
+                pinned_count: 0,
+            }],
+            mirror: MirrorConfiguration::default(),
+        }));
+
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(rendered.contains("⚠ prompt.runners"), "{rendered}");
+        assert!(
+            rendered.contains("This runner row isn't a table."),
+            "{rendered}"
+        );
+    }
+
+    /// Every malformed-row reason code prints its own localized text on its own agent row.
+    #[test]
+    fn every_runner_reason_renders_its_localized_text_on_its_own_row() {
+        let cases = [
+            (
+                "prompt-section-not-table",
+                "the prompt value is not a table; repair it before runner management",
+            ),
+            (
+                "runners-not-list",
+                "the prompt.runners value is not a list; repair it before runner management",
+            ),
+            (
+                "empty",
+                "Type the agent's command, e.g. mycli run {{prompt}}",
+            ),
+            (
+                "prompt-slot-count",
+                "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+            ),
+            (
+                "prompt-in-binary",
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            (
+                "stray-hole",
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
+            ("name", "A name is required."),
+            ("argv-type", "The command must be a list of text arguments."),
+            ("row-not-table", "This runner row isn't a table."),
+            ("duplicate", "Another row already uses this runner name."),
+            ("future-code", "This runner row is malformed."),
+        ];
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            for (code, source) in cases {
+                let mut malformed = preferences_runner_row(0, "claude");
+                malformed.name = None;
+                malformed.argv = None;
+                malformed.reason = Some(code.to_owned());
+                let mut session = PreferencesWidgetSession::default();
+                let view =
+                    PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+                        language: String::new(),
+                        available_languages: vec!["en".to_owned()],
+                        effective_language: "en".to_owned(),
+                        editor: String::new(),
+                        editor_fallback: None,
+                        form: InteractiveFormChoice::Tui,
+                        after_run: AfterRunChoice::Exit,
+                        javascript: JavascriptChoice::Automatic,
+                        bash_path: None,
+                        runners: vec![malformed],
+                        mirror: MirrorConfiguration::default(),
+                    }));
+                let terminal = draw(&mut session, &view, 240, 40, locale);
+                let area = session.runner_row_areas[0].1;
+                let rendered = row_glyphs(terminal.backend().buffer(), area.y);
+                let expected = skit_i18n::text(locale, source);
+                assert!(
+                    rendered.contains(expected.as_ref()),
+                    "reason={code:?}, locale={locale:?}, row={rendered:?}, expected={expected:?}"
+                );
+            }
+        }
+    }
+
+    /// A malformed row with a raw shape is repairable. Enter opens the repair editor on it.
+    #[test]
+    fn a_repairable_malformed_row_offers_both_chips_and_a_shapeless_one_offers_removal() {
+        let repairable = skit_ui::RunnerRow {
+            identity: skit_ui::RunnerRowIdentity {
+                index: Some(0),
+                snapshot_token: "row-0".to_owned(),
+            },
+            name: None,
+            argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
+            reason: Some("name".to_owned()),
+            descriptor: "prompt.runners[0]".to_owned(),
+            key_identities: Vec::new(),
+            pinned_count: 0,
+        };
+        let shapeless = skit_ui::RunnerRow {
+            identity: skit_ui::RunnerRowIdentity {
+                index: None,
+                snapshot_token: "container".to_owned(),
+            },
+            name: None,
+            argv: None,
+            reason: Some("row-not-table".to_owned()),
+            descriptor: "prompt.runners".to_owned(),
+            key_identities: Vec::new(),
+            pinned_count: 0,
+        };
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: None,
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runners: vec![repairable, shapeless],
+            mirror: MirrorConfiguration::default(),
+        }));
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+
+        let mut session = PreferencesWidgetSession::default();
+        let _ = draw(&mut session, &view, 160, 40, Locale::En);
+        assert_eq!(
+            chip_areas(&session)
+                .iter()
+                .map(|(_, chip, _)| *chip)
+                .collect::<Vec<_>>(),
+            [RunnerChip::Edit, RunnerChip::Remove]
+        );
+        // The repair keeps the raw reason until the editor stages new values.
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Action(PreferencesAction::EditRunner)
+        );
+        view.update(PreferencesAction::RunnerStaged(
+            skit_ui::RunnerSaveRequest {
+                name: "repaired".to_owned(),
+                argv: vec!["repaired".to_owned(), "{{prompt}}".to_owned()],
+                target: skit_ui::RunnerSaveTarget::RawRow {
+                    expected: skit_ui::RunnerRowIdentity {
+                        index: Some(0),
+                        snapshot_token: "row-0".to_owned(),
+                    },
+                },
+            },
+        ));
+        let terminal = draw(&mut session, &view, 160, 40, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+        assert!(!rendered.contains("A name is required."), "{rendered}");
+        assert!(rendered.contains("Edited"), "{rendered}");
+
+        view.update(PreferencesAction::RunnerCursor(1));
+        let _ = draw(&mut session, &view, 160, 40, Locale::En);
+        assert_eq!(
+            chip_areas(&session)
+                .iter()
+                .map(|(_, chip, _)| *chip)
+                .collect::<Vec<_>>(),
+            [RunnerChip::Remove]
+        );
+        assert_eq!(
+            view.update(PreferencesAction::EditRunner),
+            skit_ui::PreferencesEffect::None
+        );
+    }
+
+    #[test]
+    fn the_agent_list_publishes_one_walker_target_per_row_and_its_cursor_chips() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+            language: String::new(),
+            available_languages: vec!["en".to_owned()],
+            effective_language: "en".to_owned(),
+            editor: String::new(),
+            editor_fallback: None,
+            form: InteractiveFormChoice::Tui,
+            after_run: AfterRunChoice::Exit,
+            javascript: JavascriptChoice::Automatic,
+            bash_path: None,
+            runners: vec![
+                preferences_runner_row(0, "claude"),
+                preferences_runner_row(1, "claude"),
+                skit_ui::RunnerRow {
+                    identity: skit_ui::RunnerRowIdentity {
+                        index: None,
+                        snapshot_token: "container".to_owned(),
+                    },
+                    name: None,
+                    argv: None,
+                    reason: Some("row-not-table".to_owned()),
+                    descriptor: "prompt.runners".to_owned(),
+                    key_identities: Vec::new(),
+                    pinned_count: 0,
+                },
+            ],
+            mirror: MirrorConfiguration::default(),
+        }));
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let _ = draw(&mut session, &view, 120, 40, Locale::En);
+
+        let inventory = session.screen_target_inventory(&view).unwrap();
+        // A repeated name stays addressable, and a malformed row publishes no name at all.
+        let rows = [
+            ScreenTarget::Runner {
+                row: 0,
+                name: Some("claude".to_owned()),
+            },
+            ScreenTarget::Runner {
+                row: 1,
+                name: Some("claude".to_owned()),
+            },
+            ScreenTarget::Runner { row: 2, name: None },
+        ];
+        for target in &rows {
+            assert!(inventory.available.contains(target), "{target:?}");
+            assert_eq!(
+                inventory
+                    .hits
+                    .iter()
+                    .filter(|hit| hit.target == *target)
+                    .count(),
+                1,
+                "{target:?}"
+            );
+        }
+        for chip in [RunnerChip::Edit, RunnerChip::Remove] {
+            let target = ScreenTarget::RunnerChip { row: 0, chip };
+            assert!(inventory.available.contains(&target), "{target:?}");
+            assert!(
+                inventory.hits.iter().any(|hit| hit.target == target),
+                "{target:?}"
+            );
+        }
+        // The list itself is not a hit: every cell of it belongs to one row.
+        assert!(
+            !inventory
+                .hits
+                .iter()
+                .any(|hit| hit.target == ScreenTarget::Preferences(PreferencesControlId::Runners)),
+            "{:?}",
+            inventory.hits
+        );
+        assert!(
+            inventory
+                .available
+                .contains(&ScreenTarget::Preferences(PreferencesControlId::Runners))
+        );
+
+        view.update(PreferencesAction::RunnerCursor(2));
+        let _ = draw(&mut session, &view, 120, 40, Locale::En);
+        let inventory = session.screen_target_inventory(&view).unwrap();
+        assert!(!inventory.available.contains(&ScreenTarget::RunnerChip {
+            row: 2,
+            chip: RunnerChip::Edit,
+        }));
+        assert!(inventory.available.contains(&ScreenTarget::RunnerChip {
+            row: 2,
+            chip: RunnerChip::Remove,
+        }));
+    }
+
+    #[test]
+    fn the_focused_agent_list_maps_every_advertised_key_to_one_typed_action() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+        let _ = draw(&mut session, &view, 80, 40, Locale::En);
+        assert!(session.focused_owns_vertical_navigation(&view));
+
+        // A control with its own rows or options takes Down. A door and an input do not.
+        for id in [
+            PreferencesControlId::Editor,
+            PreferencesControlId::NewRunner,
+        ] {
+            view.update(PreferencesAction::Focus(id));
+            assert!(
+                !session.focused_owns_vertical_navigation(&view),
+                "{id:?} must leave vertical navigation to the focus ring"
+            );
+        }
+        view.update(PreferencesAction::Focus(PreferencesControlId::Runners));
+
+        for (code, expected) in [
+            (KeyCode::Down, PreferencesAction::RunnerCursorNext),
+            (KeyCode::Up, PreferencesAction::RunnerCursorPrevious),
+            (KeyCode::Enter, PreferencesAction::EditRunner),
+            (KeyCode::Delete, PreferencesAction::ToggleRunnerRemoval),
+            (KeyCode::Backspace, PreferencesAction::ToggleRunnerRemoval),
+        ] {
+            assert_eq!(
+                session.handle_event(key(code, KeyModifiers::NONE), &view),
+                PreferencesEventHandling::Action(expected),
+                "{code:?} must reach the reducer"
+            );
+        }
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('x'), KeyModifiers::NONE), &view),
+            PreferencesEventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn clicking_an_agent_row_moves_the_cursor_there_and_focuses_the_list() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let _ = draw(&mut session, &view, 80, 40, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::Runners)
+            .expect("the agent list is visible");
+
+        // The gutter belongs to the row, so the complete row width moves the cursor.
+        for (row, expected) in [(area.y, 0_usize), (area.y + 1, 1)] {
+            let mut handling = PreferencesEventHandling::Ignored;
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                handling = session.handle_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: area.x,
+                        row,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &view,
+                );
+            }
+            assert_eq!(
+                handling,
+                PreferencesEventHandling::Action(PreferencesAction::RunnerCursor(expected))
+            );
+        }
+        view.update(PreferencesAction::RunnerCursor(1));
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+        assert_eq!(view.runner_cursor(), 1);
+
+        assert_eq!(
+            button_action(PreferencesControlId::NewRunner),
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
+        );
     }
 
     #[test]
@@ -2581,7 +4347,7 @@ mod tests {
             session.control_areas
         );
         session.control_areas.push((
-            PreferencesControlId::ManageAgents,
+            PreferencesControlId::NewRunner,
             Rect::new(panel.x, panel.bottom().saturating_sub(1), 1, 1),
         ));
 
@@ -2619,7 +4385,7 @@ mod tests {
         );
         session
             .control_areas
-            .push((PreferencesControlId::ManageAgents, panel));
+            .push((PreferencesControlId::NewRunner, panel));
 
         let inventory = session.screen_target_inventory(&view).unwrap();
         assert!(
@@ -2660,7 +4426,7 @@ mod tests {
                     after_run: AfterRunChoice::Exit,
                     javascript: JavascriptChoice::Automatic,
                     bash_path: None,
-                    runner_names: Vec::new(),
+                    runners: Vec::new(),
                     mirror: MirrorConfiguration::default(),
                 }));
             view.update(PreferencesAction::Focus(PreferencesControlId::Language));
@@ -2950,7 +4716,7 @@ mod tests {
     fn test_backend_renders_the_complete_colored_preferences_surface() {
         let mut session = PreferencesWidgetSession::default();
         let view = view();
-        let terminal = draw(&mut session, &view, 120, 44, Locale::En);
+        let terminal = draw(&mut session, &view, 120, 50, Locale::En);
         let buffer = terminal.backend().buffer();
         let rendered = text(buffer);
 
@@ -2961,7 +4727,9 @@ mod tests {
             "Empty means: vim (from $VISUAL / $EDITOR)",
             "Mini form — opens in place, fully clickable",
             "Quit skit — leave the run's output in the terminal",
-            "2 agents configured: claude, codex",
+            "Agents (prompt runners)",
+            "The AI agents that run prompt entries.",
+            "Agent Skill",
             "Download mirrors (mainland-China acceleration)",
             "PyPI index (Python packages)",
         ] {
@@ -3087,8 +4855,8 @@ mod tests {
         let mut view = view();
         let _ = draw(&mut session, &view, 120, 44, Locale::En);
         let area = session
-            .control_area(PreferencesControlId::ManageAgents)
-            .expect("visible Manage agents button");
+            .control_area(PreferencesControlId::NewRunner)
+            .expect("visible New agent button");
         let handling = session.handle_event(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -3109,7 +4877,7 @@ mod tests {
                 }),
                 &view,
             ),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
         );
 
         view.update(PreferencesAction::Focus(
@@ -3134,8 +4902,8 @@ mod tests {
         let view = view();
         let _ = draw(&mut session, &view, 120, 44, Locale::En);
         let area = session
-            .control_area(PreferencesControlId::ManageAgents)
-            .expect("visible Manage agents button");
+            .control_area(PreferencesControlId::NewRunner)
+            .expect("visible New agent button");
 
         for kind in [
             MouseEventKind::Moved,
@@ -3178,7 +4946,7 @@ mod tests {
                 }),
                 &view,
             ),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
         );
     }
 
@@ -3574,14 +5342,15 @@ mod tests {
         ] {
             assert_eq!(session.handle_event(key(code, modifiers), &view), expected);
         }
-        assert!(!matches!(
+        // No control answers the two chords. The focused input cuts its value with Ctrl+K.
+        assert_eq!(
             session.handle_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &view),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
-        ));
-        assert!(!matches!(
+            PreferencesEventHandling::Ignored
+        );
+        assert_eq!(
             session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
-            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
-        ));
+            PreferencesEventHandling::Action(PreferencesAction::SetEditor(String::new()))
+        );
         assert_eq!(
             session.handle_event(key(KeyCode::PageDown, KeyModifiers::NONE), &view),
             PreferencesEventHandling::Consumed
@@ -3604,8 +5373,8 @@ mod tests {
 
         for (id, expected) in [
             (
-                PreferencesControlId::ManageAgents,
-                PreferencesAction::ManageAgents,
+                PreferencesControlId::NewRunner,
+                PreferencesAction::NewRunner,
             ),
             (
                 PreferencesControlId::InstallAgentSkill,
@@ -3623,14 +5392,13 @@ mod tests {
             PreferencesControlId::InteractiveForm,
         ));
         let _ = draw(&mut session, &view, 120, 120, Locale::En);
-        assert_eq!(
-            session.handle_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &view),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
-        );
-        assert_eq!(
-            session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
-            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
-        );
+        for code in [KeyCode::Char('o'), KeyCode::Char('k')] {
+            assert_eq!(
+                session.handle_event(key(code, KeyModifiers::CONTROL), &view),
+                PreferencesEventHandling::Ignored,
+                "a focused radio group answers no agent chord"
+            );
+        }
         assert_eq!(
             session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view),
             PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
@@ -3681,7 +5449,7 @@ mod tests {
         );
         assert_eq!(
             session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
-            PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
+            PreferencesEventHandling::Ignored
         );
 
         view.update(PreferencesAction::Focus(PreferencesControlId::Editor));
@@ -3693,10 +5461,10 @@ mod tests {
         assert_eq!(
             session.handle_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &view),
             PreferencesEventHandling::Consumed,
-            "an input owns Ctrl+K instead of opening the agent installer",
+            "an input owns Ctrl+K as ordinary input",
         );
 
-        view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+        view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
         let _ = draw(&mut session, &view, 100, 40, Locale::En);
         assert_eq!(
             session.handle_event(key(KeyCode::Char('z'), KeyModifiers::NONE), &view),
@@ -3705,7 +5473,7 @@ mod tests {
         for code in [KeyCode::Enter, KeyCode::Char(' ')] {
             assert_eq!(
                 session.handle_event(key(code, KeyModifiers::NONE), &view),
-                PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+                PreferencesEventHandling::Action(PreferencesAction::NewRunner)
             );
         }
     }
@@ -3864,7 +5632,7 @@ mod tests {
         for invalid in [
             PreferencesControlId::Editor,
             PreferencesControlId::BashPath,
-            PreferencesControlId::ManageAgents,
+            PreferencesControlId::NewRunner,
             PreferencesControlId::InstallAgentSkill,
             PreferencesControlId::PypiUrl,
             PreferencesControlId::GithubUrl,
@@ -3892,7 +5660,7 @@ mod tests {
             assert_eq!(button_action(invalid), PreferencesEventHandling::Ignored);
         }
         for invalid_input in [
-            PreferencesControlId::ManageAgents,
+            PreferencesControlId::NewRunner,
             PreferencesControlId::InstallAgentSkill,
         ] {
             assert_eq!(
@@ -3901,8 +5669,8 @@ mod tests {
             );
         }
         assert_eq!(
-            button_action(PreferencesControlId::ManageAgents),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            button_action(PreferencesControlId::NewRunner),
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
         );
         assert_eq!(
             button_action(PreferencesControlId::InstallAgentSkill),
@@ -4657,22 +6425,22 @@ mod tests {
         for (locale, door_label, option_label) in [
             (
                 Locale::ZhTw,
-                "Manage agents…",
+                "New agent…",
                 "Quit skit — leave the run's output in the terminal",
             ),
             (
                 Locale::ZhCn,
-                "Manage agents…",
+                "New agent…",
                 "Quit skit — leave the run's output in the terminal",
             ),
         ] {
             let mut session = PreferencesWidgetSession::default();
             let mut view = view();
-            view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+            view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
             let terminal = draw(&mut session, &view, 120, 44, locale);
             let door = session
-                .control_area(PreferencesControlId::ManageAgents)
-                .expect("visible Manage agents door");
+                .control_area(PreferencesControlId::NewRunner)
+                .expect("visible New agent door");
             let shown = skit_i18n::text(locale, door_label);
             assert_eq!(
                 door.width,
@@ -4691,7 +6459,7 @@ mod tests {
             );
             assert_eq!(
                 session.handle_event(mouse(last, MouseEventKind::Up(MouseButton::Left)), &view),
-                PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+                PreferencesEventHandling::Action(PreferencesAction::NewRunner)
             );
             let beyond = Rect::new(door.right(), door.y, 1, 1);
             assert_eq!(
@@ -4896,16 +6664,16 @@ mod tests {
     fn a_preference_door_paints_its_label_inside_its_click_rect() {
         let mut session = PreferencesWidgetSession::default();
         let mut view = view();
-        view.update(PreferencesAction::Focus(PreferencesControlId::ManageAgents));
+        view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
         let terminal = draw(&mut session, &view, 120, 44, Locale::En);
         let area = session
-            .control_area(PreferencesControlId::ManageAgents)
-            .expect("visible Manage agents door");
+            .control_area(PreferencesControlId::NewRunner)
+            .expect("visible New agent door");
         let gutter = area.x.saturating_sub(2);
         assert_eq!(gutter, session.viewport.x, "the door lost its gutter");
 
         let buffer = terminal.backend().buffer();
-        let label = skit_i18n::text(Locale::En, "Manage agents…").into_owned();
+        let label = skit_i18n::text(Locale::En, "New agent…").into_owned();
         let painted = (area.x..buffer.area.right())
             .map(|column| buffer[(column, area.y)].symbol())
             .collect::<String>();
@@ -4932,7 +6700,7 @@ mod tests {
                 mouse(first_character, MouseEventKind::Up(MouseButton::Left)),
                 &view,
             ),
-            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+            PreferencesEventHandling::Action(PreferencesAction::NewRunner)
         );
 
         let marker = Rect::new(gutter, area.y, 1, 1);
@@ -4979,12 +6747,12 @@ mod tests {
             "the exact fit must place both options on one row",
         );
         assert_eq!(
-            control_height(&control, Locale::En, 80),
+            control_height(&control, Locale::En, 80, false),
             1,
             "the gutter must leave the exact-fit row whole",
         );
         assert_eq!(
-            control_height(&control, Locale::En, 79),
+            control_height(&control, Locale::En, 79, false),
             2,
             "one cell less than the exact fit must wrap the last option",
         );
@@ -5112,8 +6880,8 @@ mod tests {
             }),
         };
         let button = PreferencesControl {
-            id: PreferencesControlId::ManageAgents,
-            label: "Manage agents…".to_owned(),
+            id: PreferencesControlId::NewRunner,
+            label: "New agent…".to_owned(),
             help: String::new(),
             kind: PreferencesControlKind::Button,
         };
@@ -5153,8 +6921,8 @@ mod tests {
         sync_widget(&mut radio_widget, &text_control, Locale::En);
         sync_widget(&mut button_widget, &text_control, Locale::En);
 
-        assert_eq!(control_height(&missing_choice, Locale::En, 20), 3);
-        assert_eq!(control_height(&radio, Locale::En, 120), 2);
+        assert_eq!(control_height(&missing_choice, Locale::En, 20, false), 3);
+        assert_eq!(control_height(&radio, Locale::En, 120, false), 2);
         assert!(radio_options_stack(PreferencesControlId::Language, 120));
         assert!(radio_options_stack(PreferencesControlId::MirrorMaster, 20));
         assert!(!radio_options_stack(

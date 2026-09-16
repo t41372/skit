@@ -480,13 +480,6 @@ fn c2_action_surface_run_health_preferences_and_runner_owner_contract() {
         targets["preferences"]["present_agent_skill_targets"][0]["base"],
         stable
     );
-    let mutation = host
-        .path_map
-        .normalize_action_json(json!({"runners": {
-            "mutation_failed": diagnostic,
-        }}))
-        .unwrap();
-    assert_eq!(mutation["runners"]["mutation_failed"], stable_diagnostic);
     let editor = host
         .path_map
         .normalize_action_json(json!({"runner_editor_save_failed": {
@@ -512,47 +505,13 @@ fn c2_action_surface_run_health_preferences_and_runner_owner_contract() {
         "targets": [{"name": "codex", "scope": "user", "base": root}],
         "selected": 0,
     });
-    for fixture in [
-        json!({"present": {"preferences": preferences}}),
-        json!({"runner_manager_closed": {"preferences": preferences}}),
-    ] {
-        let action = host.path_map.normalize_action_json(fixture).unwrap();
-        let encoded = serde_json::to_string(&action).unwrap();
-        assert!(!encoded.contains(&root));
-        assert!(encoded.contains(stable));
-    }
-
-    let mut runners = serde_json::to_value(
-        host.dispatch(Effect::Open {
-            request: HostRequest::Runners,
-            selector: None,
-        })
-        .unwrap(),
-    )
-    .unwrap()["present"]["runners"]
-        .clone();
-    runners["status"] = json!(diagnostic);
-    runners["overlay"] = json!({"editor": {
-        "name": "",
-        "command": root,
-        "target": "new",
-        "focused": "name",
-        "error": null,
-        "host_error": diagnostic,
-    }});
     let action = host
         .path_map
-        .normalize_action_json(json!({"present": {"runners": runners}}))
+        .normalize_action_json(json!({"present": {"preferences": preferences}}))
         .unwrap();
-    assert_eq!(action["present"]["runners"]["status"], diagnostic);
-    assert_eq!(
-        action["present"]["runners"]["overlay"]["editor"]["host_error"],
-        stable_diagnostic
-    );
-    assert_eq!(
-        action["present"]["runners"]["overlay"]["editor"]["command"],
-        root
-    );
+    let encoded = serde_json::to_string(&action).unwrap();
+    assert!(!encoded.contains(&root));
+    assert!(encoded.contains(stable));
 }
 
 #[test]

@@ -15,8 +15,8 @@ pub use picker::*;
 pub use preferences::{
     AgentSkillInstallView, PreferencesAction, PreferencesChoiceControl, PreferencesControl,
     PreferencesControlId, PreferencesControlKind, PreferencesDisplayText, PreferencesEffect,
-    PreferencesOption, PreferencesSection, PreferencesSectionId, PreferencesTextControl,
-    PreferencesTextPlacement, PreferencesView,
+    PreferencesOption, PreferencesRunnerListControl, PreferencesSection, PreferencesSectionId,
+    PreferencesTextControl, PreferencesTextPlacement, PreferencesView,
 };
 pub use run::{
     ChoiceControl, ChoicePresentation, FormControl, FormInputKind, RunDegradationNotice, RunField,
@@ -44,6 +44,7 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 use serde::{Deserialize, Serialize};
+use skit_application::preferences::RunnerDraftError;
 use skit_application::{Diagnostic, LibraryScan};
 // The Library detail facts are stable frontend data, so they live in the application layer next to
 // `LibraryScan`. Re-exported here because every frontend reaches them through the view model.
@@ -217,8 +218,6 @@ pub enum CommandContext {
     Add,
     /// The typed actionable Health workflow owns the keyboard.
     Health,
-    /// The typed prompt-runner manager owns the keyboard.
-    Runners,
     /// The typed entry-settings workflow owns the keyboard.
     Settings,
     /// The reusable prompt-runner editor modal owns the keyboard.
@@ -257,8 +256,6 @@ pub enum UiCommand {
     Preferences,
     /// Open the health report.
     Health,
-    /// Open the prompt runner manager.
-    Runners,
     /// Enter search mode.
     Search,
     /// Leave search mode.
@@ -307,10 +304,6 @@ pub enum UiCommand {
     SavePreferences,
     /// Close Preferences, with its typed discard confirmation when needed.
     ClosePreferences,
-    /// Open prompt-runner management from Preferences.
-    ManageAgents,
-    /// Discover Agent Skill install targets without writing.
-    InstallAgentSkill,
     /// Persist the complete validated entry-settings transaction.
     SaveSettings,
     /// Read the script's own parameter definitions again on the next entry-settings save.
@@ -347,7 +340,6 @@ impl UiCommand {
             Self::Remove => Action::AskRemove,
             Self::Preferences => Action::OpenPreferences,
             Self::Health => Action::OpenHealth,
-            Self::Runners => Action::OpenRunners,
             Self::Search => Action::BeginSearch,
             Self::LeaveSearch => Action::FinishSearch,
             Self::ToggleDetail | Self::ChooseSettingsVariables => return None,
@@ -372,8 +364,6 @@ impl UiCommand {
             Self::NewRunner => return None,
             Self::SavePreferences => Action::Preferences(PreferencesAction::Save),
             Self::ClosePreferences => Action::Preferences(PreferencesAction::Close),
-            Self::ManageAgents => Action::Preferences(PreferencesAction::ManageAgents),
-            Self::InstallAgentSkill => Action::Preferences(PreferencesAction::InstallAgentSkill),
             Self::SaveSettings => Action::Settings(SettingsAction::Save),
             Self::ResyncSettings => Action::Settings(SettingsAction::Resync),
             Self::CloseSettings => Action::Settings(SettingsAction::Close),
@@ -538,14 +528,6 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         CommandContext::LibraryBrowse,
         &[shift_binding!(UiKey::Character('?'), "?", "?")],
         "Help",
-        true,
-        true,
-    ),
-    command_spec!(
-        UiCommand::Runners,
-        CommandContext::LibraryBrowse,
-        &[shift_binding!(UiKey::Character('R'), "R", "R")],
-        "Runners",
         true,
         true,
     ),
@@ -902,19 +884,13 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
+    // The focused control names its own verb, so the chip reads "Enter New agent…" or
+    // "Enter Edit" instead of a word the user must map to the control themselves.
     command_spec!(
-        UiCommand::ManageAgents,
+        UiCommand::Submit,
         CommandContext::Preferences,
-        &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
-        "Manage agents…",
-        true,
-        false,
-    ),
-    command_spec!(
-        UiCommand::InstallAgentSkill,
-        CommandContext::Preferences,
-        &[control_binding!(UiKey::Character('k'), "Ctrl+K", "^K")],
-        "Teach an AI agent skit…",
+        &[PLAIN_ENTER],
+        "Edit",
         true,
         false,
     ),
@@ -1039,8 +1015,6 @@ pub enum HostRequest {
     Preferences,
     /// Build a health report.
     Health,
-    /// Build the prompt runner manager.
-    Runners,
     /// Build the preset manager for the selected entry.
     Presets,
     /// Build a rename form for the selected entry.
@@ -1283,8 +1257,6 @@ pub enum Screen {
     Add(Box<AddWorkflowState>),
     /// Typed actionable Health workflow.
     Health(Box<HealthView>),
-    /// Typed prompt-runner management workflow.
-    Runners(Box<RunnerManagerView>),
     /// Typed entry-settings workflow.
     Settings(Box<SettingsView>),
     /// Generic editable form.
@@ -1316,15 +1288,6 @@ impl WorkflowState {
         self.active = self.history.pop().unwrap_or(Screen::Library);
     }
 
-    fn previous(&self) -> Option<&Screen> {
-        self.history.last()
-    }
-
-    fn replace_from_back(&mut self, screen: Screen) {
-        let _ = self.history.pop();
-        self.active = screen;
-    }
-
     fn return_to_library(&mut self) {
         self.active = Screen::Library;
         self.history.clear();
@@ -1347,14 +1310,14 @@ pub enum RunnerEditorOwner {
         /// Stable entry selector used to reject a stale host response.
         selector: String,
     },
+    /// The Preferences agent list stages the runner in its own draft.
+    Preferences,
 }
 
 /// Host routing for one validated prompt-runner save.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerSaveOwner {
-    /// The complete prompt-runner manager owns the mutation.
-    Manager,
     /// One standalone editor modal owns the mutation.
     Editor(RunnerEditorOwner),
 }
@@ -1497,8 +1460,6 @@ pub enum Action {
     OpenPreferences,
     /// Request the health report.
     OpenHealth,
-    /// Request the prompt runner manager.
-    OpenRunners,
     /// Request presets for the selected entry.
     OpenPresets,
     /// Request a rename form for the selected entry.
@@ -1574,8 +1535,6 @@ pub enum Action {
     OpenAddRunnerEditor,
     /// Delegate one semantic action to the typed Health reducer.
     Health(HealthAction),
-    /// Delegate one semantic action to the complete runner manager.
-    Runners(RunnerManagerAction),
     /// Delegate one semantic action to the standalone runner editor modal.
     RunnerEditor(RunnerEditorAction),
     /// Apply a successful standalone runner save to its exact workflow owner.
@@ -1593,11 +1552,6 @@ pub enum Action {
         owner: RunnerEditorOwner,
         /// Localized refusal detail.
         message: String,
-    },
-    /// Close runner management into an authoritative rebuilt Preferences screen.
-    RunnerManagerClosed {
-        /// Fresh configuration projection including runner names and pin counts.
-        preferences: Box<PreferencesView>,
     },
     /// Delegate one semantic action to the typed Preferences reducer.
     Preferences(PreferencesAction),
@@ -1747,10 +1701,6 @@ pub enum Effect {
         /// Owner that must receive the host response.
         owner: RunnerSaveOwner,
     },
-    /// Remove one stable runner key or one malformed raw row.
-    RemoveRunner(RunnerRemoveRequest),
-    /// Rebuild Preferences after its runner manager closes.
-    RefreshPreferencesAfterRunners,
     /// Host work requested by the typed Preferences reducer.
     Preferences(PreferencesEffect),
     /// Open the selected entry in the configured editor.
@@ -1905,7 +1855,6 @@ impl LibraryState {
             Action::OpenSettings => return self.open_selected(HostRequest::Settings),
             Action::OpenPreferences => return self.open(HostRequest::Preferences, None),
             Action::OpenHealth => return self.open(HostRequest::Health, None),
-            Action::OpenRunners => return self.open(HostRequest::Runners, None),
             Action::OpenPresets => return self.open_selected(HostRequest::Presets),
             Action::OpenRename => return self.open_selected(HostRequest::Rename),
             Action::Edit => {
@@ -1961,7 +1910,6 @@ impl LibraryState {
                 | Screen::Preferences(_)
                 | Screen::Add(_)
                 | Screen::Health(_)
-                | Screen::Runners(_)
                 | Screen::Settings(_)
                 | Screen::Report(_) => return Effect::None,
             },
@@ -2136,7 +2084,6 @@ impl LibraryState {
                     | Screen::Run(_)
                     | Screen::Preferences(_)
                     | Screen::Add(_)
-                    | Screen::Runners(_)
                     | Screen::Settings(_)
                     | Screen::Form(_)
                     | Screen::Report(_) => HealthEffect::None,
@@ -2159,39 +2106,6 @@ impl LibraryState {
                     }
                 }
             }
-            Action::Runners(action) => {
-                let effect = match &mut self.workflow.active {
-                    Screen::Runners(view) => view.reduce(action),
-                    Screen::Library
-                    | Screen::Run(_)
-                    | Screen::Preferences(_)
-                    | Screen::Add(_)
-                    | Screen::Health(_)
-                    | Screen::Form(_)
-                    | Screen::Settings(_)
-                    | Screen::Report(_) => RunnerManagerEffect::None,
-                };
-                match effect {
-                    RunnerManagerEffect::None => {}
-                    RunnerManagerEffect::Save(request) => {
-                        return Effect::SaveRunner {
-                            request,
-                            owner: RunnerSaveOwner::Manager,
-                        };
-                    }
-                    RunnerManagerEffect::Remove(request) => {
-                        return Effect::RemoveRunner(request);
-                    }
-                    RunnerManagerEffect::Close => {
-                        if matches!(self.workflow.previous(), Some(Screen::Preferences(_))) {
-                            return Effect::RefreshPreferencesAfterRunners;
-                        }
-                        self.workflow.back();
-                        self.modal = None;
-                        self.input_mode = InputMode::Browse;
-                    }
-                }
-            }
             Action::RunnerEditor(action) => {
                 let Some(ModalState::RunnerEditor {
                     owner,
@@ -2201,17 +2115,32 @@ impl LibraryState {
                 else {
                     return Effect::None;
                 };
+                let owner = owner.clone();
+                let cancel_status = cancel_status.clone();
                 match view.reduce(action) {
                     RunnerEditorEffect::None => {}
+                    // Preferences owns a draft, not a write: its editor result joins the same
+                    // transaction that Ctrl+S commits, exactly like every other control.
                     RunnerEditorEffect::Save(request) => {
-                        return Effect::SaveRunner {
-                            request,
-                            owner: RunnerSaveOwner::Editor(owner.clone()),
+                        return match owner {
+                            RunnerEditorOwner::Preferences => self.update(Action::Preferences(
+                                PreferencesAction::RunnerStaged(request),
+                            )),
+                            owner => Effect::SaveRunner {
+                                request,
+                                owner: RunnerSaveOwner::Editor(owner),
+                            },
                         };
                     }
                     RunnerEditorEffect::Cancel => {
-                        let cancel_status = cancel_status.clone();
                         self.modal = None;
+                        // Preferences remembers which staged row the editor rewrites. A cancel
+                        // keeps the row and the cursor, so that memory must go with the modal.
+                        if let (RunnerEditorOwner::Preferences, Screen::Preferences(view)) =
+                            (&owner, &mut self.workflow.active)
+                        {
+                            view.runner_editor_closed();
+                        }
                         if let Some(message) = cancel_status {
                             self.workflow.return_to_library();
                             self.input_mode = InputMode::Browse;
@@ -2248,6 +2177,9 @@ impl LibraryState {
                             view.add_and_select_runner(selector, name);
                         }
                     }
+                    // Preferences stages its rows locally, so no host save can answer it. A
+                    // stale answer must not close the editor the user is still typing in.
+                    RunnerEditorOwner::Preferences => return Effect::None,
                 }
                 self.modal = None;
                 self.status = Some(message);
@@ -2261,16 +2193,6 @@ impl LibraryState {
                     && current == &owner
                 {
                     let _ = view.reduce(RunnerEditorAction::MutationFailed(message));
-                }
-            }
-            Action::RunnerManagerClosed { preferences } => {
-                if matches!(self.workflow.active(), Screen::Runners(_))
-                    && matches!(self.workflow.previous(), Some(Screen::Preferences(_)))
-                {
-                    self.workflow
-                        .replace_from_back(Screen::Preferences(preferences));
-                    self.modal = None;
-                    self.input_mode = InputMode::Browse;
                 }
             }
             Action::Settings(action) => {
@@ -2332,6 +2254,16 @@ impl LibraryState {
                         }
                         PreferencesEffect::ConfirmDiscard => {
                             self.modal = Some(ModalState::ConfirmDiscardChanges);
+                        }
+                        PreferencesEffect::OpenRunnerEditor(view) => {
+                            self.modal = Some(ModalState::RunnerEditor {
+                                owner: RunnerEditorOwner::Preferences,
+                                view,
+                                cancel_status: None,
+                            });
+                        }
+                        PreferencesEffect::RunnerStaged { refused } => {
+                            self.close_or_refuse_runner_editor(refused);
                         }
                         effect => return Effect::Preferences(effect),
                     }
@@ -2536,7 +2468,6 @@ impl LibraryState {
                 Screen::Settings(_) => CommandContext::Settings,
                 Screen::Add(_) => CommandContext::Add,
                 Screen::Health(_) => CommandContext::Health,
-                Screen::Runners(_) => CommandContext::Runners,
                 Screen::Form(_) => CommandContext::Form,
                 Screen::Report(_) => CommandContext::Report,
             },
@@ -2594,17 +2525,18 @@ impl LibraryState {
             UiCommand::ChooseSettingsVariables => self
                 .settings_view()
                 .is_some_and(SettingsView::prompt_picker_available),
-            UiCommand::SavePreferences
-            | UiCommand::ClosePreferences
-            | UiCommand::ManageAgents
-            | UiCommand::InstallAgentSkill => {
+            UiCommand::SavePreferences | UiCommand::ClosePreferences => {
                 matches!(self.workflow.active, Screen::Preferences(_))
             }
+            // Enter belongs to the focused control. Preferences prints it only while a control
+            // that Enter activates holds the focus.
+            UiCommand::Submit => self
+                .preferences()
+                .is_none_or(|view| view.activation().is_some()),
             UiCommand::Add
             | UiCommand::Presets
             | UiCommand::Preferences
             | UiCommand::Health
-            | UiCommand::Runners
             | UiCommand::Search
             | UiCommand::LeaveSearch
             | UiCommand::ToggleDetail
@@ -2621,7 +2553,6 @@ impl LibraryState {
             | UiCommand::ClearSearch
             | UiCommand::FocusNext
             | UiCommand::FocusPrevious
-            | UiCommand::Submit
             | UiCommand::Back
             | UiCommand::CloseModal => true,
             UiCommand::DiscardChanges | UiCommand::KeepEditing => {
@@ -2640,7 +2571,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Report(_) => None,
         }
@@ -2655,7 +2585,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
@@ -2671,7 +2600,6 @@ impl LibraryState {
             | Screen::Run(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
@@ -2687,7 +2615,6 @@ impl LibraryState {
             | Screen::Run(_)
             | Screen::Preferences(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
@@ -2704,7 +2631,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Report(_) => None,
         }
@@ -2808,11 +2734,7 @@ impl LibraryState {
                     PreferencesAction::Previous
                 });
             }
-            Screen::Library
-            | Screen::Add(_)
-            | Screen::Health(_)
-            | Screen::Runners(_)
-            | Screen::Report(_) => {}
+            Screen::Library | Screen::Add(_) | Screen::Health(_) | Screen::Report(_) => {}
         }
     }
 
@@ -2825,7 +2747,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => (),
@@ -2848,7 +2769,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Report(_) => (),
         }
@@ -2870,7 +2790,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Report(_) => (),
         }
@@ -2896,6 +2815,13 @@ impl LibraryState {
             return Effect::Remove {
                 selector: selector.clone(),
             };
+        }
+        // Preferences keeps Enter on the focused control. The footer chip is the mouse endpoint
+        // of that key, so the shared command lands on the same typed action.
+        if let Screen::Preferences(view) = &self.workflow.active
+            && let Some((_, action)) = view.activation()
+        {
+            return self.update(Action::Preferences(action));
         }
         match &mut self.workflow.active {
             Screen::Run(form) => {
@@ -2925,7 +2851,6 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
-            | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Report(_) => Effect::None,
         }
@@ -2954,6 +2879,16 @@ impl LibraryState {
         } else {
             Some(0)
         };
+    }
+
+    fn close_or_refuse_runner_editor(&mut self, refused: Option<RunnerDraftError>) {
+        let Some(ModalState::RunnerEditor { view, .. }) = &mut self.modal else {
+            return;
+        };
+        match refused {
+            None => self.modal = None,
+            Some(RunnerDraftError::DuplicateName) => view.refuse(RunnerEditorError::NameTaken),
+        }
     }
 
     fn recompute_visible(&mut self, preferred: Option<&Slug>) {

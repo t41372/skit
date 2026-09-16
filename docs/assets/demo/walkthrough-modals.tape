@@ -93,10 +93,6 @@ Screenshot "/out/m03-environment-picker.png"
 Escape
 Sleep 2s
 
-# Ctrl+N is inert here, and correctly so: greet is a script, so its form has no Runner
-# field and NewRunner is not enabled. The runner editor is recorded from the Agents screen
-# below, where Ctrl+N is always offered.
-
 Escape
 Wait+Screen /greet/
 Sleep 2s
@@ -124,52 +120,32 @@ Type "y"
 Wait+Screen /greet/
 Sleep 2s
 
-# ---------------------------------------------------------------- agents: actions and removal
+# ---------------------------------------------------------------- preferences: agent editor and skill picker
 
-Type "R"
-Wait+Screen /codex/
-Sleep 2s
-
-# Ctrl+N opens the runner (agent) editor.
-# The anchor is the example name in the Name placeholder, "Name, e.g. aider". Both Chinese
-# catalogs keep "aider" untranslated, and no configured agent has that name, so it cannot
-# match the list underneath. A pattern naming {{prompt}} would match that list at once, so
-# the wait would return before the editor drew and prove nothing.
-Ctrl+N
-Wait+Screen /aider/
-Sleep 2s
-Screenshot "/out/m04-runner-editor.png"
-Escape
-Wait+Screen /codex/
-Sleep 2s
-
-Enter
-Sleep 3s
-Screenshot "/out/m06-agent-row-actions.png"
-Type "d"
-Sleep 3s
-Screenshot "/out/m07-agent-removal-confirm.png"
-# n keeps the agent.
-Type "n"
-Sleep 2s
-Escape
-Wait+Screen /greet/
-Sleep 2s
-
-# ---------------------------------------------------------------- preferences: Ctrl+K picker
-
-# Ctrl+K offers to install the skit skill into an AI agent's directory. The recording
-# container has no ~/.claude, ~/.codex or ./.agents, so the picker has nothing to list and
-# shows its empty state instead: it names the directories it looked in and gives the command
-# to install by hand. That sentence is translated, but the command inside it is not, so
-# "agent install" anchors the beat in every locale and appears nowhere on Preferences.
 Type ","
 Wait+Screen /VISUAL/
 Sleep 2s
-Ctrl+K
+
+# On Linux, five Tabs move from Language to the agent list.
+Tab 5
+Sleep 2s
+Enter
+# The command label contains aider in every locale. The agent list does not.
+Wait+Screen /aider/
+Sleep 2s
+Screenshot "/out/m04-runner-editor.png"
+Sleep 1s
+Escape
+Sleep 2s
+
+# Move past New agent to the Agent Skill door. The demo has no agent directories.
+Tab 2
+Enter
+# This command fragment stays on one line in every locale and appears only in the picker.
 Wait+Screen /agent install/
 Sleep 2s
 Screenshot "/out/m08-agent-skill-picker.png"
+Sleep 1s
 Escape
 Sleep 2s
 Escape

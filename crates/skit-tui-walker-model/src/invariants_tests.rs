@@ -13,10 +13,9 @@ use skit_ui::{
     Action, AddAction, AddEffect, AddStage, AddWorkflowState, DraftSummary, Effect, FieldValue,
     HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, KnownEntryKind, LibraryEntryDetail,
     LibraryState, LibrarySurface, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
-    PreferencesView, RunFormContext, RunFormView, RunPathContext, RunnerEditorAction,
-    RunnerEditorOwner, RunnerEditorView, RunnerManagerAction, RunnerManagerView, RunnerRow,
-    RunnerRowIdentity, Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot,
-    UvHealth,
+    PreferencesView, RunFormContext, RunFormView, RunPathContext, RunnerEditorOwner,
+    RunnerEditorView, RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget, Screen,
+    SettingsAction, SettingsInputs, SettingsView, SourceSnapshot, UvHealth,
 };
 
 use crate::invariants::check_state;
@@ -88,6 +87,22 @@ fn inspected_source() -> SourceSnapshot {
     }
 }
 
+fn preferences_runner_row(index: usize, name: &str) -> RunnerRow {
+    let identity = RunnerRowIdentity {
+        index: Some(index),
+        snapshot_token: format!("token-{index}"),
+    };
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count: 0,
+    }
+}
+
 /// Preferences with the mirror off. The mirror keeps the index URL controls hidden.
 fn preferences_snapshot() -> PreferencesSnapshot {
     PreferencesSnapshot {
@@ -100,7 +115,7 @@ fn preferences_snapshot() -> PreferencesSnapshot {
         after_run: AfterRunChoice::Stay,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names: vec!["codex".to_owned()],
+        runners: vec![preferences_runner_row(0, "codex")],
         mirror: MirrorConfiguration::default(),
     }
 }
@@ -167,22 +182,6 @@ fn run_state(selector: &str) -> LibraryState {
     state
 }
 
-fn runner(name: &str) -> RunnerRow {
-    let identity = RunnerRowIdentity {
-        index: Some(0),
-        snapshot_token: "runner-snapshot".to_owned(),
-    };
-    RunnerRow {
-        identity: identity.clone(),
-        name: Some(name.to_owned()),
-        argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
-        reason: None,
-        descriptor: name.to_owned(),
-        key_identities: vec![identity],
-        pinned_count: 0,
-    }
-}
-
 #[test]
 fn accepts_the_in_flight_draft_delete_before_the_host_answers() {
     let mut state = add_delete_confirmation();
@@ -232,17 +231,23 @@ fn rejects_a_runner_editor_owned_by_a_different_run_form() {
 
 #[test]
 fn rejects_nested_management_indices_that_name_no_row() {
-    let mut runners = LibraryState::default();
-    let _ = runners.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex")]),
-    ))));
-    let mut runner_value = serde_json::to_value(runners).unwrap();
-    runner_value["workflow"]["active"]["runners"]["selected"] = serde_json::json!(8);
-    let invalid_runners: LibraryState = serde_json::from_value(runner_value).unwrap();
+    let mut cursor = preferences_state();
+    let _ = cursor.update(Action::Preferences(PreferencesAction::RunnerCursor(0)));
+    let mut cursor_value = serde_json::to_value(cursor).unwrap();
+    cursor_value["workflow"]["active"]["preferences"]["runner_cursor"] = serde_json::json!(8);
+    let invalid_cursor: LibraryState = serde_json::from_value(cursor_value).unwrap();
     assert!(
-        check_state(&invalid_runners)
+        check_state(&invalid_cursor)
             .unwrap_err()
-            .contains("runner selection 8 is out of bounds")
+            .contains("PREFERENCES_RUNNER_CURSOR cursor=8 rows=1")
+    );
+    // An empty agent list keeps its cursor on row zero.
+    let empty = preferences_state_with(Vec::new());
+    assert!(
+        forged_refusal(&empty, |value| {
+            value["workflow"]["active"]["preferences"]["runner_cursor"] = serde_json::json!(1);
+        })
+        .contains("PREFERENCES_RUNNER_CURSOR cursor=1 rows=0")
     );
 
     let mut health = LibraryState::default();
@@ -321,27 +326,6 @@ fn rejects_stale_run_modal_subjects() {
 }
 
 #[test]
-fn rejects_stale_runner_removal_identity() {
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex")]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    let mut value = serde_json::to_value(state).unwrap();
-    value["workflow"]["active"]["runners"]["rows"][0]["identity"]["snapshot_token"] =
-        serde_json::json!("changed-after-confirmation");
-    value["workflow"]["active"]["runners"]["rows"][0]["key_identities"][0]["snapshot_token"] =
-        serde_json::json!("changed-after-confirmation");
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-
-    assert!(
-        check_state(&invalid)
-            .unwrap_err()
-            .contains("RUNNER_REMOVAL_TARGET")
-    );
-}
-
-#[test]
 fn rejects_remove_confirmation_with_stale_detail_facts() {
     let mut state = LibraryState::from_library_surface(library_surface());
     let _ = state.update(Action::AskRemove);
@@ -353,66 +337,6 @@ fn rejects_remove_confirmation_with_stale_detail_facts() {
         check_state(&invalid)
             .unwrap_err()
             .contains("preserved-file fact")
-    );
-}
-
-#[test]
-fn accepts_raw_removal_of_a_pinned_named_duplicate() {
-    let mut stable = runner("codex");
-    stable.pinned_count = 3;
-    let mut duplicate = stable.clone();
-    duplicate.identity = RunnerRowIdentity {
-        index: Some(1),
-        snapshot_token: "duplicate-row".to_owned(),
-    };
-    duplicate.reason = Some("duplicate runner key".to_owned());
-    duplicate.descriptor = "duplicate codex".to_owned();
-    let identities = vec![stable.identity.clone(), duplicate.identity.clone()];
-    stable.key_identities = identities.clone();
-    duplicate.key_identities = identities;
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![stable, duplicate]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::Select(1)));
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-
-    check_state(&state).unwrap();
-}
-
-#[test]
-fn rejects_jointly_truncated_named_runner_removal_cas() {
-    let mut stable = runner("codex");
-    stable.pinned_count = 2;
-    let mut duplicate = stable.clone();
-    duplicate.identity = RunnerRowIdentity {
-        index: Some(1),
-        snapshot_token: "duplicate-row".to_owned(),
-    };
-    duplicate.reason = Some("duplicate runner key".to_owned());
-    duplicate.descriptor = "duplicate codex".to_owned();
-    let identities = vec![stable.identity.clone(), duplicate.identity.clone()];
-    stable.key_identities = identities.clone();
-    duplicate.key_identities = identities;
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![stable, duplicate]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    let mut value = serde_json::to_value(state).unwrap();
-    let first = value["workflow"]["active"]["runners"]["rows"][0]["identity"].clone();
-    value["workflow"]["active"]["runners"]["rows"][0]["key_identities"] =
-        serde_json::json!([first.clone()]);
-    value["workflow"]["active"]["runners"]["rows"][1]["key_identities"] =
-        serde_json::json!([first.clone()]);
-    value["workflow"]["active"]["runners"]["overlay"]["removal"]["request"]["named"]["expected"] =
-        serde_json::json!([first]);
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-
-    assert!(
-        check_state(&invalid)
-            .unwrap_err()
-            .contains("RUNNER_REMOVAL_TARGET")
     );
 }
 
@@ -510,15 +434,6 @@ fn rejects_a_nonempty_agent_picker_without_selection_or_a_hidden_focus() {
 
 #[test]
 fn rejects_nonempty_management_surfaces_without_a_selection() {
-    let mut runners = LibraryState::default();
-    let _ = runners.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex")]),
-    ))));
-    let mut runner_value = serde_json::to_value(runners).unwrap();
-    runner_value["workflow"]["active"]["runners"]["selected"] = serde_json::Value::Null;
-    let invalid_runners: LibraryState = serde_json::from_value(runner_value).unwrap();
-    assert!(check_state(&invalid_runners).is_err());
-
     let mut health = LibraryState::default();
     let _ = health.update(Action::Present(Screen::Health(Box::new(HealthView::new(
         HealthSnapshot {
@@ -540,20 +455,6 @@ fn rejects_nonempty_management_surfaces_without_a_selection() {
     health_value["workflow"]["active"]["health"]["selected_issue"] = serde_json::Value::Null;
     let invalid_health: LibraryState = serde_json::from_value(health_value).unwrap();
     assert!(check_state(&invalid_health).is_err());
-}
-
-#[test]
-fn rejects_stale_manager_editor_targets() {
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex")]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::EditSelected));
-    let mut value = serde_json::to_value(state).unwrap();
-    value["workflow"]["active"]["runners"]["overlay"]["editor"]["target"]["named"]["expected"][0]
-        ["snapshot_token"] = serde_json::json!("stale-editor-target");
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-    assert!(check_state(&invalid).is_err());
 }
 
 #[test]
@@ -602,64 +503,6 @@ fn rejects_a_kind_stage_without_its_inspected_source() {
             .unwrap_err()
             .contains("ADD_KIND_SOURCE_LIFETIME")
     );
-}
-
-#[test]
-fn accepts_a_named_manager_editor_for_an_editable_invalid_duplicate() {
-    let mut stable = runner("codex");
-    let mut duplicate = stable.clone();
-    duplicate.identity = RunnerRowIdentity {
-        index: Some(1),
-        snapshot_token: "duplicate-row".to_owned(),
-    };
-    duplicate.reason = Some("duplicate runner key".to_owned());
-    duplicate.descriptor = "duplicate codex".to_owned();
-    let identities = vec![stable.identity.clone(), duplicate.identity.clone()];
-    stable.key_identities = identities.clone();
-    duplicate.key_identities = identities;
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![stable, duplicate]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::Select(1)));
-    let _ = state.update(Action::Runners(RunnerManagerAction::EditSelected));
-
-    check_state(&state).unwrap();
-}
-
-#[test]
-fn rejects_runner_overlays_not_owned_by_the_selected_row() {
-    let mut second = runner("other");
-    second.identity.index = Some(1);
-    second.identity.snapshot_token = "other-row".to_owned();
-    second.key_identities = vec![second.identity.clone()];
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![runner("codex"), second]),
-    ))));
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    let mut removal = serde_json::to_value(&state).unwrap();
-    removal["workflow"]["active"]["runners"]["selected"] = serde_json::json!(1);
-    let invalid_removal: LibraryState = serde_json::from_value(removal).unwrap();
-    assert!(check_state(&invalid_removal).is_err());
-
-    let mut raw = runner("codex");
-    raw.name = None;
-    raw.reason = Some("invalid row".to_owned());
-    let mut repair = LibraryState::default();
-    let _ = repair.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![raw]),
-    ))));
-    let _ = repair.update(Action::Runners(RunnerManagerAction::EditSelected));
-    let _ = repair.update(Action::Runners(RunnerManagerAction::Editor(
-        RunnerEditorAction::MutationFailed("retry".to_owned()),
-    )));
-    check_state(&repair).unwrap();
-    let mut stale = serde_json::to_value(repair).unwrap();
-    stale["workflow"]["active"]["runners"]["overlay"]["editor"]["target"]["raw_row"]["expected"]
-        ["snapshot_token"] = serde_json::json!("stale-raw-row");
-    let invalid_repair: LibraryState = serde_json::from_value(stale).unwrap();
-    assert!(check_state(&invalid_repair).is_err());
 }
 
 #[test]
@@ -821,14 +664,6 @@ fn preferences_state() -> LibraryState {
     state
 }
 
-fn runner_manager_state(rows: Vec<RunnerRow>) -> LibraryState {
-    let mut state = LibraryState::default();
-    let _ = state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(rows),
-    ))));
-    state
-}
-
 #[test]
 fn rejects_a_visible_library_row_that_names_no_entry() {
     let state = LibraryState::from_library_surface(library_surface());
@@ -871,20 +706,6 @@ fn rejects_a_library_selection_that_disagrees_with_the_visible_rows() {
         check_state(&invalid_bounds)
             .unwrap_err()
             .contains("LIBRARY_SELECTED_BOUNDS selected=3 visible=1")
-    );
-}
-
-#[test]
-fn rejects_a_runner_action_row_that_names_no_row() {
-    let state = runner_manager_state(vec![runner("codex")]);
-    let mut value = serde_json::to_value(state).unwrap();
-    value["workflow"]["active"]["runners"]["overlay"] = serde_json::json!({ "actions": 8 });
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-
-    assert!(
-        check_state(&invalid)
-            .unwrap_err()
-            .contains("runner action row 8 is out of bounds")
     );
 }
 
@@ -952,48 +773,6 @@ fn rejects_a_review_stage_without_its_review_subject() {
         check_state(&invalid)
             .unwrap_err()
             .contains("add review stage has no review subject")
-    );
-}
-
-#[test]
-fn rejects_a_raw_runner_removal_that_names_no_row() {
-    let mut raw = runner("codex");
-    raw.name = None;
-    raw.reason = Some("invalid row".to_owned());
-    raw.key_identities = Vec::new();
-    let mut state = runner_manager_state(vec![raw]);
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    check_state(&state).unwrap();
-
-    let mut value = serde_json::to_value(state).unwrap();
-    value["workflow"]["active"]["runners"]["overlay"]["removal"]["request"]["raw_row"]["expected"]
-        ["snapshot_token"] = serde_json::json!("stale-raw-removal");
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-
-    assert!(
-        check_state(&invalid)
-            .unwrap_err()
-            .contains("RUNNER_REMOVAL_TARGET raw=")
-    );
-}
-
-#[test]
-fn accepts_a_new_runner_manager_editor_and_rejects_a_stale_named_target() {
-    let mut state = runner_manager_state(vec![runner("codex")]);
-    let _ = state.update(Action::Runners(RunnerManagerAction::New));
-    check_state(&state).unwrap();
-
-    let mut named = runner_manager_state(vec![runner("codex")]);
-    let _ = named.update(Action::Runners(RunnerManagerAction::EditSelected));
-    let mut value = serde_json::to_value(named).unwrap();
-    value["workflow"]["active"]["runners"]["overlay"]["editor"]["name"] =
-        serde_json::json!("renamed");
-    let invalid: LibraryState = serde_json::from_value(value).unwrap();
-
-    assert!(
-        check_state(&invalid)
-            .unwrap_err()
-            .contains("RUNNER_MANAGER_EDITOR_TARGET")
     );
 }
 
@@ -1259,226 +1038,12 @@ fn rejects_a_runner_editor_without_its_owner_workflow() {
     );
 }
 
-fn named_removal_state() -> LibraryState {
-    let mut state = runner_manager_state(vec![runner("codex")]);
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    state
-}
-
-fn pinned_duplicate_rows() -> Vec<RunnerRow> {
-    let mut stable = runner("codex");
-    stable.pinned_count = 3;
-    let mut duplicate = stable.clone();
-    duplicate.identity = RunnerRowIdentity {
-        index: Some(1),
-        snapshot_token: "duplicate-row".to_owned(),
-    };
-    duplicate.reason = Some("duplicate runner key".to_owned());
-    duplicate.descriptor = "duplicate codex".to_owned();
-    let identities = vec![stable.identity.clone(), duplicate.identity.clone()];
-    stable.key_identities = identities.clone();
-    duplicate.key_identities = identities;
-    vec![stable, duplicate]
-}
-
-fn raw_removal_state() -> LibraryState {
-    let mut state = runner_manager_state(pinned_duplicate_rows());
-    let _ = state.update(Action::Runners(RunnerManagerAction::Select(1)));
-    let _ = state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    state
-}
-
-fn second_runner(name: &str, token: &str) -> RunnerRow {
-    let mut row = runner(name);
-    row.identity = RunnerRowIdentity {
-        index: Some(1),
-        snapshot_token: token.to_owned(),
-    };
-    row.key_identities = vec![row.identity.clone()];
-    row
-}
-
-fn raw_repair_row() -> RunnerRow {
-    let mut raw = runner("codex");
-    raw.name = None;
-    raw.reason = Some("invalid row".to_owned());
-    raw
-}
-
 /// Return the refusal for one hand-forged edit of a valid state.
 fn forged_refusal(state: &LibraryState, edit: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut value = serde_json::to_value(state).unwrap();
     edit(&mut value);
     let invalid: LibraryState = serde_json::from_value(value).unwrap();
     check_state(&invalid).unwrap_err()
-}
-
-#[test]
-fn accepts_a_named_runner_removal_of_the_selected_valid_row() {
-    check_state(&named_removal_state()).unwrap();
-}
-
-#[test]
-fn rejects_each_named_runner_removal_fact_on_its_own() {
-    let state = named_removal_state();
-    let identity = serde_json::to_value(state.clone()).unwrap()["workflow"]["active"]["runners"]
-        ["rows"][0]["identity"]
-        .clone();
-    let duplicate_identity = serde_json::json!({
-        "index": 1,
-        "snapshot_token": "second-codex-row"
-    });
-
-    let mut duplicated = serde_json::to_value(&state).unwrap();
-    let mut extra = duplicated["workflow"]["active"]["runners"]["rows"][0].clone();
-    extra["identity"] = duplicate_identity.clone();
-    duplicated["workflow"]["active"]["runners"]["rows"]
-        .as_array_mut()
-        .unwrap()
-        .push(extra);
-    let both = serde_json::json!([identity, duplicate_identity]);
-    duplicated["workflow"]["active"]["runners"]["rows"][0]["key_identities"] = both.clone();
-    duplicated["workflow"]["active"]["runners"]["rows"][1]["key_identities"] = both.clone();
-    duplicated["workflow"]["active"]["runners"]["overlay"]["removal"]["request"]["named"]["expected"] =
-        both;
-    let two_valid: LibraryState = serde_json::from_value(duplicated).unwrap();
-    assert!(
-        check_state(&two_valid)
-            .unwrap_err()
-            .contains("RUNNER_REMOVAL_TARGET name=\"codex\" valid=2")
-    );
-
-    for edit in [
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["request"]["named"]["expected"] =
-                serde_json::json!([]);
-        }) as Box<dyn FnOnce(&mut serde_json::Value)>,
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][0]["key_identities"] =
-                serde_json::json!([]);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][0]["pinned_count"] =
-                serde_json::json!(7);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["name"] =
-                serde_json::json!("other");
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["pinned_count"] =
-                serde_json::json!(5);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["invalid_row"] =
-                serde_json::json!(true);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["container"] =
-                serde_json::json!(true);
-        }),
-    ] {
-        assert!(forged_refusal(&state, edit).contains("RUNNER_REMOVAL_TARGET name="));
-    }
-
-    let mut moved =
-        runner_manager_state(vec![runner("codex"), second_runner("other", "other-row")]);
-    let _ = moved.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    assert!(
-        forged_refusal(&moved, |value| {
-            value["workflow"]["active"]["runners"]["selected"] = serde_json::json!(1);
-        })
-        .contains("RUNNER_REMOVAL_TARGET name=")
-    );
-}
-
-#[test]
-fn rejects_each_raw_runner_removal_fact_on_its_own() {
-    let state = raw_removal_state();
-    check_state(&state).unwrap();
-
-    for edit in [
-        Box::new(|value: &mut serde_json::Value| {
-            let extra = value["workflow"]["active"]["runners"]["rows"][1].clone();
-            value["workflow"]["active"]["runners"]["rows"]
-                .as_array_mut()
-                .unwrap()
-                .push(extra);
-        }) as Box<dyn FnOnce(&mut serde_json::Value)>,
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][1]["reason"] = serde_json::Value::Null;
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["selected"] = serde_json::json!(0);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["pinned_count"] =
-                serde_json::json!(3);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["invalid_row"] =
-                serde_json::json!(false);
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["overlay"]["removal"]["container"] =
-                serde_json::json!(true);
-        }),
-    ] {
-        assert!(forged_refusal(&state, edit).contains("RUNNER_REMOVAL_TARGET raw="));
-    }
-}
-
-#[test]
-fn rejects_a_named_manager_editor_whose_selection_moved_to_another_runner() {
-    let mut state =
-        runner_manager_state(vec![runner("codex"), second_runner("other", "other-row")]);
-    let _ = state.update(Action::Runners(RunnerManagerAction::EditSelected));
-    check_state(&state).unwrap();
-
-    assert!(
-        forged_refusal(&state, |value| {
-            value["workflow"]["active"]["runners"]["selected"] = serde_json::json!(1);
-        })
-        .contains("RUNNER_MANAGER_EDITOR_TARGET name=")
-    );
-}
-
-#[test]
-fn rejects_each_raw_manager_editor_fact_on_its_own() {
-    let mut state = runner_manager_state(vec![raw_repair_row()]);
-    let _ = state.update(Action::Runners(RunnerManagerAction::EditSelected));
-    check_state(&state).unwrap();
-
-    for edit in [
-        Box::new(|value: &mut serde_json::Value| {
-            let extra = value["workflow"]["active"]["runners"]["rows"][0].clone();
-            value["workflow"]["active"]["runners"]["rows"]
-                .as_array_mut()
-                .unwrap()
-                .push(extra);
-        }) as Box<dyn FnOnce(&mut serde_json::Value)>,
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][0]["name"] = serde_json::json!("codex");
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][0]["reason"] = serde_json::Value::Null;
-        }),
-        Box::new(|value: &mut serde_json::Value| {
-            value["workflow"]["active"]["runners"]["rows"][0]["argv"] = serde_json::Value::Null;
-        }),
-    ] {
-        assert!(forged_refusal(&state, edit).contains("RUNNER_MANAGER_EDITOR_TARGET raw="));
-    }
-
-    let mut moved =
-        runner_manager_state(vec![raw_repair_row(), second_runner("other", "other-row")]);
-    let _ = moved.update(Action::Runners(RunnerManagerAction::EditSelected));
-    assert!(
-        forged_refusal(&moved, |value| {
-            value["workflow"]["active"]["runners"]["selected"] = serde_json::json!(1);
-        })
-        .contains("RUNNER_MANAGER_EDITOR_TARGET raw=")
-    );
 }
 
 #[test]
@@ -1578,5 +1143,153 @@ fn rejects_an_add_runner_editor_over_a_review_that_is_not_a_prompt() {
         check_state(&invalid)
             .unwrap_err()
             .contains("add runner editor has no prompt review")
+    );
+}
+
+/// Preferences owns a runner editor while it is on screen, and only in any mode it opened.
+#[test]
+fn accepts_the_preferences_runner_editor_in_every_mode_it_can_open() {
+    let mut state = preferences_state();
+    let _ = state.update(Action::Preferences(PreferencesAction::EditRunner));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+
+    check_state(&state).unwrap();
+
+    // The new-agent door opens the same modal with no draft row behind it.
+    let mut door = preferences_state();
+    let _ = door.update(Action::Preferences(PreferencesAction::NewRunner));
+    check_state(&door).unwrap();
+
+    // A staged row reopens its own new-agent editor, which rewrites that row.
+    let mut added = preferences_state();
+    let _ = added.update(Action::Preferences(PreferencesAction::NewRunner));
+    let _ = added.update(Action::Preferences(PreferencesAction::RunnerStaged(
+        RunnerSaveRequest {
+            name: "walker-agent".to_owned(),
+            argv: vec!["walker-agent".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        },
+    )));
+    let _ = added.update(Action::Preferences(PreferencesAction::RunnerCursor(1)));
+    let _ = added.update(Action::Preferences(PreferencesAction::EditRunner));
+    assert_eq!(added.preferences().unwrap().editing_runner_row(), Some(1));
+    check_state(&added).unwrap();
+
+    // A malformed row has no stable key, so its editor repairs that exact row.
+    let mut repair = preferences_state_with(vec![raw_preferences_row()]);
+    let _ = repair.update(Action::Preferences(PreferencesAction::EditRunner));
+    check_state(&repair).unwrap();
+
+    // An empty agent list leaves the door as the only editor.
+    let mut empty = preferences_state_with(Vec::new());
+    let _ = empty.update(Action::Preferences(PreferencesAction::NewRunner));
+    check_state(&empty).unwrap();
+}
+
+/// Return one malformed stored row that a repair editor can open.
+fn raw_preferences_row() -> RunnerRow {
+    RunnerRow {
+        identity: RunnerRowIdentity {
+            index: Some(0),
+            snapshot_token: "raw".to_owned(),
+        },
+        name: None,
+        argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
+        reason: Some("name".to_owned()),
+        descriptor: "prompt.runners[0]".to_owned(),
+        key_identities: Vec::new(),
+        pinned_count: 0,
+    }
+}
+
+/// Return Preferences over exactly these stored agent rows.
+fn preferences_state_with(runners: Vec<RunnerRow>) -> LibraryState {
+    let mut state = LibraryState::default();
+    let view = PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+        runners,
+        ..preferences_snapshot()
+    }));
+    let _ = state.update(Action::Present(Screen::Preferences(Box::new(view))));
+    state
+}
+
+/// The editor must name the row the cursor is on, and the stored name alone picks its mode.
+#[test]
+fn rejects_a_preferences_runner_editor_that_names_another_row() {
+    let mut named = preferences_state();
+    let _ = named.update(Action::Preferences(PreferencesAction::EditRunner));
+    for edit in [
+        // A name no stored row carries.
+        |value: &mut serde_json::Value| {
+            value["modal"]["runner_editor"]["view"]["target"]["named"]["name"] =
+                serde_json::json!("other");
+        },
+        // A stale compare-and-swap key.
+        |value: &mut serde_json::Value| {
+            value["modal"]["runner_editor"]["view"]["target"]["named"]["expected"] =
+                serde_json::json!([]);
+        },
+        // A repair target over a row that has a stored name.
+        |value: &mut serde_json::Value| {
+            value["modal"]["runner_editor"]["view"]["target"] = serde_json::json!({
+                "raw_row": { "expected": { "index": 0, "snapshot_token": "token-0" } }
+            });
+        },
+        // A draft row the door never staged.
+        |value: &mut serde_json::Value| {
+            value["workflow"]["active"]["preferences"]["editing_runner_row"] = serde_json::json!(0);
+        },
+    ] {
+        assert!(
+            forged_refusal(&named, edit).contains("PREFERENCES_RUNNER_EDITOR_TARGET"),
+            "the forged editor target passed"
+        );
+    }
+
+    // A raw row keeps its repair editor: an edit target over it names a key it does not have.
+    let mut repair = preferences_state_with(vec![raw_preferences_row()]);
+    let _ = repair.update(Action::Preferences(PreferencesAction::EditRunner));
+    assert!(
+        forged_refusal(&repair, |value| {
+            value["modal"]["runner_editor"]["view"]["target"] = serde_json::json!({
+                "named": { "name": "agent", "expected": [] }
+            });
+        })
+        .contains("PREFERENCES_RUNNER_EDITOR_TARGET")
+    );
+}
+
+#[test]
+fn rejects_a_preferences_runner_editor_that_left_its_screen_or_carries_a_cancel_status() {
+    let mut state = preferences_state();
+    let _ = state.update(Action::Preferences(PreferencesAction::EditRunner));
+    let mut value = serde_json::to_value(&state).unwrap();
+    value["modal"]["runner_editor"]["cancel_status"] = serde_json::json!("stranded");
+    let invalid: LibraryState = serde_json::from_value(value).unwrap();
+    assert!(
+        check_state(&invalid)
+            .unwrap_err()
+            .contains("RUNNER_EDITOR_PREFERENCES_STATUS")
+    );
+
+    let mut value =
+        serde_json::to_value(LibraryState::from_library_surface(library_surface())).unwrap();
+    value["modal"] = serde_json::to_value(ModalState::RunnerEditor {
+        owner: RunnerEditorOwner::Preferences,
+        view: Box::new(RunnerEditorView::new()),
+        cancel_status: None,
+    })
+    .unwrap();
+    let stranded: LibraryState = serde_json::from_value(value).unwrap();
+    assert!(
+        check_state(&stranded)
+            .unwrap_err()
+            .contains("runner editor has no matching owner workflow")
     );
 }

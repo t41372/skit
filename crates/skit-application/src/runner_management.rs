@@ -5,6 +5,76 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+/// Opaque identity of one raw row or malformed enclosing container.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunnerRowIdentity {
+    /// Zero-based raw row index. A malformed container has no index.
+    pub index: Option<usize>,
+    /// Complete raw semantic snapshot token supplied by the store adapter.
+    pub snapshot_token: String,
+}
+
+/// One complete runner-management row.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunnerRow {
+    /// Raw row or container identity.
+    pub identity: RunnerRowIdentity,
+    /// Normalized stable runner name when present.
+    pub name: Option<String>,
+    /// Parsed argv when every element is text.
+    pub argv: Option<Vec<String>>,
+    /// Stable malformed-row reason code.
+    pub reason: Option<String>,
+    /// Stable raw-shape display label.
+    pub descriptor: String,
+    /// Complete raw identities for this stable name at inspection time.
+    pub key_identities: Vec<RunnerRowIdentity>,
+    /// Prompt entries pinned to the active valid key.
+    pub pinned_count: usize,
+}
+
+impl RunnerRow {
+    /// Return whether the row has enough structure for exact repair.
+    #[must_use]
+    pub const fn is_editable(&self) -> bool {
+        self.identity.index.is_some() && self.argv.is_some()
+    }
+
+    /// Return whether this row is an active valid stable-key definition.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.reason.is_none()
+    }
+}
+
+/// Target protected by one save operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerSaveTarget {
+    /// Append a new stable runner key.
+    New,
+    /// Replace and coalesce all raw rows for one stable name.
+    Named {
+        /// Immutable name that prompt entries pin.
+        name: String,
+        /// Complete raw key snapshot used for compare-and-swap.
+        expected: Vec<RunnerRowIdentity>,
+    },
+    /// Repair one recognizable raw row by exact identity.
+    RawRow { expected: RunnerRowIdentity },
+}
+
+/// Validated runner save request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunnerSaveRequest {
+    /// Stable runner name.
+    pub name: String,
+    /// Direct process argv.
+    pub argv: Vec<String>,
+    /// Atomic mutation target.
+    pub target: RunnerSaveTarget,
+}
+
 /// Quoting convention used by one editable argv line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EditableArgvDialect {

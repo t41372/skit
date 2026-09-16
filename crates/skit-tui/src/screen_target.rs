@@ -23,16 +23,36 @@ pub enum ScreenTarget {
         /// Stable detected agent scope.
         scope: AgentScope,
     },
-    /// One named prompt-runner row.
+    /// One prompt-runner row of the agent list.
     Runner {
-        /// Stable runner name shown by the row.
-        name: String,
+        /// Zero-based draft row, which addresses a malformed or a repeated name.
+        row: usize,
+        /// Stable runner name the row shows, or `None` for a malformed row.
+        name: Option<String>,
+    },
+    /// One command chip of the agent-list cursor row.
+    RunnerChip {
+        /// Zero-based draft row that owns the chip.
+        row: usize,
+        /// Command the chip performs.
+        chip: RunnerChip,
     },
     /// One portable entry below the configured memory picker root.
     FilePickerEntry {
         /// Relative path below the configured picker root.
         relative: PathBuf,
     },
+}
+
+/// One command a prompt-runner row offers on the cursor row.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerChip {
+    /// Open the shared runner editor on the row.
+    Edit,
+    /// Stage or cancel the removal of the row.
+    Remove,
 }
 
 /// The current keyboard-focus state for one rendered screen.
@@ -100,8 +120,7 @@ mod tests {
     use skit_i18n::Locale;
     use skit_ui::{
         Action, AddWorkflowState, DraftSummary, LibraryState, PreferencesAction,
-        PreferencesControlId, PreferencesView, RunnerManagerView, RunnerRow, RunnerRowIdentity,
-        Screen,
+        PreferencesControlId, PreferencesView, Screen,
     };
 
     use super::*;
@@ -132,7 +151,7 @@ mod tests {
             after_run: AfterRunChoice::Stay,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
-            runner_names: Vec::new(),
+            runners: Vec::new(),
             mirror: MirrorConfiguration::default(),
         });
         let mut state = LibraryState::default();
@@ -146,30 +165,6 @@ mod tests {
         let mut state = LibraryState::default();
         let _ = state.update(Action::Present(Screen::Add(Box::new(
             AddWorkflowState::new(drafts),
-        ))));
-        state
-    }
-
-    fn runners_state(names: &[&str]) -> LibraryState {
-        let rows = names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| RunnerRow {
-                identity: RunnerRowIdentity {
-                    index: Some(index),
-                    snapshot_token: format!("runner-{index}"),
-                },
-                name: Some((*name).to_owned()),
-                argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
-                reason: None,
-                descriptor: (*name).to_owned(),
-                key_identities: Vec::new(),
-                pinned_count: 0,
-            })
-            .collect();
-        let mut state = LibraryState::default();
-        let _ = state.update(Action::Present(Screen::Runners(Box::new(
-            RunnerManagerView::new(rows),
         ))));
         state
     }
@@ -198,40 +193,6 @@ mod tests {
             session.screen_target_inventory(&state).unwrap(),
             ScreenTargetInventory::default()
         );
-
-        let duplicates = runners_state(&["same", "same", ""]);
-        let mut duplicate_session = TuiSession::default();
-        let mut duplicate_terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let _ = render(&mut duplicate_terminal, &duplicates, &mut duplicate_session);
-        let duplicate_inventory = duplicate_session
-            .screen_target_inventory(&duplicates)
-            .unwrap();
-        let duplicate = ScreenTarget::Runner {
-            name: "same".to_owned(),
-        };
-        assert_eq!(
-            duplicate_inventory
-                .available
-                .iter()
-                .filter(|target| *target == &duplicate)
-                .count(),
-            2
-        );
-        assert_eq!(
-            duplicate_inventory
-                .hits
-                .iter()
-                .filter(|hit| hit.target == duplicate)
-                .count(),
-            2
-        );
-
-        let mut tiny_session = TuiSession::default();
-        let mut tiny_terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
-        let _ = render(&mut tiny_terminal, &duplicates, &mut tiny_session);
-        let tiny = tiny_session.screen_target_inventory(&duplicates).unwrap();
-        assert_eq!(tiny.available.len(), 2);
-        assert!(tiny.hits.is_empty());
     }
 
     #[test]
@@ -291,7 +252,7 @@ mod tests {
         let _ = render(&mut terminal, &state, &mut session);
         let inventory = session.screen_target_inventory(&state).unwrap();
         for id in [
-            PreferencesControlId::ManageAgents,
+            PreferencesControlId::NewRunner,
             PreferencesControlId::InstallAgentSkill,
         ] {
             assert!(inventory.available.contains(&ScreenTarget::Preferences(id)));
@@ -327,53 +288,6 @@ mod tests {
                 .all(|hit| { matches!(hit.target, ScreenTarget::AgentSkill { .. }) })
         );
         assert!(overlay.focus.is_none());
-    }
-
-    #[test]
-    fn runner_inventory_uses_named_rows_and_hides_them_behind_actions() {
-        let mut state = runners_state(&["alpha", "beta"]);
-        let mut session = TuiSession::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let geometry = render(&mut terminal, &state, &mut session);
-        let target = ScreenTarget::Runner {
-            name: "beta".to_owned(),
-        };
-        let inventory = session.screen_target_inventory(&state).unwrap();
-        assert!(inventory.available.contains(&target));
-        let rect = inventory
-            .hits
-            .iter()
-            .find(|hit| hit.target == target)
-            .unwrap()
-            .rect;
-
-        assert_eq!(
-            session.handle_event(
-                primary(rect, MouseEventKind::Down(MouseButton::Left)),
-                &state,
-                &geometry,
-            ),
-            crate::EventHandling::Consumed
-        );
-        let action = session.handle_event(
-            primary(rect, MouseEventKind::Up(MouseButton::Left)),
-            &state,
-            &geometry,
-        );
-        assert_eq!(
-            action,
-            crate::EventHandling::Action(Action::Runners(
-                skit_ui::RunnerManagerAction::ActivateRow(1)
-            ))
-        );
-        let _ = state.update(Action::Runners(skit_ui::RunnerManagerAction::ActivateRow(
-            1,
-        )));
-        let _ = render(&mut terminal, &state, &mut session);
-        assert_eq!(
-            session.screen_target_inventory(&state).unwrap(),
-            ScreenTargetInventory::default()
-        );
     }
 
     #[test]
@@ -517,7 +431,7 @@ mod tests {
         assert!(session.screen_target_inventory(&preferences).is_ok());
 
         let _ = preferences.update(Action::Preferences(PreferencesAction::Focus(
-            PreferencesControlId::ManageAgents,
+            PreferencesControlId::NewRunner,
         )));
         assert_eq!(
             session.screen_target_inventory(&preferences),
@@ -530,9 +444,7 @@ mod tests {
                 .unwrap()
                 .focus
                 .and_then(|focus| focus.current),
-            Some(ScreenTarget::Preferences(
-                PreferencesControlId::ManageAgents
-            ))
+            Some(ScreenTarget::Preferences(PreferencesControlId::NewRunner))
         );
     }
 

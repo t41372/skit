@@ -39,7 +39,6 @@ const PILL_FOREGROUND: Color = Color::Rgb(0xD9, 0x77, 0x57);
 pub(crate) struct FooterInputOwnership {
     pub(crate) vertical_navigation: bool,
     pub(crate) run_submit: bool,
-    pub(crate) preferences_input: bool,
     pub(crate) escape: bool,
 }
 
@@ -89,6 +88,11 @@ pub(crate) struct ActionFooterStyle {
 }
 
 impl ActionFooterStyle {
+    /// Return the button style one command chip paints with.
+    pub(crate) fn button(&self) -> ButtonStyle {
+        self.button.clone()
+    }
+
     /// Use the supplied foreground and background for each command chip.
     pub(crate) fn new(foreground: Color, background: Color) -> Self {
         Self {
@@ -392,7 +396,7 @@ mod agent_review_tests {
         );
         session.advertised.push((
             Rect::new(1, 2, 1, 1),
-            LocalKey::Character('b'),
+            LocalKey::Control('b'),
             HealthAction::Back,
         ));
         let json = serde_json::to_string(&session.agent_review_snapshot().unwrap()).unwrap();
@@ -491,20 +495,19 @@ fn minimum_content_height(
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
-    matches!(
-        state.screen(),
-        Screen::Add(_) | Screen::Health(_) | Screen::Runners(_)
-    ) || matches!(
-        state.screen(),
-        Screen::Preferences(view) if view.agent_skill_install().is_some()
-    ) || matches!(
-        state.modal(),
-        Some(
-            skit_ui::ModalState::ConfirmRemove { .. }
-                | skit_ui::ModalState::ConfirmDiscardChanges
-                | skit_ui::ModalState::RunnerEditor { .. }
+    matches!(state.screen(), Screen::Add(_) | Screen::Health(_))
+        || matches!(
+            state.screen(),
+            Screen::Preferences(view) if view.agent_skill_install().is_some()
         )
-    )
+        || matches!(
+            state.modal(),
+            Some(
+                skit_ui::ModalState::ConfirmRemove { .. }
+                    | skit_ui::ModalState::ConfirmDiscardChanges
+                    | skit_ui::ModalState::RunnerEditor { .. }
+            )
+        )
 }
 
 impl FooterSession {
@@ -770,8 +773,13 @@ fn footer_groups(
                     .join("/");
                 return Some((keys, String::new(), spec.command));
             }
-            let label = match (spec.command, state.form()) {
-                (UiCommand::Submit, Some(form)) => text(locale, &form.submit_label),
+            // Enter reads as the verb of the control that owns it, never as a bare "Submit".
+            let label = match (spec.command, state.form(), state.preferences()) {
+                (UiCommand::Submit, Some(form), _) => text(locale, &form.submit_label),
+                (UiCommand::Submit, None, Some(view)) => text(
+                    locale,
+                    view.activation().map_or(spec.label, |(verb, _)| verb),
+                ),
                 _ => text(locale, spec.label),
             };
             Some((binding.hint.to_owned(), label.into_owned(), spec.command))
@@ -806,14 +814,6 @@ pub(crate) fn advertised_bindings(
 }
 
 fn displayed_bindings(spec: UiCommandSpec, ownership: FooterInputOwnership) -> Vec<UiBinding> {
-    if ownership.preferences_input
-        && matches!(
-            spec.command,
-            UiCommand::ManageAgents | UiCommand::InstallAgentSkill
-        )
-    {
-        return Vec::new();
-    }
     if ownership.escape {
         let bindings = spec
             .bindings
@@ -894,10 +894,7 @@ mod tests {
     use skit_ui::{Action, AddWorkflowState, RunFormView, Screen};
 
     use super::*;
-    use crate::screens::management::{
-        health_footer_items, runner_action_footer_items, runner_editor_footer_items,
-        runner_manager_footer_items, runner_removal_footer_items,
-    };
+    use crate::screens::management::{health_footer_items, runner_editor_footer_items};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum TestAction {
@@ -1005,13 +1002,9 @@ mod tests {
     #[test]
     fn action_footer_wraps_every_chip_and_keeps_each_visible_chip_clickable() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
-            ActionFooterItem::new(
-                LocalKey::Character('2'),
-                "Second action",
-                TestAction::Second,
-            ),
-            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
+            ActionFooterItem::new(LocalKey::Control('1'), "First action", TestAction::First),
+            ActionFooterItem::new(LocalKey::Control('2'), "Second action", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Control('3'), "Third action", TestAction::Third),
         ];
         assert_eq!(action_footer_required_height(22, &items), 3);
 
@@ -1042,18 +1035,10 @@ mod tests {
     #[test]
     fn action_footer_scrolls_to_chips_that_do_not_fit_the_viewport() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
-            ActionFooterItem::new(
-                LocalKey::Character('2'),
-                "Second action",
-                TestAction::Second,
-            ),
-            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
-            ActionFooterItem::new(
-                LocalKey::Character('4'),
-                "Fourth action",
-                TestAction::Fourth,
-            ),
+            ActionFooterItem::new(LocalKey::Control('1'), "First action", TestAction::First),
+            ActionFooterItem::new(LocalKey::Control('2'), "Second action", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Control('3'), "Third action", TestAction::Third),
+            ActionFooterItem::new(LocalKey::Control('4'), "Fourth action", TestAction::Fourth),
         ];
         let backend = TestBackend::new(22, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1138,12 +1123,8 @@ mod tests {
     #[test]
     fn action_footer_never_paints_or_owns_the_row_after_its_half_open_area() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
-            ActionFooterItem::new(
-                LocalKey::Character('2'),
-                "Second action",
-                TestAction::Second,
-            ),
+            ActionFooterItem::new(LocalKey::Control('1'), "First action", TestAction::First),
+            ActionFooterItem::new(LocalKey::Control('2'), "Second action", TestAction::Second),
         ];
         assert_eq!(action_footer_required_height(22, &items), 2);
 
@@ -1180,7 +1161,7 @@ mod tests {
     #[test]
     fn action_footer_release_outside_cancels_the_arm_before_a_late_release() {
         let items = [ActionFooterItem::new(
-            LocalKey::Character('1'),
+            LocalKey::Control('1'),
             "First action",
             TestAction::First,
         )];
@@ -1212,21 +1193,25 @@ mod tests {
     #[test]
     fn action_footer_keeps_a_chip_that_ends_exactly_at_the_content_boundary() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "A", TestAction::First),
-            ActionFooterItem::new(LocalKey::Character('2'), "B", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Control('1'), "A", TestAction::First),
+            ActionFooterItem::new(LocalKey::Control('2'), "B", TestAction::Second),
         ];
-        assert_eq!(action_footer_required_height(14, &items), 1);
+        assert_eq!(action_footer_required_height(24, &items), 1);
+        assert_eq!(action_footer_required_height(23, &items), 2);
 
-        let mut terminal = Terminal::new(TestBackend::new(14, 1)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(24, 1)).unwrap();
         let mut session = ActionFooterSession::default();
         terminal
             .draw(|frame| {
                 session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
-        assert_eq!(session.handle_mouse(&click(8, 0)), ActionFooterMouse::Armed);
         assert_eq!(
-            session.handle_mouse(&release(8, 0)),
+            session.handle_mouse(&click(13, 0)),
+            ActionFooterMouse::Armed
+        );
+        assert_eq!(
+            session.handle_mouse(&release(13, 0)),
             ActionFooterMouse::Action(TestAction::Second)
         );
     }
@@ -1234,18 +1219,10 @@ mod tests {
     #[test]
     fn action_footer_indicator_reports_top_middle_bottom_and_no_overflow() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "First action", TestAction::First),
-            ActionFooterItem::new(
-                LocalKey::Character('2'),
-                "Second action",
-                TestAction::Second,
-            ),
-            ActionFooterItem::new(LocalKey::Character('3'), "Third action", TestAction::Third),
-            ActionFooterItem::new(
-                LocalKey::Character('4'),
-                "Fourth action",
-                TestAction::Fourth,
-            ),
+            ActionFooterItem::new(LocalKey::Control('1'), "First action", TestAction::First),
+            ActionFooterItem::new(LocalKey::Control('2'), "Second action", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Control('3'), "Third action", TestAction::Third),
+            ActionFooterItem::new(LocalKey::Control('4'), "Fourth action", TestAction::Fourth),
         ];
         let mut terminal = Terminal::new(TestBackend::new(22, 1)).unwrap();
         let mut session = ActionFooterSession::default();
@@ -1282,8 +1259,8 @@ mod tests {
     #[test]
     fn action_footer_group_starts_on_a_new_row() {
         let items = [
-            ActionFooterItem::new(LocalKey::Character('1'), "One", TestAction::First),
-            ActionFooterItem::new_group(LocalKey::Character('2'), "Two", TestAction::Second),
+            ActionFooterItem::new(LocalKey::Control('1'), "One", TestAction::First),
+            ActionFooterItem::new_group(LocalKey::Control('2'), "Two", TestAction::Second),
         ];
         assert_eq!(action_footer_required_height(80, &items), 2);
         assert_eq!(action_footer_required_height(0, &items), 0);
@@ -1343,10 +1320,6 @@ mod tests {
     fn every_management_local_action_uses_the_scrollable_footer_at_every_size_tier() {
         assert_local_action_inventory(health_footer_items(Locale::En));
         assert_local_action_inventory(runner_editor_footer_items(Locale::En));
-        assert_local_action_inventory(runner_manager_footer_items(Locale::En));
-        assert_local_action_inventory(runner_action_footer_items(Locale::En, true));
-        assert_local_action_inventory(runner_action_footer_items(Locale::En, false));
-        assert_local_action_inventory(runner_removal_footer_items(Locale::En));
     }
 
     #[test]
@@ -1802,7 +1775,6 @@ fn widget_owned_keys_are_removed_from_the_visible_shared_footer_contract() {
     let run = FooterInputOwnership {
         vertical_navigation: true,
         run_submit: true,
-        preferences_input: false,
         escape: true,
     };
     let displayed = |context, command, ownership| {
@@ -1833,17 +1805,4 @@ fn widget_owned_keys_are_removed_from_the_visible_shared_footer_contract() {
         [UiKey::BackTab]
     );
     assert!(displayed(CommandContext::RunForm, UiCommand::Back, run).is_empty());
-
-    let preferences = FooterInputOwnership {
-        vertical_navigation: false,
-        run_submit: false,
-        preferences_input: true,
-        escape: false,
-    };
-    for command in [UiCommand::ManageAgents, UiCommand::InstallAgentSkill] {
-        assert!(
-            displayed(CommandContext::Preferences, command, preferences).is_empty(),
-            "{command:?} must not advertise a chord that the input owns"
-        );
-    }
 }

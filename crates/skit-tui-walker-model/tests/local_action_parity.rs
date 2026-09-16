@@ -31,8 +31,7 @@ use skit_tui_walker_model::parity::{
 use skit_ui::{
     Action, AddWorkflowState, Effect, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView,
     LibraryState, LibrarySurface, MirrorHealth, PreferencesAction, PreferencesView, RunFormContext,
-    RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView, RunnerRow,
-    RunnerRowIdentity, Screen, UiCommand, UvHealth,
+    RunFormView, RunPathContext, RunnerRow, RunnerRowIdentity, Screen, UiCommand, UvHealth,
 };
 
 // --------------------------------------------------------------------------
@@ -259,73 +258,6 @@ fn health_state() -> LibraryState {
     }))))
 }
 
-/// The registry shape of the legacy `model_walker/fixtures.rs:905`: one valid pinned row and
-/// one malformed row. Each snapshot token is distinct, as the production store always makes
-/// them.
-fn runner_rows() -> Vec<RunnerRow> {
-    let valid = RunnerRowIdentity {
-        index: Some(0),
-        snapshot_token: concat!(
-            "row:0:name=Some(\"codex\"):argv=Some([\"codex\", \"exec\", ",
-            "\"{{prompt}}\"]):reason=None:descriptor=\"codex\""
-        )
-        .to_owned(),
-    };
-    vec![
-        RunnerRow {
-            identity: valid.clone(),
-            name: Some("codex".to_owned()),
-            argv: Some(vec![
-                "codex".to_owned(),
-                "exec".to_owned(),
-                "{{prompt}}".to_owned(),
-            ]),
-            reason: None,
-            descriptor: "codex".to_owned(),
-            key_identities: vec![valid],
-            pinned_count: 1,
-        },
-        RunnerRow {
-            identity: RunnerRowIdentity {
-                index: Some(1),
-                snapshot_token: concat!(
-                    "row:1:name=None:argv=Some([\"broken\", \"{{prompt}}\"]):",
-                    "reason=Some(\"name_missing\"):descriptor=\"malformed row 1\""
-                )
-                .to_owned(),
-            },
-            name: None,
-            argv: Some(vec!["broken".to_owned(), "{{prompt}}".to_owned()]),
-            reason: Some("name_missing".to_owned()),
-            descriptor: "malformed row 1".to_owned(),
-            key_identities: Vec::new(),
-            pinned_count: 0,
-        },
-    ]
-}
-
-fn runners_state() -> LibraryState {
-    present(Screen::Runners(Box::new(RunnerManagerView::new(
-        runner_rows(),
-    ))))
-}
-
-/// The Runners screen with the malformed row selected.
-fn runners_on_invalid_row() -> LibraryState {
-    let mut state = runners_state();
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::Select(1))),
-        Effect::None
-    );
-    state
-}
-
-fn runners_with(action: RunnerManagerAction) -> LibraryState {
-    let mut state = runners_state();
-    assert_eq!(state.update(Action::Runners(action)), Effect::None);
-    state
-}
-
 fn prompt_run_state() -> LibraryState {
     let mut path = ParamDecl::new("path");
     path.parameter_type = ParameterType::Path;
@@ -363,6 +295,22 @@ fn standalone_runner_editor_state() -> LibraryState {
     state
 }
 
+fn preferences_runner_row(index: usize, name: &str) -> RunnerRow {
+    let identity = RunnerRowIdentity {
+        index: Some(index),
+        snapshot_token: format!("token-{index}"),
+    };
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count: 0,
+    }
+}
+
 fn preferences_state() -> LibraryState {
     let mut state = present(Screen::Preferences(Box::new(PreferencesView::new(
         PreferencesDraft::from_snapshot(PreferencesSnapshot {
@@ -375,7 +323,7 @@ fn preferences_state() -> LibraryState {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
-            runner_names: vec!["codex".to_owned()],
+            runners: vec![preferences_runner_row(0, "codex")],
             mirror: MirrorConfiguration::default(),
         }),
     ))));
@@ -417,9 +365,6 @@ fn local_inventory_describes_only_the_last_rendered_screen() {
 fn every_advertised_local_action_has_a_hit_and_an_equal_key_endpoint() {
     assert_inventory_parity(&add_state(), "Add");
     assert_inventory_parity(&health_state(), "Health");
-    assert_inventory_parity(&runners_state(), "Runners");
-    assert_inventory_parity(&runners_on_invalid_row(), "Runners on a malformed row");
-    assert_inventory_parity(&runners_with(RunnerManagerAction::New), "Runners editor");
     assert_inventory_parity(&standalone_runner_editor_state(), "RunnerEditor");
 }
 
@@ -462,7 +407,7 @@ fn local_inventory_is_empty_for_clipped_cells_and_open_overlays() {
 /// Ledger row `local_inventory.rs:301`.
 #[test]
 fn every_advertised_alias_reaches_the_mouse_endpoint() {
-    let state = runners_with(RunnerManagerAction::New);
+    let state = standalone_runner_editor_state();
     let inventory = render(&state, &mut TuiSession::default(), 120, 30);
     let alias = inventory
         .actions
@@ -507,38 +452,9 @@ fn preferences_shared_focus_hits_return_typed_preferences_actions() {
 /// Ledger row `local_inventory.rs:485`.
 #[test]
 fn runner_local_surfaces_are_bounded_and_unambiguous_in_every_tier_and_locale() {
-    let manager = runners_state();
-    let actions = runners_with(RunnerManagerAction::ActivateSelected);
-    let mut removal = actions.clone();
-    assert_eq!(
-        removal.update(Action::Runners(RunnerManagerAction::RemoveSelected)),
-        Effect::None
-    );
-    let nested_editor = runners_with(RunnerManagerAction::New);
     let standalone_editor = standalone_runner_editor_state();
 
-    let invalid = runners_on_invalid_row();
-    let mut invalid_actions = invalid.clone();
-    assert_eq!(
-        invalid_actions.update(Action::Runners(RunnerManagerAction::ActivateSelected)),
-        Effect::None
-    );
-    let mut invalid_removal = invalid_actions.clone();
-    assert_eq!(
-        invalid_removal.update(Action::Runners(RunnerManagerAction::RemoveSelected)),
-        Effect::None
-    );
-
-    for (context, state) in [
-        ("Runners", &manager),
-        ("Runners actions", &actions),
-        ("Runners removal", &removal),
-        ("Runners editor", &nested_editor),
-        ("RunnerEditor", &standalone_editor),
-        ("Runners on a malformed row", &invalid),
-        ("Runners actions on a malformed row", &invalid_actions),
-        ("Runners removal of a malformed row", &invalid_removal),
-    ] {
+    for (context, state) in [("RunnerEditor", &standalone_editor)] {
         for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
             for (width, height) in [(1, 1), (24, 6), (120, 30)] {
                 assert_inventory_surface(state, context, locale, width, height);

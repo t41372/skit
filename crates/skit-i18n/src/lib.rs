@@ -411,9 +411,9 @@ const CATALOG: &[Translation] = &[
         "已登記 {} 個條目",
     ),
     row!(
-        "Malformed agent (runner) rows in config: {} — fix them in Preferences → Manage agents",
-        "配置中格式错误的代理（运行器）行：{}——请在“偏好设置 → 管理代理”中修复",
-        "組態中格式錯誤的代理（執行器）資料列：{}——請在「偏好設定 → 管理代理」中修復",
+        "Malformed agent (runner) rows in config: {} — fix them in Preferences",
+        "配置中格式错误的代理（运行器）行：{}——请在“偏好设置”中修复",
+        "組態中格式錯誤的代理（執行器）資料列：{}——請在「偏好設定」中修復",
     ),
     row!("Mirrors: off", "镜像：关闭", "鏡像：關閉"),
     row!("Mirrors: {}", "镜像：{}", "鏡像：{}"),
@@ -469,31 +469,6 @@ const CATALOG: &[Translation] = &[
         "{{prompt}} marks where the prompt text goes. Each word becomes one argument — quotes group words, and no shell is involved.",
         "{{prompt}} 标记提示词文本的位置。每个词会成为一个参数；引号可组合多个词，且不会调用 shell。",
         "{{prompt}} 標記提示詞文字的位置。每個詞會成為一個引數；引號可組合多個詞，且不會呼叫 shell。",
-    ),
-    row!(
-        "The agents prompt entries run with. Pick one to edit or remove it.",
-        "提示词条目使用这些代理运行。请选择一个代理进行编辑或删除。",
-        "提示詞項目使用這些代理執行。請選擇一個代理來編輯或移除。",
-    ),
-    row!(
-        "No agents configured yet.",
-        "尚未配置代理。",
-        "尚未設定代理。",
-    ),
-    row!(
-        "Remove the malformed prompt runner container?",
-        "删除格式错误的提示词运行器容器？",
-        "移除格式錯誤的提示詞執行器容器？",
-    ),
-    row!(
-        "Remove malformed runner row \"{}\"?",
-        "删除格式错误的运行器行“{}”？",
-        "移除格式錯誤的執行器資料列「{}」？",
-    ),
-    row!(
-        "Remove the agent \"{}\"?",
-        "删除代理“{}”？",
-        "移除代理「{}」？",
     ),
     row!(
         "{} prompt pins this runner and will need another runner before it can run again.",
@@ -1807,6 +1782,7 @@ const CATALOG: &[Translation] = &[
     row!("Rename", "重命名", "重新命名"),
     row!("Rename {}", "重命名 {}", "重新命名 {}"),
     row!("Remove", "删除", "移除"),
+    row!("Restore", "还原", "還原"),
     row!("Preferences", "偏好设置", "偏好設定"),
     row!("Language", "语言", "語言"),
     row!("Editor command", "编辑器命令", "編輯器命令"),
@@ -1823,7 +1799,6 @@ const CATALOG: &[Translation] = &[
     row!("GitHub mirror", "GitHub 镜像", "GitHub 鏡像"),
     row!("npm mirror", "npm 镜像", "npm 鏡像"),
     row!("Health", "健康状态", "健康狀態"),
-    row!("Runners", "运行器", "執行器"),
     row!("Prompt runners: {}", "提示词运行器：{}", "提示詞執行器：{}"),
     // The entry-settings screen. Every row here is version 0.4 text, so each translation is the
     // one the shipped catalog gives (`src/skit/locales/*/LC_MESSAGES/skit.po`).
@@ -3726,16 +3701,24 @@ const CATALOG: &[Translation] = &[
     ),
     row!("No agents configured.", "尚未配置代理。", "尚未設定代理。"),
     row!(
-        "{} agent configured: {}",
-        "已配置 {} 个代理：{}",
-        "已設定 {} 個代理：{}",
+        "The AI agents that run prompt entries.",
+        "用来运行提示词条目的 AI 代理。",
+        "用來執行提示詞項目的 AI 代理。",
     ),
+    row!("Added", "新增", "新增"),
+    row!("Edited", "已修改", "已修改"),
+    row!("Will be removed", "保存后移除", "儲存後移除"),
     row!(
-        "{} agents configured: {}",
-        "已配置 {} 个代理：{}",
-        "已設定 {} 個代理：{}",
+        "The agent list changed on disk. Reopen Preferences and try again.",
+        "代理列表已在磁盘上变更，请重新打开偏好设置再试一次。",
+        "代理清單已在磁碟上變更，請重新開啟偏好設定再試一次。",
     ),
-    row!("Manage agents…", "管理代理…", "管理代理…"),
+    row!("Agent Skill", "Agent Skill", "Agent Skill"),
+    row!(
+        "Install the skit Agent Skill into an AI agent's skills directory (Claude Code, Codex, …).",
+        "把 skit 的 Agent Skill 装进 AI 代理的 skills 目录（Claude Code、Codex 等）。",
+        "把 skit 的 Agent Skill 裝進 AI 代理的 skills 目錄（Claude Code、Codex 等）。",
+    ),
     row!(
         "Teach an AI agent skit…",
         "教 AI 代理使用 skit…",

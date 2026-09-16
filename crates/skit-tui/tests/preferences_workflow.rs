@@ -57,7 +57,7 @@ fn preferences() -> PreferencesView {
         after_run: AfterRunChoice::Exit,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names: Vec::new(),
+        runners: Vec::new(),
         mirror: MirrorConfiguration::default(),
     }))
 }
@@ -245,5 +245,224 @@ fn preferences_arm_cannot_survive_a_release_owned_by_the_global_footer() {
         ),
         EventHandling::Ignored,
         "a release in another owner must cancel the Preferences arm"
+    );
+}
+
+/// The Preferences agent editor is a modal above Preferences: it renders there and stages there.
+#[test]
+fn the_preferences_agent_editor_opens_renders_and_stages_without_a_host_write() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Preferences(
+        Box::new(preferences()),
+    )));
+    state.update(Action::Preferences(PreferencesAction::Focus(
+        PreferencesControlId::NewRunner,
+    )));
+    let mut session = TuiSession::default();
+    let mut geometry = Default::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    assert!(rendered_text(terminal.backend().buffer()).contains("New agent…"));
+
+    let door = buffer_position(terminal.backend().buffer(), "New agent…");
+    let mouse = |kind, column, row| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        if let EventHandling::Action(action) =
+            session.handle_event(mouse(kind, door.0, door.1), &state, &geometry)
+        {
+            assert_eq!(
+                state.update(action),
+                skit_ui::Effect::None,
+                "the door opens a modal the reducer owns"
+            );
+        }
+    }
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: skit_ui::RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+
+    let terminal = draw(&mut session, &state, 100, 30);
+    assert!(rendered_text(terminal.backend().buffer()).contains("New agent"));
+
+    // A pointer press inside the modal cancels the Preferences arm below it, never the modal.
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+
+    for action in [
+        skit_ui::RunnerEditorAction::SetName("local".to_owned()),
+        skit_ui::RunnerEditorAction::SetCommand("local {{prompt}}".to_owned()),
+        skit_ui::RunnerEditorAction::Submit,
+    ] {
+        assert_eq!(
+            state.update(Action::RunnerEditor(action)),
+            skit_ui::Effect::None,
+            "the Preferences editor never asks the host to write"
+        );
+    }
+    assert_eq!(state.modal(), None);
+    assert_eq!(
+        state
+            .preferences()
+            .unwrap()
+            .draft()
+            .runner_rows()
+            .iter()
+            .filter_map(|row| row.name().map(str::to_owned))
+            .collect::<Vec<_>>(),
+        ["local"]
+    );
+
+    let terminal = draw(&mut session, &state, 100, 30);
+    let rendered = rendered_text(terminal.backend().buffer());
+    assert!(rendered.contains("local"), "{rendered}");
+    assert!(rendered.contains("Added"), "{rendered}");
+}
+
+/// The focused agent list owns Up, Down, Enter, Delete and Backspace before any global command.
+/// The walker's smallest profile still paints the list, its chips, and nothing outside it.
+#[test]
+fn the_agent_list_and_its_chips_stay_inside_the_smallest_walker_viewport() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Preferences(
+        Box::new(preferences()),
+    )));
+    state.update(Action::Preferences(PreferencesAction::NewRunner));
+    for action in [
+        skit_ui::RunnerEditorAction::SetName("codex".to_owned()),
+        skit_ui::RunnerEditorAction::SetCommand("codex {{prompt}}".to_owned()),
+        skit_ui::RunnerEditorAction::Submit,
+    ] {
+        state.update(Action::RunnerEditor(action));
+    }
+    state.update(Action::Preferences(PreferencesAction::Focus(
+        PreferencesControlId::Runners,
+    )));
+
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
+    terminal
+        .draw(|frame| {
+            let _ = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+
+    let inventory = session.screen_target_inventory(&state).unwrap();
+    let viewport = terminal.backend().buffer().area;
+    assert!(
+        inventory
+            .hits
+            .iter()
+            .all(|hit| hit.rect.right() <= viewport.right()
+                && hit.rect.bottom() <= viewport.bottom()),
+        "{:?}",
+        inventory.hits
+    );
+    assert!(
+        inventory
+            .available
+            .contains(&skit_tui::ScreenTarget::Runner {
+                row: 0,
+                name: Some("codex".to_owned()),
+            })
+    );
+}
+
+#[test]
+fn the_focused_agent_list_owns_its_keys_at_the_session_level() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Preferences(
+        Box::new(preferences()),
+    )));
+    state.update(Action::Preferences(PreferencesAction::NewRunner));
+    for action in [
+        skit_ui::RunnerEditorAction::SetName("codex".to_owned()),
+        skit_ui::RunnerEditorAction::SetCommand("codex {{prompt}}".to_owned()),
+        skit_ui::RunnerEditorAction::Submit,
+    ] {
+        state.update(Action::RunnerEditor(action));
+    }
+    state.update(Action::Preferences(PreferencesAction::Focus(
+        PreferencesControlId::Runners,
+    )));
+
+    let mut session = TuiSession::default();
+    let mut geometry = Default::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+
+    // A row chip is a command chip: it paints in the same pill colors as the shared footer.
+    let chip = session
+        .screen_target_inventory(&state)
+        .unwrap()
+        .hits
+        .into_iter()
+        .find(|hit| matches!(hit.target, skit_tui::ScreenTarget::RunnerChip { .. }))
+        .expect("the cursor row paints its chips")
+        .rect;
+    let footer_chip = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+        .expect("the frame paints a footer chip")
+        .rect;
+    let buffer = terminal.backend().buffer();
+    let painted = |rect: ratatui_core::layout::Rect| {
+        let cell = &buffer[(rect.x + rect.width / 2, rect.y)];
+        (cell.fg, cell.bg)
+    };
+    assert_eq!(painted(chip), painted(footer_chip));
+
+    for (code, expected) in [
+        (KeyCode::Up, PreferencesAction::RunnerCursorPrevious),
+        (KeyCode::Down, PreferencesAction::RunnerCursorNext),
+        (KeyCode::Enter, PreferencesAction::EditRunner),
+        (KeyCode::Delete, PreferencesAction::ToggleRunnerRemoval),
+        (KeyCode::Backspace, PreferencesAction::ToggleRunnerRemoval),
+    ] {
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &state,
+                &geometry,
+            ),
+            EventHandling::Action(Action::Preferences(expected)),
+            "{code:?} must reach the agent list, not a global command"
+        );
+    }
+
+    // The footer stops offering Down as "next field" while the list owns vertical navigation.
+    assert!(
+        session
+            .advertised_command_bindings(&state, UiCommand::FocusNext)
+            .iter()
+            .all(|binding| binding.key != skit_ui::UiKey::Down)
     );
 }

@@ -1,6 +1,6 @@
 use ratatui_core::layout::Rect;
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use skit_ui::{Action, HealthAction, RunnerEditorAction, RunnerManagerAction};
+use skit_ui::{Action, HealthAction, RunnerEditorAction};
 
 use crate::AddControlId;
 
@@ -11,8 +11,6 @@ pub enum LocalActionTarget {
     Add(AddControlId),
     /// Health-screen action.
     Health(HealthAction),
-    /// Runner-management action.
-    Runners(RunnerManagerAction),
     /// Standalone runner-editor action.
     RunnerEditor(RunnerEditorAction),
 }
@@ -65,7 +63,6 @@ pub(crate) enum LocalKey {
     Enter,
     Escape,
     Space,
-    Character(char),
     Control(char),
     Tab,
     BackTab,
@@ -88,7 +85,6 @@ impl LocalKey {
             Self::Enter => "Enter".to_owned(),
             Self::Escape => "Esc".to_owned(),
             Self::Space => "Space".to_owned(),
-            Self::Character(character) => character.to_string(),
             Self::Control(character) => format!("Ctrl+{}", character.to_ascii_uppercase()),
             Self::Tab => "Tab".to_owned(),
             Self::BackTab => "Shift+Tab".to_owned(),
@@ -105,9 +101,6 @@ impl LocalKey {
             Self::Enter => vec![binding(KeyCode::Enter, KeyModifiers::NONE)],
             Self::Escape => vec![binding(KeyCode::Esc, KeyModifiers::NONE)],
             Self::Space => vec![binding(KeyCode::Char(' '), KeyModifiers::NONE)],
-            Self::Character(character) => {
-                vec![binding(KeyCode::Char(character), KeyModifiers::NONE)]
-            }
             Self::Control(character) => {
                 vec![binding(KeyCode::Char(character), KeyModifiers::CONTROL)]
             }

@@ -87,9 +87,10 @@ fn clipped_action(target: LocalActionTarget) -> LocalAdvertisedAction {
     }
 }
 
-fn runner_target(name: &str) -> ScreenTarget {
+fn runner_target(row: usize, name: &str) -> ScreenTarget {
     ScreenTarget::Runner {
-        name: name.to_owned(),
+        row,
+        name: Some(name.to_owned()),
     }
 }
 
@@ -630,7 +631,7 @@ fn local_advertised_key_beyond_the_local_actions_moves_the_screen_focus() {
         local_actions: vec![clipped_action(LocalActionTarget::Health(
             skit_ui::HealthAction::Rebuild,
         ))],
-        screen_focus: vec![runner_target("codex"), runner_target("claude")],
+        screen_focus: vec![runner_target(0, "codex"), runner_target(1, "claude")],
         ..LiveInventory::default()
     };
     assert_eq!(
@@ -641,7 +642,7 @@ fn local_advertised_key_beyond_the_local_actions_moves_the_screen_focus() {
             },
             &live
         ),
-        ResolvedInput::ScreenFocus(runner_target("claude"))
+        ResolvedInput::ScreenFocus(runner_target(1, "claude"))
     );
     assert_eq!(
         resolve(
@@ -651,7 +652,7 @@ fn local_advertised_key_beyond_the_local_actions_moves_the_screen_focus() {
             },
             &live
         ),
-        ResolvedInput::ScreenFocus(runner_target("codex"))
+        ResolvedInput::ScreenFocus(runner_target(0, "codex"))
     );
 }
 
@@ -693,14 +694,14 @@ fn local_hit_binds_the_visible_chip_and_refuses_a_clipped_chip() {
 fn local_hit_beyond_the_local_actions_clicks_a_screen_target() {
     let live = LiveInventory {
         screen_hits: vec![ScreenTargetHit {
-            target: runner_target("codex"),
+            target: runner_target(0, "codex"),
             rect: Rect::new(1, 1, 6, 1),
         }],
         ..LiveInventory::default()
     };
     assert_eq!(
         resolve(&RandomOperation::LocalHit { action: 5 }, &live),
-        ResolvedInput::ScreenHit(runner_target("codex"))
+        ResolvedInput::ScreenHit(runner_target(0, "codex"))
     );
 
     let mixed = LiveInventory {
@@ -709,11 +710,11 @@ fn local_hit_beyond_the_local_actions_clicks_a_screen_target() {
         ))],
         screen_hits: vec![
             ScreenTargetHit {
-                target: runner_target("codex"),
+                target: runner_target(0, "codex"),
                 rect: Rect::new(1, 1, 6, 1),
             },
             ScreenTargetHit {
-                target: runner_target("claude"),
+                target: runner_target(1, "claude"),
                 rect: Rect::new(1, 2, 6, 1),
             },
         ],
@@ -721,11 +722,11 @@ fn local_hit_beyond_the_local_actions_clicks_a_screen_target() {
     };
     assert_eq!(
         resolve(&RandomOperation::LocalHit { action: 1 }, &mixed),
-        ResolvedInput::ScreenHit(runner_target("codex"))
+        ResolvedInput::ScreenHit(runner_target(0, "codex"))
     );
     assert_eq!(
         resolve(&RandomOperation::LocalHit { action: 2 }, &mixed),
-        ResolvedInput::ScreenHit(runner_target("claude"))
+        ResolvedInput::ScreenHit(runner_target(1, "claude"))
     );
 }
 
@@ -772,13 +773,13 @@ fn live_inventory_reads_one_rendered_frame() {
     let (geometry, local_actions) = rendered_frame(&state);
     assert!(!geometry.hits.is_empty());
     let screen_targets = ScreenTargetInventory {
-        available: vec![runner_target("codex")],
+        available: vec![runner_target(0, "codex")],
         focus: Some(ScreenFocusInventory {
-            current: Some(runner_target("codex")),
-            order: vec![runner_target("codex"), runner_target("claude")],
+            current: Some(runner_target(0, "codex")),
+            order: vec![runner_target(0, "codex"), runner_target(1, "claude")],
         }),
         hits: vec![ScreenTargetHit {
-            target: runner_target("codex"),
+            target: runner_target(0, "codex"),
             rect: Rect::new(0, 0, 5, 1),
         }],
     };
@@ -794,7 +795,7 @@ fn live_inventory_reads_one_rendered_frame() {
     assert_eq!(live.local_actions, local_actions.actions);
     assert_eq!(
         live.screen_focus,
-        vec![runner_target("codex"), runner_target("claude")]
+        vec![runner_target(0, "codex"), runner_target(1, "claude")]
     );
     assert_eq!(live.screen_hits, screen_targets.hits);
     assert_eq!(live.size, Size::new(80, 24));

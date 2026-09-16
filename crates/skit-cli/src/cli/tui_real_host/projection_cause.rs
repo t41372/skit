@@ -11,9 +11,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use skit_tui::AGENT_REVIEW_SNAPSHOT_VERSION;
 use skit_tui_walker_support::engine::CheckpointCauseProjection;
-use skit_ui::{
-    Action, AddAction, Effect, LibraryState, PreferencesAction, RunnerManagerAction, Screen,
-};
+use skit_ui::{Action, AddAction, Effect, LibraryState, PreferencesAction, Screen};
 
 use super::{
     observation::escaped_os,
@@ -85,7 +83,6 @@ impl PathMap {
             CheckpointCauseProjection::Reducer { action, emitted } => {
                 self.record_add_projection_cause(action);
                 self.record_status_projection_cause(action);
-                self.record_runner_status_provenance(action);
                 self.project_typed_action(action)?;
                 self.project_typed_effect(emitted)
             }
@@ -96,7 +93,6 @@ impl PathMap {
             } => {
                 self.record_add_projection_cause(response);
                 self.record_status_projection_cause(response);
-                self.record_runner_status_provenance(response);
                 self.project_typed_effect(request)?;
                 self.project_typed_action(response)?;
                 self.project_typed_effect(emitted)
@@ -111,7 +107,6 @@ impl PathMap {
         let value = serde_json::to_value(&*state).map_err(|error| error.to_string())?;
         self.reconcile_add_provenance(&value)?;
         self.reconcile_status_provenance(&value)?;
-        self.reconcile_runner_status_provenance(&value);
         let value = self.normalize_library_json(value)?;
         *state = deserialize_canonical(value, "LibraryState")?;
         Ok(())
@@ -162,27 +157,6 @@ impl PathMap {
             }
         }
         Ok(())
-    }
-
-    fn record_runner_status_provenance(&mut self, action: &Action) {
-        match action {
-            Action::Runners(RunnerManagerAction::MutationFailed(message)) => {
-                self.runner_failure_status = Some(message.clone());
-            }
-            Action::Runners(RunnerManagerAction::MutationSucceeded { .. })
-            | Action::Present(Screen::Runners(_))
-            | Action::RunnerManagerClosed { .. } => self.runner_failure_status = None,
-            _ => {}
-        }
-    }
-
-    fn reconcile_runner_status_provenance(&mut self, state: &Value) {
-        let raw = state
-            .pointer("/workflow/active/runners/status")
-            .and_then(Value::as_str);
-        if self.runner_failure_status.as_deref() != raw {
-            self.runner_failure_status = None;
-        }
     }
 
     pub(super) fn reconcile_add_provenance(&mut self, state: &Value) -> Result<(), String> {
@@ -1062,7 +1036,6 @@ pub(super) fn screen_tag(screen: &Screen) -> &'static str {
         Screen::Preferences(_) => "preferences",
         Screen::Add(_) => "add",
         Screen::Health(_) => "health",
-        Screen::Runners(_) => "runners",
         Screen::Settings(_) => "settings",
         Screen::Form(_) => "form",
         Screen::Report(_) => "report",

@@ -11,8 +11,8 @@ use skit_application::AgentScope;
 use skit_i18n::Locale;
 use skit_tui::{
     AddControlId, AddTextField, EventHandling, HitTarget, LocalActionOutcome, LocalActionTarget,
-    LocalAdvertisedAction, RunFieldCommand, ScreenTarget, ScreenTargetError, ScreenTargetInventory,
-    TuiSession, map_event,
+    LocalAdvertisedAction, RunFieldCommand, RunnerChip, ScreenTarget, ScreenTargetError,
+    ScreenTargetInventory, TuiSession, map_event,
 };
 use skit_tui_walker_model::parity;
 use skit_tui_walker_support::{
@@ -614,7 +614,6 @@ pub(super) fn corpus_local_target_value(target: &LocalActionTarget) -> Value {
     match target {
         LocalActionTarget::Add(target) => json!({"add": target}),
         LocalActionTarget::Health(action) => json!({"health": action}),
-        LocalActionTarget::Runners(action) => json!({"runners": action}),
         LocalActionTarget::RunnerEditor(action) => json!({"runner_editor": action}),
     }
 }
@@ -668,7 +667,8 @@ pub(super) fn corpus_preferences_control_value(target: PreferencesControlId) -> 
         PreferencesControlId::AfterRun => "after_run",
         PreferencesControlId::Javascript => "javascript",
         PreferencesControlId::BashPath => "bash_path",
-        PreferencesControlId::ManageAgents => "manage_agents",
+        PreferencesControlId::Runners => "runners",
+        PreferencesControlId::NewRunner => "new_runner",
         PreferencesControlId::InstallAgentSkill => "install_agent_skill",
         PreferencesControlId::MirrorMaster => "mirror_master",
         PreferencesControlId::PypiChoice => "pypi_choice",
@@ -678,6 +678,14 @@ pub(super) fn corpus_preferences_control_value(target: PreferencesControlId) -> 
         PreferencesControlId::NpmChoice => "npm_choice",
         PreferencesControlId::NpmUrl => "npm_url",
     })
+}
+
+/// Return the stable corpus label of one agent-row chip.
+const fn corpus_runner_chip_label(chip: RunnerChip) -> &'static str {
+    match chip {
+        RunnerChip::Edit => "edit",
+        RunnerChip::Remove => "remove",
+    }
 }
 
 pub(super) const fn corpus_agent_scope_label(scope: AgentScope) -> &'static str {
@@ -744,12 +752,15 @@ pub(super) fn corpus_screen_target_value(target: &ScreenTarget) -> Result<Value,
         ScreenTarget::AgentSkill { name, scope } => Ok(json!({
             "agent_skill": {"name": name, "scope": corpus_agent_scope_label(*scope)},
         })),
-        ScreenTarget::Runner { name } => {
-            if name.is_empty() {
+        ScreenTarget::Runner { row, name } => {
+            if name.as_ref().is_some_and(String::is_empty) {
                 return Err("a runner screen target has an empty name".to_owned());
             }
-            Ok(json!({"runner": {"name": name}}))
+            Ok(json!({"runner": {"row": row, "name": name}}))
         }
+        ScreenTarget::RunnerChip { row, chip } => Ok(json!({
+            "runner_chip": {"row": row, "chip": corpus_runner_chip_label(*chip)},
+        })),
         ScreenTarget::FilePickerEntry { relative } => Ok(json!({
             "file_picker_entry": {"components": corpus_relative_component_values(relative)?},
         })),
@@ -1039,7 +1050,9 @@ pub(super) const fn screen_target_error_message(error: ScreenTargetError) -> &'s
 
 pub(super) fn validate_screen_target(target: &ScreenTarget) -> Result<(), String> {
     match target {
-        ScreenTarget::Runner { name } if name.is_empty() => {
+        ScreenTarget::Runner {
+            name: Some(name), ..
+        } if name.is_empty() => {
             return Err("a runner screen target has an empty name".to_owned());
         }
         ScreenTarget::FilePickerEntry { relative } => {
@@ -1048,7 +1061,8 @@ pub(super) fn validate_screen_target(target: &ScreenTarget) -> Result<(), String
         ScreenTarget::Add(_)
         | ScreenTarget::Preferences(_)
         | ScreenTarget::AgentSkill { .. }
-        | ScreenTarget::Runner { .. } => {}
+        | ScreenTarget::Runner { .. }
+        | ScreenTarget::RunnerChip { .. } => {}
     }
     Ok(())
 }

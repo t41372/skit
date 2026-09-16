@@ -88,10 +88,6 @@ fn c2_library_state_and_every_screen_pointer_contract() {
                 {"preferences": {
                     "agent_skill_install": {"targets": [{"base": root}]},
                 }},
-                {"runners": {
-                    "status": message,
-                    "overlay": {"editor": {"host_error": message}},
-                }},
             ],
         },
         "modal": {
@@ -142,14 +138,6 @@ fn c2_library_state_and_every_screen_pointer_contract() {
     assert_eq!(
         value["workflow"]["history"][1]["preferences"]["agent_skill_install"]["targets"][0]["base"],
         stable
-    );
-    assert_eq!(
-        value["workflow"]["history"][2]["runners"]["status"],
-        message
-    );
-    assert_eq!(
-        value["workflow"]["history"][2]["runners"]["overlay"]["editor"]["host_error"],
-        projected_message
     );
     assert_eq!(
         value["modal"]["run_file_picker"]["context"]["workdir"],

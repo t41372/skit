@@ -25,8 +25,8 @@ use skit_ui::{
     Action, AddWorkflowState, Effect, FormField, FormPurpose, FormView, HealthAction, HealthIssue,
     HealthIssueKind, HealthSnapshot, HealthView, LibraryState, LibrarySurface, MirrorHealth,
     PreferencesAction, PreferencesView, RunFormContext, RunFormView, RunPathContext,
-    RunTokenOption, RunnerManagerView, RunnerRow, RunnerRowIdentity, Screen, UiBinding, UiCommand,
-    UiKey, UiModifiers, UvHealth,
+    RunTokenOption, RunnerRow, RunnerRowIdentity, Screen, UiBinding, UiCommand, UiKey, UiModifiers,
+    UvHealth,
 };
 
 use crate::parity::{
@@ -182,13 +182,6 @@ fn runner_row(index: usize, name: &str) -> RunnerRow {
     }
 }
 
-fn runners_state() -> LibraryState {
-    present(Screen::Runners(Box::new(RunnerManagerView::new(vec![
-        runner_row(0, "codex"),
-        runner_row(1, "claude"),
-    ]))))
-}
-
 fn preferences_state() -> LibraryState {
     let mut state = present(Screen::Preferences(Box::new(PreferencesView::new(
         PreferencesDraft::from_snapshot(PreferencesSnapshot {
@@ -201,7 +194,7 @@ fn preferences_state() -> LibraryState {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
-            runner_names: vec!["codex".to_owned()],
+            runners: vec![runner_row(0, "codex")],
             mirror: MirrorConfiguration::default(),
         }),
     ))));
@@ -302,16 +295,16 @@ fn advertised(target: LocalActionTarget, outcome: LocalActionOutcome) -> LocalAd
     }
 }
 
-/// One advertised local action from a live Runners frame, with keys and a hit.
+/// One advertised local action from a live Health frame, with keys and a hit.
 fn live_local_action() -> LocalAdvertisedAction {
-    let state = runners_state();
+    let state = health_state();
     let (session, _) = frame(&state, NORMAL);
     session
         .local_action_inventory()
         .actions
         .iter()
         .find(|action| !action.keys.is_empty() && action.hit.is_some())
-        .expect("the Runners frame advertises a local action with a key and a hit")
+        .expect("the Health frame advertises a local action with a key and a hit")
         .clone()
 }
 
@@ -323,7 +316,7 @@ fn live_local_action() -> LocalAdvertisedAction {
 #[test]
 fn every_published_hit_reaches_its_advertised_endpoint() {
     let states = [
-        ("library", library_state(), 15),
+        ("library", library_state(), 14),
         ("typed controls", typed_controls_state(), 16),
         ("prompt run", prompt_run_state(), 19),
         ("long form", long_form_state(), 9),
@@ -345,12 +338,8 @@ fn every_published_hit_reaches_its_advertised_endpoint() {
             );
         }
     }
-    // The Health, Runners and Add screens publish local actions instead of public hits.
-    for (name, state) in [
-        ("health", health_state()),
-        ("runners", runners_state()),
-        ("add", add_state()),
-    ] {
+    // The Health and Add screens publish local actions instead of public hits.
+    for (name, state) in [("health", health_state()), ("add", add_state())] {
         for size in [TINY, COMPACT, NORMAL, WIDE] {
             let (session, geometry) = frame(&state, size);
             assert!(

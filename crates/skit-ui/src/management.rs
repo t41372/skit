@@ -8,6 +8,9 @@ use skit_application::runner_management::{
     EditableArgvDialect, RunnerArgvError, RunnerCommandError, join_editable_argv,
     split_editable_argv, validate_runner_argv,
 };
+pub use skit_application::runner_management::{
+    RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
+};
 
 /// Frontend-neutral Health workflow.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -155,99 +158,6 @@ pub enum HealthEffect {
     Close,
 }
 
-/// Opaque identity of one raw row or malformed enclosing container.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunnerRowIdentity {
-    /// Zero-based raw row index. A malformed container has no index.
-    pub index: Option<usize>,
-    /// Complete raw semantic snapshot token supplied by the store adapter.
-    pub snapshot_token: String,
-}
-
-/// One complete runner-management row.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunnerRow {
-    /// Raw row or container identity.
-    pub identity: RunnerRowIdentity,
-    /// Normalized stable runner name when present.
-    pub name: Option<String>,
-    /// Parsed argv when every element is text.
-    pub argv: Option<Vec<String>>,
-    /// Stable malformed-row reason code.
-    pub reason: Option<String>,
-    /// Stable raw-shape display label.
-    pub descriptor: String,
-    /// Complete raw identities for this stable name at inspection time.
-    pub key_identities: Vec<RunnerRowIdentity>,
-    /// Prompt entries pinned to the active valid key.
-    pub pinned_count: usize,
-}
-
-impl RunnerRow {
-    /// Return whether the row has enough structure for exact repair.
-    #[must_use]
-    pub const fn is_editable(&self) -> bool {
-        self.identity.index.is_some() && self.argv.is_some()
-    }
-
-    /// Return whether this row is an active valid stable-key definition.
-    #[must_use]
-    pub const fn is_valid(&self) -> bool {
-        self.reason.is_none()
-    }
-
-    /// Stable user-facing row label.
-    #[must_use]
-    pub fn label(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.descriptor)
-    }
-}
-
-/// Target protected by one save operation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunnerSaveTarget {
-    /// Append a new stable runner key.
-    New,
-    /// Replace and coalesce all raw rows for one stable name.
-    Named {
-        /// Immutable name that prompt entries pin.
-        name: String,
-        /// Complete raw key snapshot used for compare-and-swap.
-        expected: Vec<RunnerRowIdentity>,
-    },
-    /// Repair one recognizable raw row by exact identity.
-    RawRow { expected: RunnerRowIdentity },
-}
-
-/// Validated runner save request.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunnerSaveRequest {
-    /// Stable runner name.
-    pub name: String,
-    /// Direct process argv.
-    pub argv: Vec<String>,
-    /// Atomic mutation target.
-    pub target: RunnerSaveTarget,
-}
-
-/// Compare-and-swap runner removal request.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunnerRemoveRequest {
-    /// Remove every raw row for a stable key.
-    Named {
-        /// Stable key.
-        name: String,
-        /// Complete raw key snapshot from before confirmation.
-        expected: Vec<RunnerRowIdentity>,
-        /// Prompt pins shown when the user confirmed removal.
-        expected_pinned_count: usize,
-    },
-    /// Remove one malformed row or container.
-    RawRow { expected: RunnerRowIdentity },
-}
-
 /// Editable runner field.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -287,6 +197,8 @@ pub enum RunnerEditorError {
     PromptInProgram,
     /// Another double-brace hole occurs.
     UnsupportedHole,
+    /// Another agent row that the save keeps already uses the name.
+    NameTaken,
 }
 
 impl From<RunnerCommandError> for RunnerEditorError {
@@ -343,6 +255,19 @@ impl RunnerEditorView {
         }
     }
 
+    /// Open a new-agent editor prefilled from one staged row.
+    #[must_use]
+    pub fn staged(name: &str, argv: &[String]) -> Self {
+        Self {
+            name: name.to_owned(),
+            command: join_editable_argv(argv, EditableArgvDialect::host()),
+            target: RunnerSaveTarget::New,
+            focused: RunnerEditorField::Name,
+            error: None,
+            host_error: None,
+        }
+    }
+
     /// Edit one named row while keeping its pin key immutable.
     #[must_use]
     pub fn edit(row: &RunnerRow) -> Self {
@@ -363,10 +288,13 @@ impl RunnerEditorView {
     }
 
     /// Repair one anonymous raw row in place.
+    ///
+    /// A row that already carries a typed name reopens with it, so a repair the user started is
+    /// never retyped from nothing.
     #[must_use]
     pub fn repair(row: &RunnerRow) -> Self {
         Self {
-            name: String::new(),
+            name: row.name.clone().unwrap_or_default(),
             command: row.argv.as_ref().map_or_else(String::new, |argv| {
                 join_editable_argv(argv, EditableArgvDialect::host())
             }),
@@ -423,6 +351,12 @@ impl RunnerEditorView {
             RunnerSaveTarget::Named { .. } => RunnerEditorMode::Edit,
             RunnerSaveTarget::RawRow { .. } => RunnerEditorMode::Repair,
         }
+    }
+
+    /// Refuse one validated save and keep every typed value visible.
+    pub fn refuse(&mut self, error: RunnerEditorError) {
+        self.host_error = None;
+        self.error = Some(error);
     }
 
     /// Apply one editor action.
@@ -537,308 +471,6 @@ pub enum RunnerEditorEffect {
     Save(RunnerSaveRequest),
     /// Close the editor.
     Cancel,
-}
-
-/// Visible runner removal confirmation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunnerRemovalView {
-    /// Row label.
-    pub name: String,
-    /// Prompt pins that become unresolved for a valid active key.
-    pub pinned_count: usize,
-    /// Whether this repairs a malformed row rather than removing an active key.
-    pub invalid_row: bool,
-    /// Whether this repairs a malformed enclosing container.
-    pub container: bool,
-    request: RunnerRemoveRequest,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RunnerManagerOverlay {
-    Actions(usize),
-    Editor(Box<RunnerEditorView>),
-    Removal(RunnerRemovalView),
-}
-
-/// Complete prompt-runner management workflow.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunnerManagerView {
-    rows: Vec<RunnerRow>,
-    selected: Option<usize>,
-    overlay: Option<RunnerManagerOverlay>,
-    status: Option<String>,
-}
-
-impl RunnerManagerView {
-    /// Open the complete registry, including malformed rows and containers.
-    #[must_use]
-    pub fn new(rows: Vec<RunnerRow>) -> Self {
-        let selected = (!rows.is_empty()).then_some(0);
-        Self {
-            rows,
-            selected,
-            overlay: None,
-            status: None,
-        }
-    }
-
-    /// Complete raw row projection.
-    #[must_use]
-    pub fn rows(&self) -> &[RunnerRow] {
-        &self.rows
-    }
-
-    /// Selected row index.
-    #[must_use]
-    pub const fn selected(&self) -> Option<usize> {
-        self.selected
-    }
-
-    /// Active shared editor.
-    #[must_use]
-    pub fn editor(&self) -> Option<&RunnerEditorView> {
-        match &self.overlay {
-            Some(RunnerManagerOverlay::Editor(editor)) => Some(editor),
-            Some(RunnerManagerOverlay::Actions(_) | RunnerManagerOverlay::Removal(_)) | None => {
-                None
-            }
-        }
-    }
-
-    /// Active row-action target.
-    #[must_use]
-    pub const fn action_row(&self) -> Option<usize> {
-        match self.overlay {
-            Some(RunnerManagerOverlay::Actions(index)) => Some(index),
-            Some(RunnerManagerOverlay::Editor(_) | RunnerManagerOverlay::Removal(_)) | None => None,
-        }
-    }
-
-    /// Active removal confirmation.
-    #[must_use]
-    pub const fn removal(&self) -> Option<&RunnerRemovalView> {
-        match &self.overlay {
-            Some(RunnerManagerOverlay::Removal(removal)) => Some(removal),
-            Some(RunnerManagerOverlay::Actions(_) | RunnerManagerOverlay::Editor(_)) | None => None,
-        }
-    }
-
-    /// Last host feedback.
-    #[must_use]
-    pub fn status(&self) -> Option<&str> {
-        self.status.as_deref()
-    }
-
-    /// Apply one runner-management action.
-    pub fn reduce(&mut self, action: RunnerManagerAction) -> RunnerManagerEffect {
-        match action {
-            RunnerManagerAction::Previous => self.move_selection(-1),
-            RunnerManagerAction::Next => self.move_selection(1),
-            RunnerManagerAction::PagePrevious(amount) => {
-                self.move_selection(-isize::try_from(amount).unwrap_or(isize::MAX));
-            }
-            RunnerManagerAction::PageNext(amount) => {
-                self.move_selection(isize::try_from(amount).unwrap_or(isize::MAX));
-            }
-            RunnerManagerAction::Home => self.selected = (!self.rows.is_empty()).then_some(0),
-            RunnerManagerAction::End => self.selected = self.rows.len().checked_sub(1),
-            RunnerManagerAction::Select(index) if index < self.rows.len() => {
-                self.selected = Some(index);
-            }
-            RunnerManagerAction::Select(_) => {}
-            RunnerManagerAction::ActivateSelected => {
-                if let Some(index) = self.selected {
-                    self.overlay = Some(RunnerManagerOverlay::Actions(index));
-                }
-            }
-            RunnerManagerAction::ActivateRow(index) if index < self.rows.len() => {
-                self.selected = Some(index);
-                self.overlay = Some(RunnerManagerOverlay::Actions(index));
-            }
-            RunnerManagerAction::ActivateRow(_) => {}
-            RunnerManagerAction::New => {
-                self.overlay = Some(RunnerManagerOverlay::Editor(Box::default()));
-            }
-            RunnerManagerAction::EditSelected => self.open_editor(),
-            RunnerManagerAction::RemoveSelected => self.open_removal(),
-            RunnerManagerAction::CloseActions => self.overlay = None,
-            RunnerManagerAction::Editor(action) => {
-                let Some(RunnerManagerOverlay::Editor(editor)) = &mut self.overlay else {
-                    return RunnerManagerEffect::None;
-                };
-                match editor.reduce(action) {
-                    RunnerEditorEffect::None => {}
-                    RunnerEditorEffect::Save(request) => {
-                        return RunnerManagerEffect::Save(request);
-                    }
-                    RunnerEditorEffect::Cancel => self.overlay = None,
-                }
-            }
-            RunnerManagerAction::CancelEditor => self.overlay = None,
-            RunnerManagerAction::ConfirmRemove => {
-                if let Some(RunnerManagerOverlay::Removal(removal)) = &self.overlay {
-                    return RunnerManagerEffect::Remove(removal.request.clone());
-                }
-            }
-            RunnerManagerAction::CancelRemove => self.overlay = None,
-            RunnerManagerAction::MutationSucceeded {
-                rows,
-                selected_name,
-                message,
-            } => {
-                self.rows = rows;
-                self.selected = selected_name
-                    .as_deref()
-                    .and_then(|name| {
-                        self.rows
-                            .iter()
-                            .position(|row| row.name.as_deref() == Some(name))
-                    })
-                    .or_else(|| (!self.rows.is_empty()).then_some(0));
-                self.overlay = None;
-                self.status = Some(message);
-            }
-            RunnerManagerAction::MutationFailed(message) => {
-                if let Some(RunnerManagerOverlay::Editor(editor)) = &mut self.overlay {
-                    editor.set_host_error(message);
-                } else {
-                    self.overlay = None;
-                    self.status = Some(message);
-                }
-            }
-            RunnerManagerAction::Back => {
-                if self.overlay.is_some() {
-                    self.overlay = None;
-                } else {
-                    return RunnerManagerEffect::Close;
-                }
-            }
-        }
-        RunnerManagerEffect::None
-    }
-
-    fn move_selection(&mut self, delta: isize) {
-        let Some(selected) = self.selected else {
-            return;
-        };
-        self.selected = Some(
-            selected
-                .saturating_add_signed(delta)
-                .min(self.rows.len().saturating_sub(1)),
-        );
-    }
-
-    fn open_editor(&mut self) {
-        if let Some(row) = self
-            .action_row()
-            .or(self.selected)
-            .and_then(|index| self.rows.get(index))
-            .filter(|row| row.is_editable())
-        {
-            let editor = if row.name.is_some() {
-                RunnerEditorView::edit(row)
-            } else {
-                RunnerEditorView::repair(row)
-            };
-            self.overlay = Some(RunnerManagerOverlay::Editor(Box::new(editor)));
-        }
-    }
-
-    fn open_removal(&mut self) {
-        if let Some(row) = self
-            .action_row()
-            .or(self.selected)
-            .and_then(|index| self.rows.get(index))
-        {
-            let request = if row.is_valid() {
-                RunnerRemoveRequest::Named {
-                    name: row.name.clone().unwrap_or_default(),
-                    expected: row.key_identities.clone(),
-                    expected_pinned_count: row.pinned_count,
-                }
-            } else {
-                RunnerRemoveRequest::RawRow {
-                    expected: row.identity.clone(),
-                }
-            };
-            self.overlay = Some(RunnerManagerOverlay::Removal(RunnerRemovalView {
-                name: row.label().to_owned(),
-                pinned_count: if row.is_valid() { row.pinned_count } else { 0 },
-                invalid_row: !row.is_valid(),
-                container: row.identity.index.is_none(),
-                request,
-            }));
-        }
-    }
-}
-
-/// Semantic action for the complete runner manager.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunnerManagerAction {
-    /// Select the preceding row.
-    Previous,
-    /// Select the next row.
-    Next,
-    /// Move toward the start by a viewport-sized amount.
-    PagePrevious(usize),
-    /// Move toward the end by a viewport-sized amount.
-    PageNext(usize),
-    /// Select the first row.
-    Home,
-    /// Select the last row.
-    End,
-    /// Select one row.
-    Select(usize),
-    /// Open actions for the selected row.
-    ActivateSelected,
-    /// Select a mouse row and open its actions.
-    ActivateRow(usize),
-    /// Open the reusable new-runner editor.
-    New,
-    /// Edit the active action row.
-    EditSelected,
-    /// Confirm removal of the active action row.
-    RemoveSelected,
-    /// Close the action overlay.
-    CloseActions,
-    /// Delegate to the shared editor.
-    Editor(RunnerEditorAction),
-    /// Close an editor without saving.
-    CancelEditor,
-    /// Confirm the pending removal.
-    ConfirmRemove,
-    /// Keep the pending runner.
-    CancelRemove,
-    /// Apply a refreshed registry after one successful mutation.
-    MutationSucceeded {
-        /// Complete raw registry.
-        rows: Vec<RunnerRow>,
-        /// Stable name to keep selected after a save.
-        selected_name: Option<String>,
-        /// Localized host completion message.
-        message: String,
-    },
-    /// Keep typed editor input or list position after a host refusal.
-    MutationFailed(String),
-    /// Close an overlay first, then the manager.
-    Back,
-}
-
-/// Host work requested by runner management.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunnerManagerEffect {
-    /// No host work.
-    #[default]
-    None,
-    /// Save a validated runner.
-    Save(RunnerSaveRequest),
-    /// Remove one stable key or raw malformed row.
-    Remove(RunnerRemoveRequest),
-    /// Return to the owning workflow.
-    Close,
 }
 
 #[cfg(test)]
@@ -1044,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_editor_and_manager_edges_are_typed_and_preserve_invalid_state() {
+    fn runner_editor_edges_are_typed_and_preserve_invalid_state() {
         for error in [
             RunnerCommandError::EmptyCommand,
             RunnerCommandError::PromptSlotCount,
@@ -1106,189 +738,6 @@ mod tests {
         );
         assert_eq!(missing_name.error(), Some(&RunnerEditorError::NameRequired));
         assert_eq!(missing_name.focused(), RunnerEditorField::Name);
-
-        let mut empty = RunnerManagerView::new(Vec::new());
-        let before = serde_json::to_value(&empty).unwrap();
-        for action in [
-            RunnerManagerAction::Previous,
-            RunnerManagerAction::Next,
-            RunnerManagerAction::PagePrevious(usize::MAX),
-            RunnerManagerAction::PageNext(usize::MAX),
-            RunnerManagerAction::Home,
-            RunnerManagerAction::End,
-            RunnerManagerAction::Select(9),
-            RunnerManagerAction::ActivateSelected,
-            RunnerManagerAction::ActivateRow(9),
-            RunnerManagerAction::EditSelected,
-            RunnerManagerAction::RemoveSelected,
-            RunnerManagerAction::CloseActions,
-            RunnerManagerAction::Editor(RunnerEditorAction::Cancel),
-            RunnerManagerAction::ConfirmRemove,
-            RunnerManagerAction::CancelRemove,
-        ] {
-            assert_eq!(empty.reduce(action), RunnerManagerEffect::None);
-        }
-        assert_eq!(serde_json::to_value(&empty).unwrap(), before);
-        assert_eq!(
-            empty.reduce(RunnerManagerAction::Back),
-            RunnerManagerEffect::Close
-        );
-        assert_eq!(
-            empty.reduce(RunnerManagerAction::EditSelected),
-            RunnerManagerEffect::None
-        );
-        assert_eq!(
-            empty.reduce(RunnerManagerAction::RemoveSelected),
-            RunnerManagerEffect::None
-        );
-
-        let rows = vec![valid_row("one", 0, "one", 0), raw.clone()];
-        let mut manager = RunnerManagerView::new(rows.clone());
-        manager.reduce(RunnerManagerAction::PageNext(usize::MAX));
-        assert_eq!(manager.selected(), Some(1));
-        manager.reduce(RunnerManagerAction::PagePrevious(usize::MAX));
-        assert_eq!(manager.selected(), Some(0));
-        manager.reduce(RunnerManagerAction::End);
-        assert_eq!(manager.selected(), Some(1));
-        manager.reduce(RunnerManagerAction::Home);
-        assert_eq!(manager.selected(), Some(0));
-        manager.reduce(RunnerManagerAction::Select(1));
-        manager.reduce(RunnerManagerAction::ActivateRow(1));
-        assert_eq!(manager.action_row(), Some(1));
-        manager.reduce(RunnerManagerAction::EditSelected);
-        assert_eq!(
-            manager.editor().map(RunnerEditorView::mode),
-            Some(RunnerEditorMode::Repair)
-        );
-        manager.reduce(RunnerManagerAction::CancelEditor);
-        manager.reduce(RunnerManagerAction::ActivateRow(1));
-        manager.reduce(RunnerManagerAction::RemoveSelected);
-        assert!(matches!(
-            manager.removal(),
-            Some(removal) if removal.invalid_row
-                && matches!(removal.request, RunnerRemoveRequest::RawRow { .. })
-        ));
-        assert!(matches!(
-            manager.reduce(RunnerManagerAction::ConfirmRemove),
-            RunnerManagerEffect::Remove(RunnerRemoveRequest::RawRow { .. })
-        ));
-        manager.reduce(RunnerManagerAction::CancelRemove);
-        assert!(manager.removal().is_none());
-
-        manager.reduce(RunnerManagerAction::New);
-        assert!(manager.editor().is_some());
-        manager.reduce(RunnerManagerAction::Editor(RunnerEditorAction::Cancel));
-        assert!(manager.editor().is_none());
-        manager.reduce(RunnerManagerAction::New);
-        manager.reduce(RunnerManagerAction::CancelEditor);
-        assert!(manager.editor().is_none());
-        manager.reduce(RunnerManagerAction::MutationFailed("failed".to_owned()));
-        assert_eq!(manager.status(), Some("failed"));
-
-        manager.reduce(RunnerManagerAction::MutationSucceeded {
-            rows: rows.clone(),
-            selected_name: Some("one".to_owned()),
-            message: "saved".to_owned(),
-        });
-        assert_eq!(manager.selected(), Some(0));
-        assert_eq!(manager.status(), Some("saved"));
-        manager.reduce(RunnerManagerAction::MutationSucceeded {
-            rows: vec![raw],
-            selected_name: Some("missing".to_owned()),
-            message: "refreshed".to_owned(),
-        });
-        assert_eq!(manager.selected(), Some(0));
-        manager.reduce(RunnerManagerAction::MutationSucceeded {
-            rows: Vec::new(),
-            selected_name: None,
-            message: "empty".to_owned(),
-        });
-        assert_eq!(manager.selected(), None);
-    }
-
-    #[test]
-    fn manager_represents_valid_invalid_anonymous_and_container_rows_without_loss() {
-        let valid = valid_row("same", 0, "valid", 2);
-        let duplicate = RunnerRow {
-            identity: identity(Some(1), "duplicate"),
-            name: Some("same".to_owned()),
-            argv: Some(vec!["second".to_owned(), "{{prompt}}".to_owned()]),
-            reason: Some("duplicate".to_owned()),
-            descriptor: "same".to_owned(),
-            key_identities: vec![identity(Some(0), "valid"), identity(Some(1), "duplicate")],
-            pinned_count: 0,
-        };
-        let anonymous = RunnerRow {
-            identity: identity(Some(2), "anonymous"),
-            name: None,
-            argv: Some(vec!["valuable".to_owned(), "{{prompt}}".to_owned()]),
-            reason: Some("name".to_owned()),
-            descriptor: "raw anonymous row".to_owned(),
-            key_identities: Vec::new(),
-            pinned_count: 0,
-        };
-        let container = RunnerRow {
-            identity: identity(None, "container"),
-            name: None,
-            argv: None,
-            reason: Some("prompt-section-not-table".to_owned()),
-            descriptor: "prompt".to_owned(),
-            key_identities: Vec::new(),
-            pinned_count: 0,
-        };
-        let view = RunnerManagerView::new(vec![valid, duplicate, anonymous, container]);
-        assert_eq!(view.rows().len(), 4);
-        assert_eq!(view.rows()[0].pinned_count, 2);
-        assert!(view.rows()[2].is_editable());
-        assert!(!view.rows()[3].is_editable());
-    }
-
-    #[test]
-    fn manager_routes_edit_remove_confirmation_and_stale_feedback_without_losing_input() {
-        let mut row = valid_row("same", 0, "valid", 2);
-        row.key_identities.push(identity(Some(1), "duplicate"));
-        let mut view = RunnerManagerView::new(vec![row]);
-        view.reduce(RunnerManagerAction::ActivateSelected);
-        view.reduce(RunnerManagerAction::EditSelected);
-        view.reduce(RunnerManagerAction::Editor(RunnerEditorAction::SetCommand(
-            "mine --flag {{prompt}}".to_owned(),
-        )));
-        assert_eq!(
-            view.reduce(RunnerManagerAction::Editor(RunnerEditorAction::Submit)),
-            RunnerManagerEffect::Save(RunnerSaveRequest {
-                name: "same".to_owned(),
-                argv: vec![
-                    "mine".to_owned(),
-                    "--flag".to_owned(),
-                    "{{prompt}}".to_owned()
-                ],
-                target: RunnerSaveTarget::Named {
-                    name: "same".to_owned(),
-                    expected: vec![identity(Some(0), "valid"), identity(Some(1), "duplicate"),],
-                },
-            })
-        );
-        view.reduce(RunnerManagerAction::MutationFailed(
-            "Runner config changed".to_owned(),
-        ));
-        assert_eq!(view.editor().unwrap().command(), "mine --flag {{prompt}}");
-        assert_eq!(
-            view.editor().unwrap().host_error(),
-            Some("Runner config changed")
-        );
-
-        view.reduce(RunnerManagerAction::CancelEditor);
-        view.reduce(RunnerManagerAction::ActivateSelected);
-        view.reduce(RunnerManagerAction::RemoveSelected);
-        assert_eq!(view.removal().unwrap().pinned_count, 2);
-        assert_eq!(
-            view.reduce(RunnerManagerAction::ConfirmRemove),
-            RunnerManagerEffect::Remove(RunnerRemoveRequest::Named {
-                name: "same".to_owned(),
-                expected: vec![identity(Some(0), "valid"), identity(Some(1), "duplicate"),],
-                expected_pinned_count: 2,
-            })
-        );
     }
 
     #[test]

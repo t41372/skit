@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skit_application::library_detail::LibrarySurface;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesSnapshot,
+    PreferencesError, PreferencesSnapshot,
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan, SourcePermissions};
 use skit_domain::parameters::ParamDecl;
@@ -15,10 +15,9 @@ use skit_ui::{
     HealthAction, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode,
     KnownEntryKind, LibraryState, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
     PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
-    RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
-    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction,
-    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UiKey, UiModifiers, UvHealth,
-    command_specs,
+    RunFormView, RunnerEditorAction, RunnerEditorError, RunnerEditorOwner, RunnerRow,
+    RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction, SettingsInputs, SettingsView,
+    SourceSnapshot, UiCommand, UiKey, UiModifiers, UvHealth, command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -47,11 +46,27 @@ fn state() -> LibraryState {
     })
 }
 
+fn runner_row(index: usize, name: &str) -> RunnerRow {
+    let identity = RunnerRowIdentity {
+        index: Some(index),
+        snapshot_token: format!("token-{index}"),
+    };
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count: 0,
+    }
+}
+
 fn preferences_view() -> PreferencesView {
     preferences_view_with_runners(Vec::new())
 }
 
-fn preferences_view_with_runners(runner_names: Vec<String>) -> PreferencesView {
+fn preferences_view_with_runners(runners: Vec<RunnerRow>) -> PreferencesView {
     PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
         language: String::new(),
         available_languages: vec!["en".to_owned(), "zh-CN".to_owned(), "zh-TW".to_owned()],
@@ -62,9 +77,50 @@ fn preferences_view_with_runners(runner_names: Vec<String>) -> PreferencesView {
         after_run: AfterRunChoice::Exit,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names,
+        runners,
         mirror: MirrorConfiguration::default(),
     }))
+}
+
+/// Agent management keeps one door of its own, so no command table advertises a chord for it.
+#[test]
+fn no_command_table_advertises_an_agent_or_runner_chord() {
+    for spec in command_specs(CommandContext::Preferences) {
+        for binding in spec.bindings {
+            assert!(
+                !(binding.modifiers.control && matches!(binding.key, UiKey::Character('o' | 'k'))),
+                "Preferences still advertises {} for {}",
+                binding.hint,
+                spec.label
+            );
+        }
+    }
+    for spec in command_specs(CommandContext::LibraryBrowse) {
+        assert!(
+            !spec
+                .bindings
+                .iter()
+                .any(|binding| binding.key == UiKey::Character('R')),
+            "the library still advertises Shift+R for {}",
+            spec.label
+        );
+    }
+    for context in [
+        CommandContext::LibraryBrowse,
+        CommandContext::LibrarySearch,
+        CommandContext::Preferences,
+    ] {
+        for spec in command_specs(context) {
+            assert!(
+                !matches!(
+                    spec.label,
+                    "Runners" | "New agent…" | "Teach an AI agent skit…"
+                ),
+                "{context:?} still advertises {}",
+                spec.label
+            );
+        }
+    }
 }
 
 #[test]
@@ -78,8 +134,6 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
         UiCommand::SavePreset,
         UiCommand::SavePreferences,
         UiCommand::ClosePreferences,
-        UiCommand::ManageAgents,
-        UiCommand::InstallAgentSkill,
     ] {
         assert!(command.direct_action().is_some(), "command={command:?}");
     }
@@ -127,15 +181,6 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
         Effect::None
     );
 
-    state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(Vec::new()),
-    ))));
-    assert_eq!(state.command_context(), CommandContext::Runners);
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
-        Effect::None
-    );
-
     state.update(Action::Present(Screen::Report(ReportView {
         title: "Report".to_owned(),
         items: Vec::new(),
@@ -149,7 +194,6 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
             value: "ignored".to_owned(),
         },
         Action::Health(HealthAction::Next),
-        Action::Runners(RunnerManagerAction::Next),
     ] {
         assert_eq!(state.update(action), Effect::None);
     }
@@ -212,40 +256,7 @@ fn preset_modal_refusals_keep_the_typed_owner_and_never_submit_stale_values() {
 
 #[test]
 fn async_management_preferences_and_form_actions_keep_effect_ordering() {
-    let identity = RunnerRowIdentity {
-        index: Some(0),
-        snapshot_token: "row".to_owned(),
-    };
-    let row = RunnerRow {
-        identity: identity.clone(),
-        name: Some("agent".to_owned()),
-        argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
-        reason: None,
-        descriptor: "agent".to_owned(),
-        key_identities: vec![identity.clone()],
-        pinned_count: 2,
-    };
     let mut state = state();
-    state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(vec![row]),
-    ))));
-    state.update(Action::Runners(RunnerManagerAction::ActivateSelected));
-    state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
-        Effect::RemoveRunner(RunnerRemoveRequest::Named {
-            name: "agent".to_owned(),
-            expected: vec![identity],
-            expected_pinned_count: 2,
-        })
-    );
-    state.update(Action::Runners(RunnerManagerAction::CancelRemove));
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::Back)),
-        Effect::None
-    );
-    assert_eq!(state.screen(), &Screen::Library);
-
     assert_eq!(
         state.update(Action::RunnerEditor(RunnerEditorAction::Cancel)),
         Effect::None
@@ -267,10 +278,6 @@ fn async_management_preferences_and_form_actions_keep_effect_ordering() {
         Effect::None
     );
     assert_eq!(state.status(), Some("Installed"));
-    assert_eq!(
-        state.update(Action::Preferences(PreferencesAction::ManageAgents)),
-        Effect::Preferences(skit_ui::PreferencesEffect::ManageAgents)
-    );
 
     let form = FormView {
         purpose: FormPurpose::Rename,
@@ -725,13 +732,6 @@ fn library_commands_request_host_data_without_embedding_an_adapter() {
         }
     );
     assert_eq!(
-        state.update(Action::OpenRunners),
-        Effect::Open {
-            request: HostRequest::Runners,
-            selector: None,
-        }
-    );
-    assert_eq!(
         state.update(Action::Edit),
         Effect::Edit {
             selector: "alpha".to_owned(),
@@ -1015,58 +1015,6 @@ fn shared_focus_actions_move_the_preferences_cursor() {
     assert_ne!(next, initial);
     assert_eq!(state.update(Action::FocusPrevious), Effect::None);
     assert_eq!(state.preferences().unwrap().focused(), initial);
-}
-
-#[test]
-fn typed_management_screens_reduce_host_effects_and_restore_their_owner() {
-    let mut state = state();
-    let preferences = preferences_view();
-    state.update(Action::Present(Screen::Preferences(Box::new(
-        preferences.clone(),
-    ))));
-    state.update(Action::Present(Screen::Runners(Box::new(
-        RunnerManagerView::new(Vec::new()),
-    ))));
-
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::New)),
-        Effect::None
-    );
-    state.update(Action::Runners(RunnerManagerAction::Editor(
-        RunnerEditorAction::SetName("local".to_owned()),
-    )));
-    state.update(Action::Runners(RunnerManagerAction::Editor(
-        RunnerEditorAction::SetCommand("agent {{prompt}}".to_owned()),
-    )));
-    assert!(matches!(
-        state.update(Action::Runners(RunnerManagerAction::Editor(
-            RunnerEditorAction::Submit,
-        ))),
-        Effect::SaveRunner {
-            owner: RunnerSaveOwner::Manager,
-            request,
-        } if request.name == "local" && request.argv == ["agent", "{{prompt}}"]
-    ));
-
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::Back)),
-        Effect::None
-    );
-    assert_eq!(
-        state.update(Action::Runners(RunnerManagerAction::Back)),
-        Effect::RefreshPreferencesAfterRunners
-    );
-    assert!(matches!(state.screen(), Screen::Runners(_)));
-
-    let refreshed = preferences_view_with_runners(vec!["local".to_owned()]);
-    assert_eq!(
-        state.update(Action::RunnerManagerClosed {
-            preferences: Box::new(refreshed.clone()),
-        }),
-        Effect::None
-    );
-    assert_eq!(state.screen(), &Screen::Preferences(Box::new(refreshed)));
-    assert_ne!(state.screen(), &Screen::Preferences(Box::new(preferences)));
 }
 
 #[test]
@@ -1615,7 +1563,6 @@ fn every_character_binding_accepts_both_shift_shapes() {
         CommandContext::Preferences,
         CommandContext::Add,
         CommandContext::Health,
-        CommandContext::Runners,
         CommandContext::Settings,
         CommandContext::RunnerEditor,
         CommandContext::Report,
@@ -1730,4 +1677,235 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
     });
     assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
     assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
+}
+
+/// The Preferences agent list is one draft: its editor stages rows, and only Ctrl+S writes.
+#[test]
+fn the_preferences_runner_editor_stages_rows_instead_of_writing_them() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude")]),
+    ))));
+
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::NewRunner)),
+        Effect::None
+    );
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "local".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetCommand(
+        "local {{prompt}}".to_owned(),
+    )));
+    assert_eq!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Submit)),
+        Effect::None
+    );
+
+    assert_eq!(state.modal(), None);
+    let draft = state.preferences().unwrap().draft();
+    assert_eq!(draft.runner_rows().len(), 2);
+    assert_eq!(draft.runner_rows()[1].name(), Some("local"));
+    assert!(state.preferences().unwrap().dirty());
+
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::Close)),
+        Effect::None
+    );
+    assert_eq!(state.modal(), Some(&ModalState::ConfirmDiscardChanges));
+}
+
+/// A cancelled editor gives the list back exactly as it was, with no row half-rewritten.
+#[test]
+fn cancelling_the_preferences_runner_editor_keeps_the_list_and_the_cursor() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude"), runner_row(1, "codex")]),
+    ))));
+    state.update(Action::Preferences(PreferencesAction::RunnerCursor(1)));
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::EditRunner)),
+        Effect::None
+    );
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+
+    assert_eq!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Cancel)),
+        Effect::None
+    );
+
+    assert_eq!(state.modal(), None);
+    let view = state.preferences().unwrap();
+    assert_eq!(view.runner_cursor(), 1);
+    assert_eq!(view.editing_runner_row(), None);
+    assert_eq!(view.draft().runner_rows().len(), 2);
+    assert!(!view.dirty());
+
+    // A staged row the cancelled editor held must not swallow the next new agent.
+    state.update(Action::Preferences(PreferencesAction::NewRunner));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "local".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetCommand(
+        "local {{prompt}}".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::Submit));
+    state.update(Action::Preferences(PreferencesAction::RunnerCursor(2)));
+    state.update(Action::Preferences(PreferencesAction::EditRunner));
+    assert_eq!(state.preferences().unwrap().editing_runner_row(), Some(2));
+    state.update(Action::RunnerEditor(RunnerEditorAction::Cancel));
+    assert_eq!(state.preferences().unwrap().editing_runner_row(), None);
+    assert_eq!(
+        state.preferences().unwrap().draft().runner_rows().len(),
+        3,
+        "a cancel keeps the staged row"
+    );
+}
+
+/// A duplicate name is a draft refusal, so the editor stays open with every typed value.
+#[test]
+fn a_duplicate_agent_name_keeps_the_preferences_editor_open_with_a_typed_error() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude")]),
+    ))));
+    state.update(Action::Preferences(PreferencesAction::NewRunner));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "claude".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetCommand(
+        "claude {{prompt}}".to_owned(),
+    )));
+
+    assert_eq!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Submit)),
+        Effect::None
+    );
+
+    let Some(ModalState::RunnerEditor { view, .. }) = state.modal() else {
+        panic!("the refused editor stays open");
+    };
+    assert_eq!(view.name(), "claude");
+    assert_eq!(view.command(), "claude {{prompt}}");
+    assert_eq!(view.error(), Some(&RunnerEditorError::NameTaken));
+    let preferences = state.preferences().unwrap();
+    assert_eq!(preferences.draft().runner_rows().len(), 1);
+    assert!(!preferences.dirty());
+    // The form names the same refusal, so the reason survives a dismissed editor.
+    assert_eq!(
+        preferences.error(),
+        Some(&PreferencesError::RunnerNameTaken)
+    );
+
+    // A retry that takes a free name clears the refusal and stages the row.
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "local".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::Submit));
+    let preferences = state.preferences().unwrap();
+    assert_eq!(preferences.error(), None);
+    assert_eq!(preferences.draft().runner_rows().len(), 2);
+}
+
+/// A key removal owns every raw row of that key, so those rows open no editor of their own.
+#[test]
+fn a_row_the_key_removal_takes_opens_no_editor() {
+    let mut state = state();
+    let mut duplicate = runner_row(1, "claude");
+    duplicate.reason = Some("duplicate".to_owned());
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude"), duplicate]),
+    ))));
+    state.update(Action::Preferences(PreferencesAction::RunnerCursor(0)));
+    state.update(Action::Preferences(PreferencesAction::ToggleRunnerRemoval));
+    state.update(Action::Preferences(PreferencesAction::RunnerCursor(1)));
+
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::EditRunner)),
+        Effect::None
+    );
+
+    assert_eq!(state.modal(), None, "the duplicate row opens no editor");
+    let preferences = state.preferences().unwrap();
+    assert!(preferences.draft().runner_rows()[0].is_removed());
+    assert!(!preferences.draft().runner_rows()[1].is_removed());
+    assert_eq!(preferences.error(), None);
+}
+
+/// No host write answers the Preferences owner, so a stale host response must change nothing.
+#[test]
+fn a_stale_host_runner_response_for_the_preferences_owner_changes_nothing() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude")]),
+    ))));
+    state.update(Action::Preferences(PreferencesAction::NewRunner));
+
+    assert_eq!(
+        state.update(Action::RunnerEditorSaveFailed {
+            owner: RunnerEditorOwner::Preferences,
+            message: "refused".to_owned(),
+        }),
+        Effect::None
+    );
+    let Some(ModalState::RunnerEditor { view, .. }) = state.modal() else {
+        panic!("the editor stays open");
+    };
+    assert_eq!(view.host_error(), Some("refused"));
+
+    // No host save answers this owner, so a stale answer must not close the open editor.
+    assert_eq!(
+        state.update(Action::RunnerEditorSaved {
+            owner: RunnerEditorOwner::Preferences,
+            name: "claude".to_owned(),
+            message: "saved".to_owned(),
+        }),
+        Effect::None
+    );
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+    assert_eq!(state.status(), None);
+    assert_eq!(state.preferences().unwrap().draft().runner_rows().len(), 1);
+}
+
+/// A staged runner result with no open editor changes nothing: the modal owns that outcome.
+#[test]
+fn a_runner_stage_outcome_without_its_editor_modal_changes_no_state() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view_with_runners(vec![runner_row(0, "claude")]),
+    ))));
+
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::RunnerStaged(
+            skit_ui::RunnerSaveRequest {
+                name: "local".to_owned(),
+                argv: vec!["local".to_owned(), "{{prompt}}".to_owned()],
+                target: skit_ui::RunnerSaveTarget::New,
+            },
+        ))),
+        Effect::None
+    );
+
+    assert_eq!(state.modal(), None);
+    assert_eq!(state.preferences().unwrap().draft().runner_rows().len(), 2);
 }

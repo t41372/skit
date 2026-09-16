@@ -149,6 +149,13 @@ Type ","
 Wait+Screen /VISUAL/
 Sleep 2s
 Screenshot "/out/w12-preferences.png"
+Sleep 1s
+
+# Focus the agent list to show its row controls and focus marker.
+Tab 5
+Sleep 2s
+Screenshot "/out/w12-preferences-agents.png"
+Sleep 1s
 
 Escape
 Wait+Screen /banner/
@@ -158,15 +165,6 @@ Type "D"
 Wait+Screen /uv/
 Sleep 2s
 Screenshot "/out/w13-health.png"
-
-Escape
-Wait+Screen /banner/
-Sleep 2s
-
-Type "R"
-Wait+Screen /codex/
-Sleep 2s
-Screenshot "/out/w14-agents.png"
 
 Escape
 Wait+Screen /banner/

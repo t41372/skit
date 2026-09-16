@@ -43,10 +43,10 @@ fn canonical_corpus_has_exact_operation_count_and_required_profile_order() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let bytes = canonical_json_bytes(&Value::Array(values)).unwrap();
-    assert_eq!(bytes.len(), 7_839);
+    assert_eq!(bytes.len(), 7_436);
     assert_eq!(
         sha256_hex(&bytes),
-        "824a42732e08119f3c57286f636d3f12936e3a6b0aa99947c8da17db92d0e922"
+        "5e5d19f449521798601655bac84da68f7478d172bd24559e2bc09493a8a60813"
     );
 
     let factories = required_corpus_factories().unwrap();
@@ -583,10 +583,6 @@ fn corpus_machine_mappings_are_total_and_stable() {
         ),
         (LocalActionTarget::Health(HealthAction::Back), "health"),
         (
-            LocalActionTarget::Runners(RunnerManagerAction::Back),
-            "runners",
-        ),
-        (
             LocalActionTarget::RunnerEditor(RunnerEditorAction::Cancel),
             "runner_editor",
         ),
@@ -648,7 +644,8 @@ fn corpus_machine_mappings_are_total_and_stable() {
         (PreferencesControlId::AfterRun, "after_run"),
         (PreferencesControlId::Javascript, "javascript"),
         (PreferencesControlId::BashPath, "bash_path"),
-        (PreferencesControlId::ManageAgents, "manage_agents"),
+        (PreferencesControlId::Runners, "runners"),
+        (PreferencesControlId::NewRunner, "new_runner"),
         (
             PreferencesControlId::InstallAgentSkill,
             "install_agent_skill",
@@ -681,9 +678,28 @@ fn corpus_machine_mappings_are_total_and_stable() {
         ),
         (
             ScreenTarget::Runner {
-                name: "seed-agent".to_owned(),
+                row: 2,
+                name: Some("seed-agent".to_owned()),
             },
-            json!({"runner": {"name": "seed-agent"}}),
+            json!({"runner": {"row": 2, "name": "seed-agent"}}),
+        ),
+        (
+            ScreenTarget::Runner { row: 3, name: None },
+            json!({"runner": {"row": 3, "name": null}}),
+        ),
+        (
+            ScreenTarget::RunnerChip {
+                row: 2,
+                chip: skit_tui::RunnerChip::Edit,
+            },
+            json!({"runner_chip": {"row": 2, "chip": "edit"}}),
+        ),
+        (
+            ScreenTarget::RunnerChip {
+                row: 2,
+                chip: skit_tui::RunnerChip::Remove,
+            },
+            json!({"runner_chip": {"row": 2, "chip": "remove"}}),
         ),
         (
             ScreenTarget::FilePickerEntry {
@@ -884,7 +900,8 @@ fn corpus_machine_mappings_are_total_and_stable() {
 #[test]
 fn corpus_file_targets_require_strict_utf8_relative_components() {
     let empty_runner = ScreenTarget::Runner {
-        name: String::new(),
+        row: 0,
+        name: Some(String::new()),
     };
     assert!(validate_screen_target(&empty_runner).is_err());
     assert!(corpus_operation_value(&CorpusOperation::ScreenHit(empty_runner)).is_err());
@@ -936,13 +953,13 @@ fn corpus_file_targets_require_strict_utf8_relative_components() {
 
 #[test]
 fn corpus_screen_operations_and_resolutions_have_exact_outer_shapes() {
-    let focus_target = ScreenTarget::Preferences(PreferencesControlId::ManageAgents);
+    let focus_target = ScreenTarget::Preferences(PreferencesControlId::NewRunner);
     let focus_current = ScreenTarget::Preferences(PreferencesControlId::Language);
     let focus_order = vec![focus_current.clone(), focus_target.clone()];
     let focus_operation = CorpusOperation::ScreenFocus(focus_target.clone());
     let focus_operation_value = json!({
         "operation": "screen_focus",
-        "target": {"preferences": "manage_agents"},
+        "target": {"preferences": "new_runner"},
     });
     assert_eq!(
         corpus_operation_value(&focus_operation).unwrap(),
@@ -976,11 +993,11 @@ fn corpus_screen_operations_and_resolutions_have_exact_outer_shapes() {
                 }],
             },
             "semantic_target": {"screen_focus": {
-                "target": {"preferences": "manage_agents"},
+                "target": {"preferences": "new_runner"},
                 "current": {"preferences": "language"},
                 "order": [
                     {"preferences": "language"},
-                    {"preferences": "manage_agents"},
+                    {"preferences": "new_runner"},
                 ],
             }},
         })
@@ -1000,9 +1017,10 @@ fn corpus_screen_operations_and_resolutions_have_exact_outer_shapes() {
         ),
         (
             ScreenTarget::Runner {
-                name: "seed-agent".to_owned(),
+                row: 1,
+                name: Some("seed-agent".to_owned()),
             },
-            json!({"runner": {"name": "seed-agent"}}),
+            json!({"runner": {"row": 1, "name": "seed-agent"}}),
         ),
         (
             ScreenTarget::FilePickerEntry {

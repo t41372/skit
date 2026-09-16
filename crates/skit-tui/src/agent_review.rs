@@ -61,7 +61,6 @@ pub struct AgentReviewSnapshot {
     add_overlay: Option<AgentReviewNode>,
     file_picker_source: Option<AgentReviewNode>,
     health: AgentReviewNode,
-    runners: AgentReviewNode,
     runner_editor: AgentReviewNode,
     form: AgentReviewNode,
     footer: AgentReviewNode,
@@ -92,7 +91,6 @@ impl AgentReviewSnapshot {
         add_overlay: Option<AgentReviewNode>,
         file_picker_source: Option<AgentReviewNode>,
         health: AgentReviewNode,
-        runners: AgentReviewNode,
         runner_editor: AgentReviewNode,
         form: AgentReviewNode,
         footer: AgentReviewNode,
@@ -121,7 +119,6 @@ impl AgentReviewSnapshot {
             add_overlay,
             file_picker_source,
             health,
-            runners,
             runner_editor,
             form,
             footer,
@@ -361,7 +358,6 @@ pub(crate) const fn local_key(key: LocalKey) -> &'static str {
         LocalKey::Enter => "enter",
         LocalKey::Escape => "escape",
         LocalKey::Space => "space",
-        LocalKey::Character(_) => "character",
         LocalKey::Control(_) => "control",
         LocalKey::Tab => "tab",
         LocalKey::BackTab => "back_tab",
@@ -372,7 +368,7 @@ pub(crate) const fn local_key(key: LocalKey) -> &'static str {
 
 pub(crate) fn local_key_value(key: LocalKey) -> serde_json::Value {
     match key {
-        LocalKey::Character(character) | LocalKey::Control(character) => {
+        LocalKey::Control(character) => {
             serde_json::json!({"kind": local_key(key), "character": character})
         }
         LocalKey::Enter
@@ -404,9 +400,6 @@ pub(crate) fn local_action_inventory(
                 }),
                 LocalActionTarget::Health(action) => serde_json::json!({
                     "health": value("local_action.target.health", action)?,
-                }),
-                LocalActionTarget::Runners(action) => serde_json::json!({
-                    "runners": value("local_action.target.runners", action)?,
                 }),
                 LocalActionTarget::RunnerEditor(action) => serde_json::json!({
                     "runner_editor": value("local_action.target.runner_editor", action)?,
@@ -457,7 +450,7 @@ mod tests {
         traits::ClickRegionRegistry,
     };
     use serde::ser::Error as _;
-    use skit_ui::{Action, AddAction, HealthAction, RunnerEditorAction, RunnerManagerAction};
+    use skit_ui::{Action, AddAction, HealthAction, RunnerEditorAction};
 
     use crate::TuiSession;
     use crate::local_action::LocalKey;
@@ -603,17 +596,31 @@ mod tests {
             LocalKey::Enter,
             LocalKey::Escape,
             LocalKey::Space,
-            LocalKey::Character('x'),
+            LocalKey::Control('s'),
             LocalKey::Control('x'),
             LocalKey::Tab,
             LocalKey::BackTab,
             LocalKey::NextField,
             LocalKey::PreviousField,
         ];
+        // The snapshot names every advertised key with its own stable tag.
+        assert_eq!(
+            keys.map(super::local_key),
+            [
+                "enter",
+                "escape",
+                "space",
+                "control",
+                "control",
+                "tab",
+                "back_tab",
+                "next_field",
+                "previous_field",
+            ]
+        );
         let targets = [
             LocalActionTarget::Add(AddControlId::Cancel),
             LocalActionTarget::Health(HealthAction::Back),
-            LocalActionTarget::Runners(RunnerManagerAction::Previous),
             LocalActionTarget::RunnerEditor(RunnerEditorAction::Cancel),
         ];
         let mut actions = keys
@@ -639,12 +646,6 @@ mod tests {
             outcome: LocalActionOutcome::Action(Action::Health(HealthAction::Back)),
         });
         actions.push(LocalAdvertisedAction {
-            target: LocalActionTarget::Runners(RunnerManagerAction::Previous),
-            keys: Vec::new(),
-            hit: None,
-            outcome: LocalActionOutcome::Action(Action::Runners(RunnerManagerAction::Previous)),
-        });
-        actions.push(LocalAdvertisedAction {
             target: LocalActionTarget::RunnerEditor(RunnerEditorAction::Cancel),
             keys: Vec::new(),
             hit: None,
@@ -652,19 +653,17 @@ mod tests {
         });
         let snapshot = super::local_action_inventory(&LocalActionInventory { actions }).unwrap();
         let json = serde_json::to_string(&snapshot).unwrap();
-        for expected in [
-            "add",
-            "health",
-            "runners",
-            "runner_editor",
-            "consumed",
-            "action",
-        ] {
+        for expected in ["add", "health", "runner_editor", "consumed", "action"] {
             assert!(json.contains(expected), "missing {expected}");
         }
-        for key in keys {
-            let _ = super::local_key_value(key);
-        }
+        assert_eq!(
+            super::local_key_value(LocalKey::Control('x')),
+            serde_json::json!({"kind": "control", "character": "x"})
+        );
+        assert_eq!(
+            super::local_key_value(LocalKey::NextField),
+            serde_json::json!({"kind": "next_field"})
+        );
 
         let cross_domain = LocalActionInventory {
             actions: vec![LocalAdvertisedAction {
@@ -725,7 +724,6 @@ mod tests {
                 "run",
                 "run_modal",
                 "runner_editor",
-                "runners",
                 "schema_version",
                 "search",
                 "settings",

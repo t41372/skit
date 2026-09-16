@@ -3890,18 +3890,6 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
         .unwrap(),
         Screen::Add(_)
     ));
-    assert!(matches!(
-        tui_open(
-            &service,
-            &store,
-            &state_dir,
-            &config_dir,
-            HostRequest::Runners,
-            None,
-        )
-        .unwrap(),
-        Screen::Runners(_)
-    ));
     let Screen::Preferences(preferences) = tui_open(
         &service,
         &store,
@@ -3914,7 +3902,7 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
         panic!("Preferences must use its typed workflow");
     };
     assert_eq!(preferences.draft().language_options[0], "auto");
-    assert_eq!(preferences.draft().runner_names.len(), 8);
+    assert_eq!(preferences.draft().runner_rows().len(), 8);
     assert!(matches!(
         tui_open(
             &service,
@@ -4028,10 +4016,9 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
 }
 
 #[test]
-fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins() {
+fn tui_runner_host_preserves_editor_input_on_stale_rows_and_counts_prompt_pins() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
-    let state_dir = root.path().join("state");
     let config_dir = root.path().join("config");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(
@@ -4045,8 +4032,7 @@ fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins
         ),
     )
     .unwrap();
-    let store = FileStore::new(&data_dir);
-    let service = LibraryService::new(store.clone());
+    let service = LibraryService::new(FileStore::new(&data_dir));
 
     let row = tui_runner_rows(&service, &config_dir)
         .unwrap()
@@ -4056,7 +4042,6 @@ fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins
     let mut stale = row.key_identities.clone();
     stale[0].snapshot_token.push_str("-stale");
     let action = tui_save_runner(
-        &service,
         &config_dir,
         RunnerSaveRequest {
             name: "agent".to_owned(),
@@ -4070,92 +4055,52 @@ fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins
                 expected: stale,
             },
         },
-        RunnerSaveOwner::Manager,
+        RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
     )
     .unwrap();
-    assert!(matches!(
-        action,
-        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
-    ));
+    assert!(matches!(action, UiAction::RunnerEditorSaveFailed { .. }));
     assert_eq!(
         FileConfigStore::new(&config_dir).runners().unwrap()[0].argv,
         ["agent", "{{prompt}}"]
     );
 
-    let add_pinned_prompt = |name: &str| {
-        let mut settings = EntrySettings {
-            runner: "agent".to_owned(),
-            ..EntrySettings::default()
-        };
-        settings.params = Vec::new();
-        service
-            .add(CreateEntry {
-                name: name.to_owned(),
-                kind: EntryKind::parse("prompt").unwrap(),
-                mode: StorageMode::Copy,
-                source: String::new(),
-                workdir: "invoke".to_owned(),
-                description: String::new(),
-                payload: Some(EntryPayload {
-                    bytes: b"Review this".to_vec(),
-                    stored_name: Some("prompt.md".to_owned()),
-                    permissions: SourcePermissions::default(),
-                }),
-                settings,
-            })
-            .unwrap();
-    };
-    add_pinned_prompt("First prompt");
-    let row = tui_runner_rows(&service, &config_dir)
+    // One prompt entry pins the runner, and the projected row counts that pin.
+    service
+        .add(CreateEntry {
+            name: "First prompt".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Review this".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                runner: "agent".to_owned(),
+                params: Vec::new(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let pinned = tui_runner_rows(&service, &config_dir)
         .unwrap()
         .into_iter()
         .find(|row| row.name.as_deref() == Some("agent"))
         .unwrap();
-    assert_eq!(row.pinned_count, 1);
-    add_pinned_prompt("Second prompt");
-    assert_eq!(prompt_runner_pin_count(&service, "agent").unwrap(), 2);
-    let data_before = test_tree_snapshot(&data_dir);
-    let config_before = fs::read(config_dir.join("config.toml")).unwrap();
-    let action = tui_effect(
-        &service,
-        &store,
-        &state_dir,
-        &config_dir,
-        UiEffect::RemoveRunner(RunnerRemoveRequest::Named {
-            name: "agent".to_owned(),
-            expected: row.key_identities,
-            expected_pinned_count: row.pinned_count,
-        }),
-    )
-    .unwrap();
-    assert!(matches!(
-        action,
-        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
-    ));
-    assert_eq!(
-        FileConfigStore::new(&config_dir).runners().unwrap().len(),
-        1
-    );
-    assert_eq!(test_tree_snapshot(&data_dir), data_before);
-    assert_eq!(
-        fs::read(config_dir.join("config.toml")).unwrap(),
-        config_before
-    );
-    assert!(!state_dir.exists());
+    assert_eq!(pinned.pinned_count, 1);
 }
 
 #[test]
 fn tui_runner_host_routes_success_to_the_exact_standalone_editor_owner() {
     let root = TempDir::new().unwrap();
-    let data_dir = root.path().join("data");
     let config_dir = root.path().join("config");
-    let store = FileStore::new(&data_dir);
-    let service = LibraryService::new(store.clone());
     let owner = skit_ui::RunnerEditorOwner::Run {
         selector: "prompt".to_owned(),
     };
     let action = tui_save_runner(
-        &service,
         &config_dir,
         RunnerSaveRequest {
             name: "new-agent".to_owned(),
@@ -4179,24 +4124,6 @@ fn tui_runner_host_routes_success_to_the_exact_standalone_editor_owner() {
             .unwrap()
             .iter()
             .any(|runner| runner.name == "new-agent")
-    );
-    let action = tui_effect(
-        &service,
-        &store,
-        &root.path().join("state"),
-        &config_dir,
-        UiEffect::RefreshPreferencesAfterRunners,
-    )
-    .unwrap();
-    let UiAction::RunnerManagerClosed { preferences } = action else {
-        panic!("closing the runner manager must refresh typed Preferences");
-    };
-    assert!(
-        preferences
-            .draft()
-            .runner_names
-            .iter()
-            .any(|name| name == "new-agent")
     );
 }
 
@@ -4315,6 +4242,7 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
                 ("editor".to_owned(), "micro".to_owned()),
                 ("shell.bash_path".to_owned(), invalid.display().to_string()),
             ]),
+            runners: Vec::new(),
         };
         assert!(matches!(
             tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(refused))
@@ -4331,6 +4259,7 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
             ("editor".to_owned(), "micro".to_owned()),
             ("lang".to_owned(), "zh-TW".to_owned()),
         ]),
+        runners: Vec::new(),
     };
     assert_eq!(
         tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(accepted)).unwrap(),
@@ -4344,6 +4273,7 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
 
     let simplified = skit_application::preferences::PreferencesChangeSet {
         settings: BTreeMap::from([("lang".to_owned(), "zh-CN".to_owned())]),
+        runners: Vec::new(),
     };
     assert_eq!(
         tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(simplified)).unwrap(),
@@ -4391,6 +4321,8 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         PreferencesEffect::None,
         PreferencesEffect::Close,
         PreferencesEffect::ConfirmDiscard,
+        PreferencesEffect::OpenRunnerEditor(Box::default()),
+        PreferencesEffect::RunnerStaged { refused: None },
     ] {
         assert_eq!(
             tui_effect(
@@ -4408,30 +4340,11 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         assert!(!state_dir.exists());
     }
 
-    assert!(matches!(
-        tui_effect(
-            &service,
-            &store,
-            &state_dir,
-            &config_dir,
-            UiEffect::Preferences(PreferencesEffect::ManageAgents),
-        )
-        .unwrap(),
-        UiAction::Present(Screen::Runners(_))
-    ));
-    assert!(
-        !FileConfigStore::new(&config_dir)
-            .runners()
-            .unwrap()
-            .is_empty()
-    );
-    assert!(!data_dir.exists());
-    assert!(!state_dir.exists());
-
     let broken_config = root.path().join("config-is-a-file");
     fs::write(&broken_config, b"keep config bytes").unwrap();
     let failure = PreferencesChangeSet {
         settings: BTreeMap::from([("editor".to_owned(), "nano".to_owned())]),
+        runners: Vec::new(),
     };
     let action = tui_effect_in_english(
         &service,
@@ -11226,7 +11139,7 @@ fn show_formatters_cover_empty_defaults_prompt_help_types_actions_and_every_drif
 }
 
 #[test]
-fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
+fn runner_host_updates_repairs_and_refuses_stale_snapshots() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
     let config_dir = root.path().join("config");
@@ -11254,7 +11167,6 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .find(|row| row.name.as_deref() == Some("agent"))
         .expect("the named runner row must be visible");
     let action = tui_save_runner_at(
-        &service,
         &config_dir,
         RunnerSaveRequest {
             name: "agent".to_owned(),
@@ -11268,17 +11180,17 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
                 expected: agent.key_identities.clone(),
             },
         },
-        RunnerSaveOwner::Manager,
+        RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
         Locale::En,
     )
     .unwrap();
     assert!(matches!(
         action,
-        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            selected_name: Some(ref name),
+        UiAction::RunnerEditorSaved {
+            ref name,
             ref message,
             ..
-        }) if name == "agent" && message.contains("updated")
+        } if name == "agent" && message.contains("updated")
     ));
     assert_eq!(
         FileConfigStore::new(&config_dir).runners().unwrap()[0].argv,
@@ -11291,7 +11203,6 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
         .find(|row| row.name.as_deref() == Some("broken"))
         .expect("the malformed named row must be visible");
     let action = tui_save_runner_at(
-        &service,
         &config_dir,
         RunnerSaveRequest {
             name: "repaired".to_owned(),
@@ -11320,35 +11231,12 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
             .any(|runner| runner.name == "repaired")
     );
 
-    let raw_row = tui_runner_rows(&service, &config_dir)
-        .unwrap()
-        .into_iter()
-        .find(|row| row.reason.as_deref() == Some("row-not-table"))
-        .expect("the malformed scalar row must remain visible");
-    let action = tui_remove_runner_at(
-        &service,
-        &config_dir,
-        RunnerRemoveRequest::RawRow {
-            expected: raw_row.identity,
-        },
-        Locale::En,
-    )
-    .unwrap();
-    assert!(matches!(
-        action,
-        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            ref message,
-            ..
-        }) if message.contains("row 2")
-    ));
-
     let stale = RunnerRowIdentity {
         index: Some(1),
         snapshot_token: "stale".to_owned(),
     };
     let before = fs::read(&config_path).unwrap();
     let action = tui_save_runner_at(
-        &service,
         &config_dir,
         RunnerSaveRequest {
             name: "never-written".to_owned(),
@@ -11361,96 +11249,10 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
     .unwrap();
     assert!(matches!(action, UiAction::RunnerEditorSaveFailed { .. }));
     assert_eq!(fs::read(&config_path).unwrap(), before);
-
-    let agent = tui_runner_rows(&service, &config_dir)
-        .unwrap()
-        .into_iter()
-        .find(|row| row.name.as_deref() == Some("agent"))
-        .expect("updated named runner remains visible");
-    let action = tui_remove_runner_at(
-        &service,
-        &config_dir,
-        RunnerRemoveRequest::Named {
-            name: "agent".to_owned(),
-            expected: agent.key_identities,
-            expected_pinned_count: 0,
-        },
-        Locale::En,
-    )
-    .unwrap();
-    assert!(matches!(
-        action,
-        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            selected_name: None,
-            ref message,
-            ..
-        }) if message.contains("agent")
-    ));
-    assert!(
-        FileConfigStore::new(&config_dir)
-            .runners()
-            .unwrap()
-            .iter()
-            .all(|runner| runner.name != "agent")
-    );
-
-    let stale_remove = RunnerRemoveRequest::Named {
-        name: "repaired".to_owned(),
-        expected: vec![RunnerRowIdentity {
-            index: Some(0),
-            snapshot_token: "stale".to_owned(),
-        }],
-        expected_pinned_count: 0,
-    };
-    let before = fs::read(&config_path).unwrap();
-    assert!(matches!(
-        tui_remove_runner_at(&service, &config_dir, stale_remove, Locale::En).unwrap(),
-        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
-    ));
-    assert_eq!(fs::read(&config_path).unwrap(), before);
-
-    fs::write(&config_path, "language = \"zh-TW\"\nprompt = \"garbage\"\n").unwrap();
-    let raw = tui_runner_rows(&service, &config_dir)
-        .unwrap()
-        .pop()
-        .expect("the malformed prompt container is one raw row");
-    assert_eq!(raw.identity.index, None);
-    let action = tui_remove_runner_at(
-        &service,
-        &config_dir,
-        RunnerRemoveRequest::RawRow {
-            expected: raw.identity,
-        },
-        Locale::En,
-    )
-    .unwrap();
-    assert!(matches!(
-        action,
-        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-            ref message,
-            ..
-        }) if message.contains("container")
-    ));
-    let document = fs::read_to_string(&config_path).unwrap();
-    assert!(document.contains("language = \"zh-TW\""));
-    assert!(document.contains("runners = []"));
-
-    let raw_stale = RunnerRemoveRequest::RawRow {
-        expected: RunnerRowIdentity {
-            index: None,
-            snapshot_token: "stale".to_owned(),
-        },
-    };
-    let before = fs::read(&config_path).unwrap();
-    assert!(matches!(
-        tui_remove_runner_at(&service, &config_dir, raw_stale, Locale::En).unwrap(),
-        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
-    ));
-    assert_eq!(fs::read(&config_path).unwrap(), before);
 }
 
 #[test]
-fn runner_closed_store_outcomes_project_to_typed_actions_in_every_locale() {
+fn runner_save_store_outcomes_project_to_typed_actions_in_every_locale() {
     let root = TempDir::new().unwrap();
     let invalid = root.path().join("config-file");
     fs::write(&invalid, b"keep").unwrap();
@@ -11459,35 +11261,13 @@ fn runner_closed_store_outcomes_project_to_typed_actions_in_every_locale() {
             .set("editor", "nano")
             .unwrap_err()
     };
+    let owner = || RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add);
     for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
-        assert!(project_runner_save_result(Ok(true), RunnerSaveOwner::Manager, locale).is_none());
+        assert!(project_runner_save_result(Ok(true), owner(), locale).is_none());
         for result in [Ok(false), Err(config_error())] {
             assert!(matches!(
-                project_runner_save_result(result, RunnerSaveOwner::Manager, locale),
-                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
-            ));
-        }
-        for result in [
-            Ok(RunnerRemovalCas::RowsChanged),
-            Ok(RunnerRemovalCas::PinsChanged { actual: 2 }),
-            Err(RunnerManagementStoreError::Library(
-                RepositoryError::NotFound {
-                    query: "runner".to_owned(),
-                },
-            )),
-            Err(RunnerManagementStoreError::Config(config_error())),
-        ] {
-            assert!(matches!(
-                project_named_runner_removal(result, locale),
-                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
-            ));
-        }
-        assert!(project_named_runner_removal(Ok(RunnerRemovalCas::Removed), locale).is_none());
-        assert!(project_raw_runner_removal(Ok(true), locale).is_none());
-        for result in [Ok(false), Err(config_error())] {
-            assert!(matches!(
-                project_raw_runner_removal(result, locale),
-                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
+                project_runner_save_result(result, owner(), locale),
+                Some(UiAction::RunnerEditorSaveFailed { .. })
             ));
         }
     }
@@ -12552,4 +12332,454 @@ fn a_cell_folds_at_its_spaces_before_it_is_cut() {
     // Authored lines survive, and an empty cell still occupies one line.
     assert_eq!(wrap_cell("one\ntwo", 5), ["one", "two"]);
     assert_eq!(wrap_cell("", 5), [""]);
+}
+
+/// Opening Preferences is a read. The shipped default agents stay virtual until a save.
+#[test]
+fn opening_preferences_on_a_fresh_config_directory_writes_nothing() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+
+    let view = tui_preferences_view_with_context(&service, &config_dir, Locale::En, None).unwrap();
+
+    assert!(!view.draft().runner_rows().is_empty());
+    assert!(
+        view.draft()
+            .runner_rows()
+            .iter()
+            .all(|row| row.marker().is_none())
+    );
+    assert!(!config_dir.join("config.toml").exists());
+    assert!(!config_dir.exists());
+}
+
+/// One Ctrl+S is one transaction: the settings and every staged agent row land in one write.
+#[test]
+fn a_clean_preferences_save_commits_the_settings_and_every_staged_agent_row() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let config = FileConfigStore::new(&config_dir);
+    config.set("editor", "vi").unwrap();
+
+    let mut view =
+        tui_preferences_view_with_context(&service, &config_dir, Locale::En, None).unwrap();
+    let names = view
+        .draft()
+        .runner_rows()
+        .iter()
+        .filter_map(|row| row.name().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert!(names.len() >= 2, "{names:?}");
+    view.update(PreferencesAction::SetEditor("micro".to_owned()));
+    view.update(PreferencesAction::RunnerCursor(0));
+    view.update(PreferencesAction::ToggleRunnerRemoval);
+    view.update(PreferencesAction::RunnerCursor(1));
+    view.update(PreferencesAction::RunnerStaged(
+        skit_ui::RunnerSaveRequest {
+            name: names[1].clone(),
+            argv: vec![
+                names[1].clone(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned(),
+            ],
+            target: skit_ui::RunnerSaveTarget::Named {
+                name: names[1].clone(),
+                expected: match &view.draft().runner_rows()[1] {
+                    skit_application::preferences::RunnerDraftRow::Existing { row, .. } => {
+                        row.key_identities.clone()
+                    }
+                    skit_application::preferences::RunnerDraftRow::Added { .. } => {
+                        panic!("the fixture row is stored")
+                    }
+                },
+            },
+        },
+    ));
+    view.update(PreferencesAction::NewRunner);
+    view.update(PreferencesAction::RunnerStaged(
+        skit_ui::RunnerSaveRequest {
+            name: "walker-agent".to_owned(),
+            argv: vec!["walker-agent".to_owned(), "{{prompt}}".to_owned()],
+            target: skit_ui::RunnerSaveTarget::New,
+        },
+    ));
+
+    let PreferencesEffect::Save(change) = view.update(PreferencesAction::Save) else {
+        panic!("a valid draft resolves into one transaction");
+    };
+    assert_eq!(change.runners.len(), 3);
+    assert!(matches!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::PreferencesSaved { .. }
+    ));
+
+    assert_eq!(config.get("editor").unwrap(), "micro");
+    let saved = config
+        .runners()
+        .unwrap()
+        .into_iter()
+        .map(|runner| (runner.name, runner.argv))
+        .collect::<Vec<_>>();
+    assert!(
+        !saved.iter().any(|(name, _)| *name == names[0]),
+        "{saved:?}"
+    );
+    assert!(
+        saved.iter().any(|(name, argv)| *name == names[1]
+            && argv
+                == &[
+                    names[1].clone(),
+                    "--fast".to_owned(),
+                    "{{prompt}}".to_owned()
+                ]),
+        "{saved:?}"
+    );
+    assert_eq!(saved.last().unwrap().0, "walker-agent");
+}
+
+/// A row that changed on disk refuses the complete save. Nothing is written, not even a setting.
+#[test]
+fn a_stale_agent_row_refuses_the_whole_preferences_save() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let config = FileConfigStore::new(&config_dir);
+    config
+        .set_runner(
+            skit_store::PromptRunner {
+                name: "victim".to_owned(),
+                argv: vec!["victim".to_owned(), "{{prompt}}".to_owned()],
+            },
+            false,
+        )
+        .unwrap();
+    config.set("editor", "vi").unwrap();
+
+    let mut view =
+        tui_preferences_view_with_context(&service, &config_dir, Locale::En, None).unwrap();
+    let victim = view
+        .draft()
+        .runner_rows()
+        .iter()
+        .position(|row| row.name() == Some("victim"))
+        .expect("the stored runner is in the draft");
+    view.update(PreferencesAction::SetEditor("micro".to_owned()));
+    view.update(PreferencesAction::RunnerCursor(victim));
+    view.update(PreferencesAction::ToggleRunnerRemoval);
+    let PreferencesEffect::Save(change) = view.update(PreferencesAction::Save) else {
+        panic!("a valid draft resolves into one transaction");
+    };
+
+    // Another writer edits the same row after Preferences read it.
+    config
+        .set_runner(
+            skit_store::PromptRunner {
+                name: "victim".to_owned(),
+                argv: vec![
+                    "victim".to_owned(),
+                    "--drifted".to_owned(),
+                    "{{prompt}}".to_owned(),
+                ],
+            },
+            true,
+        )
+        .unwrap();
+    let config_before_save = fs::read(config_dir.join("config.toml")).unwrap();
+
+    assert_eq!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::Preferences(PreferencesAction::ValidationFailed(
+            skit_application::preferences::PreferencesError::RunnersChanged,
+        ))
+    );
+
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_before_save
+    );
+    assert_eq!(config.get("editor").unwrap(), "vi");
+    assert!(
+        config
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == "victim")
+    );
+}
+
+/// A pin count that moved after inspection refuses the removal and the complete save with it.
+#[test]
+fn a_changed_prompt_pin_count_refuses_the_preferences_save_with_its_typed_error() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let config = FileConfigStore::new(&config_dir);
+    config
+        .set_runner(
+            skit_store::PromptRunner {
+                name: "victim".to_owned(),
+                argv: vec!["victim".to_owned(), "{{prompt}}".to_owned()],
+            },
+            false,
+        )
+        .unwrap();
+
+    let mut view =
+        tui_preferences_view_with_context(&service, &config_dir, Locale::En, None).unwrap();
+    let victim = view
+        .draft()
+        .runner_rows()
+        .iter()
+        .position(|row| row.name() == Some("victim"))
+        .expect("the stored runner is in the draft");
+    view.update(PreferencesAction::RunnerCursor(victim));
+    view.update(PreferencesAction::ToggleRunnerRemoval);
+    let PreferencesEffect::Save(change) = view.update(PreferencesAction::Save) else {
+        panic!("a valid draft resolves into one transaction");
+    };
+
+    let settings = skit_domain::EntrySettings {
+        runner: "victim".to_owned(),
+        ..skit_domain::EntrySettings::default()
+    };
+    skit_application::EntryMutationRepository::create(
+        &store,
+        skit_application::CreateEntry {
+            name: "Pinned prompt".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: "/original/prompt.md".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(skit_application::EntryPayload {
+                bytes: b"hello".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: skit_application::SourcePermissions::default(),
+            }),
+            settings,
+        },
+    )
+    .unwrap();
+    let config_before_save = fs::read(config_dir.join("config.toml")).unwrap();
+
+    assert_eq!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::Preferences(PreferencesAction::ValidationFailed(
+            skit_application::preferences::PreferencesError::RunnerPinsChanged {
+                name: "victim".to_owned(),
+                actual: 1,
+            },
+        ))
+    );
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_before_save
+    );
+}
+
+/// A save with no staged agent row keeps the historical settings-only write path.
+#[test]
+fn a_preferences_save_without_staged_agents_keeps_the_settings_only_write() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+
+    let broken = root.path().join("config-is-a-file");
+    fs::write(&broken, b"keep config bytes").unwrap();
+    let change = skit_application::preferences::PreferencesChangeSet {
+        settings: BTreeMap::from([("editor".to_owned(), "nano".to_owned())]),
+        runners: Vec::new(),
+    };
+    assert!(matches!(
+        tui_preferences_effect(&service, &broken, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::SetStatus(_)
+    ));
+    assert_eq!(fs::read(&broken).unwrap(), b"keep config bytes");
+
+    let clean = skit_application::preferences::PreferencesChangeSet {
+        settings: BTreeMap::from([("editor".to_owned(), "nano".to_owned())]),
+        runners: Vec::new(),
+    };
+    assert!(matches!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(clean)).unwrap(),
+        UiAction::PreferencesSaved { .. }
+    ));
+    assert_eq!(
+        FileConfigStore::new(&config_dir).get("editor").unwrap(),
+        "nano"
+    );
+    assert!(FileConfigStore::new(&config_dir).runners().unwrap().len() >= 2);
+}
+
+/// A staged agent row whose identity no longer resolves refuses the save before any write.
+#[test]
+fn an_unresolvable_staged_identity_refuses_the_preferences_save() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let config = FileConfigStore::new(&config_dir);
+    config.set("editor", "vi").unwrap();
+    let config_before_save = fs::read(config_dir.join("config.toml")).unwrap();
+
+    let change = skit_application::preferences::PreferencesChangeSet {
+        settings: BTreeMap::from([("editor".to_owned(), "micro".to_owned())]),
+        runners: vec![skit_application::preferences::RunnerChange::RemoveRow {
+            expected: skit_ui::RunnerRowIdentity {
+                index: Some(9),
+                snapshot_token: "ghost".to_owned(),
+            },
+        }],
+    };
+
+    assert_eq!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::Preferences(PreferencesAction::ValidationFailed(
+            skit_application::preferences::PreferencesError::RunnersChanged,
+        ))
+    );
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_before_save
+    );
+}
+
+/// A repair and a raw-row removal reach the transaction through their exact raw identities.
+#[test]
+fn a_staged_repair_and_raw_row_removal_commit_through_their_raw_identities() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"[prompt]
+runners_seeded = true
+runners = [
+  { name = "claude", argv = ["claude", "{{prompt}}"] },
+  { argv = ["broken", "{{prompt}}"] },
+  "future-shape",
+]
+"#,
+    )
+    .unwrap();
+
+    let mut view =
+        tui_preferences_view_with_context(&service, &config_dir, Locale::En, None).unwrap();
+    assert_eq!(view.draft().runner_rows().len(), 3);
+    let identity = |index: usize| match &view.draft().runner_rows()[index] {
+        skit_application::preferences::RunnerDraftRow::Existing { row, .. } => row.identity.clone(),
+        skit_application::preferences::RunnerDraftRow::Added { .. } => {
+            panic!("the fixture rows are stored")
+        }
+    };
+    let broken = identity(1);
+    view.update(PreferencesAction::RunnerCursor(1));
+    let PreferencesEffect::OpenRunnerEditor(editor) = view.update(PreferencesAction::EditRunner)
+    else {
+        panic!("a recognizable malformed row opens the repair editor");
+    };
+    assert_eq!(editor.mode(), skit_ui::RunnerEditorMode::Repair);
+    view.update(PreferencesAction::RunnerStaged(
+        skit_ui::RunnerSaveRequest {
+            name: "repaired".to_owned(),
+            argv: vec!["repaired".to_owned(), "{{prompt}}".to_owned()],
+            target: skit_ui::RunnerSaveTarget::RawRow { expected: broken },
+        },
+    ));
+    view.update(PreferencesAction::RunnerCursor(2));
+    view.update(PreferencesAction::ToggleRunnerRemoval);
+
+    let PreferencesEffect::Save(change) = view.update(PreferencesAction::Save) else {
+        panic!("a valid draft resolves into one transaction");
+    };
+    assert!(matches!(
+        change.runners.as_slice(),
+        [
+            skit_application::preferences::RunnerChange::RemoveRow { .. },
+            skit_application::preferences::RunnerChange::RepairRow { .. },
+        ]
+    ));
+    assert!(matches!(
+        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(change)).unwrap(),
+        UiAction::PreferencesSaved { .. }
+    ));
+
+    let config = FileConfigStore::new(&config_dir);
+    assert!(config.invalid_runner_rows().unwrap().is_empty());
+    assert_eq!(
+        config
+            .runners()
+            .unwrap()
+            .into_iter()
+            .map(|runner| runner.name)
+            .collect::<Vec<_>>(),
+        ["claude", "repaired"]
+    );
+}
+
+/// Every transaction outcome, including an adapter failure, projects into one typed action.
+#[test]
+fn every_preferences_commit_outcome_projects_to_one_typed_action_in_every_locale() {
+    let root = TempDir::new().unwrap();
+    let invalid = root.path().join("config-file");
+    fs::write(&invalid, b"keep").unwrap();
+    let config_error = || {
+        FileConfigStore::new(&invalid)
+            .set("editor", "nano")
+            .unwrap_err()
+    };
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        assert!(project_preferences_commit(Ok(PreferencesCommit::Committed), locale).is_none());
+        assert_eq!(
+            project_preferences_commit(Ok(PreferencesCommit::RowsChanged), locale),
+            Some(UiAction::Preferences(PreferencesAction::ValidationFailed(
+                skit_application::preferences::PreferencesError::RunnersChanged,
+            )))
+        );
+        assert_eq!(
+            project_preferences_commit(
+                Ok(PreferencesCommit::PinsChanged {
+                    name: "claude".to_owned(),
+                    actual: 3,
+                }),
+                locale,
+            ),
+            Some(UiAction::Preferences(PreferencesAction::ValidationFailed(
+                skit_application::preferences::PreferencesError::RunnerPinsChanged {
+                    name: "claude".to_owned(),
+                    actual: 3,
+                },
+            )))
+        );
+        for result in [
+            Err(RunnerManagementStoreError::Library(
+                RepositoryError::NotFound {
+                    query: "runner".to_owned(),
+                },
+            )),
+            Err(RunnerManagementStoreError::Config(config_error())),
+        ] {
+            assert!(matches!(
+                project_preferences_commit(result, locale),
+                Some(UiAction::SetStatus(_))
+            ));
+        }
+    }
+    assert_eq!(fs::read(&invalid).unwrap(), b"keep");
 }

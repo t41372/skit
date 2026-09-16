@@ -67,7 +67,6 @@ use crate::{
     screens::library::{LibraryClickTarget, LibraryPointerHandling, LibraryScreenSession},
     screens::management::{
         HealthEventHandling, HealthScreenSession, RunnerEditorEventHandling, RunnerEditorSession,
-        RunnerManagerEventHandling, RunnerManagerSession,
     },
     screens::modal::{ConfirmRemoveEvent, ConfirmRemoveSession, HelpScreenSession},
     screens::picker::{
@@ -530,10 +529,6 @@ mod agent_review_tests {
         assert_field_changed(&baseline, &session, "health");
 
         let mut session = baseline.try_fork().unwrap();
-        session.runners.perturb_agent_review_state();
-        assert_field_changed(&baseline, &session, "runners");
-
-        let mut session = baseline.try_fork().unwrap();
         session.runner_editor.perturb_agent_review_state();
         assert_field_changed(&baseline, &session, "runner_editor");
 
@@ -962,7 +957,6 @@ pub struct TuiSession {
     add_overlay: Option<AddOverlay>,
     file_picker_source: Option<MemoryFilePickerSource>,
     health: HealthScreenSession,
-    runners: RunnerManagerSession,
     runner_editor: RunnerEditorSession,
     form: FormWidgetSession,
     footer: FooterSession,
@@ -1600,7 +1594,6 @@ impl TuiSession {
             add_overlay,
             file_picker_source,
             health,
-            runners,
             runner_editor,
             form,
             footer,
@@ -1648,7 +1641,6 @@ impl TuiSession {
             add_overlay,
             file_picker_source,
             health.agent_review_snapshot()?,
-            runners.agent_review_snapshot()?,
             runner_editor.agent_review_snapshot()?,
             form.agent_review_snapshot()?,
             footer.agent_review_snapshot(),
@@ -1687,7 +1679,6 @@ impl TuiSession {
             add_overlay: self.add_overlay.clone(),
             file_picker_source: self.file_picker_source.clone(),
             health: self.health.clone(),
-            runners: self.runners.clone(),
             runner_editor: self.runner_editor.clone(),
             form: self.form.clone(),
             footer: self.footer.clone(),
@@ -1762,7 +1753,6 @@ impl TuiSession {
             }
             (Screen::Add(view), None) => self.add.screen_target_inventory(view, &self.add_geometry),
             (Screen::Preferences(view), None) => self.preferences.screen_target_inventory(view),
-            (Screen::Runners(view), None) => Ok(self.runners.screen_target_inventory(view)),
             (Screen::Preferences(_), Some(_)) | (_, Some(_)) => {
                 Err(ScreenTargetError::StaleSession)
             }
@@ -1831,19 +1821,6 @@ impl TuiSession {
                             *key,
                             LocalActionTarget::Health(action.clone()),
                             LocalActionOutcome::Action(Action::Health(action.clone())),
-                        )
-                    })
-                    .collect(),
-                Screen::Runners(view) => self
-                    .runners
-                    .advertised(view)
-                    .into_iter()
-                    .map(|(rect, key, action)| {
-                        (
-                            rect,
-                            key,
-                            LocalActionTarget::Runners(action.clone()),
-                            LocalActionOutcome::Action(Action::Runners(action)),
                         )
                     })
                     .collect(),
@@ -2058,15 +2035,6 @@ impl TuiSession {
         if matches!(state.screen(), Screen::Report(_)) && self.report.handle_event(&event) {
             return EventHandling::Consumed;
         }
-        if let Screen::Runners(view) = state.screen() {
-            return match self.runners.handle_event(event, view) {
-                RunnerManagerEventHandling::Action(action) => {
-                    EventHandling::Action(Action::Runners(action))
-                }
-                RunnerManagerEventHandling::Consumed => EventHandling::Consumed,
-                RunnerManagerEventHandling::Ignored => EventHandling::Ignored,
-            };
-        }
         if let Screen::Add(view) = state.screen() {
             return self.handle_add_event(event, state, view, geometry);
         }
@@ -2172,6 +2140,7 @@ impl TuiSession {
                 RunnerEditorOwner::Run { .. } => self.run.click.cancel(),
                 RunnerEditorOwner::Add => self.add.cancel_click(),
                 RunnerEditorOwner::Settings { .. } => self.settings.cancel_click(),
+                RunnerEditorOwner::Preferences => self.preferences.cancel_click(),
             }
             let pointer_lifecycle = matches!(
                 event,
@@ -2257,7 +2226,6 @@ impl TuiSession {
             None => {}
         }
         self.health.cancel_click();
-        self.runners.cancel_click();
     }
 
     fn open_settings_prompt_picker(&mut self, view: &skit_ui::SettingsView) {
@@ -2444,7 +2412,6 @@ impl TuiSession {
                 FooterInputOwnership {
                     vertical_navigation: owns,
                     run_submit: owns,
-                    preferences_input: false,
                     escape: matches!(
                         focused,
                         Some(WidgetControl::Choice {
@@ -2461,26 +2428,21 @@ impl TuiSession {
                     Some(FormWidgetControl::TextArea { .. })
                 ),
                 run_submit: false,
-                preferences_input: false,
                 escape: false,
             },
             Screen::Preferences(view) => FooterInputOwnership {
                 vertical_navigation: self.preferences.focused_owns_vertical_navigation(view),
                 run_submit: false,
-                preferences_input: self.preferences.focused_is_input(view),
                 escape: self.preferences.focused_dropdown_is_open(view),
             },
             Screen::Settings(view) => FooterInputOwnership {
                 vertical_navigation: SettingsScreenSession::focused_owns_vertical_navigation(view),
                 run_submit: false,
-                preferences_input: false,
                 escape: false,
             },
-            Screen::Library
-            | Screen::Add(_)
-            | Screen::Health(_)
-            | Screen::Runners(_)
-            | Screen::Report(_) => FooterInputOwnership::default(),
+            Screen::Library | Screen::Add(_) | Screen::Health(_) | Screen::Report(_) => {
+                FooterInputOwnership::default()
+            }
         }
     }
 
@@ -2834,22 +2796,6 @@ impl TuiSession {
         locale: Locale,
     ) -> ViewGeometry {
         self.health.render(frame, area, view, locale);
-        ViewGeometry {
-            rows: area,
-            first_visible: 0,
-            hits: Vec::new(),
-            detail_pane_visible: false,
-        }
-    }
-
-    pub(crate) fn render_runners(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        view: &skit_ui::RunnerManagerView,
-        locale: Locale,
-    ) -> ViewGeometry {
-        self.runners.render(frame, area, view, locale);
         ViewGeometry {
             rows: area,
             first_visible: 0,

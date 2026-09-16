@@ -26,8 +26,9 @@ use skit_tui::{
 };
 use skit_ui::{
     Action, FormField, FormPurpose, FormView, LibraryState, PreferencesAction, PreferencesView,
-    ReportItem, ReportView, RunFormContext, RunFormView, RunPathContext, Screen, SettingsInputs,
-    SettingsView, UiBinding, UiCommand, UiKey, command_specs,
+    ReportItem, ReportView, RunFormContext, RunFormView, RunPathContext, RunnerRow,
+    RunnerRowIdentity, Screen, SettingsInputs, SettingsView, UiBinding, UiCommand, UiKey,
+    command_specs,
 };
 
 fn state() -> LibraryState {
@@ -48,6 +49,22 @@ fn state() -> LibraryState {
     state
 }
 
+fn preferences_runner_row(index: usize, name: &str) -> RunnerRow {
+    let identity = RunnerRowIdentity {
+        index: Some(index),
+        snapshot_token: format!("token-{index}"),
+    };
+    RunnerRow {
+        key_identities: vec![identity.clone()],
+        identity,
+        name: Some(name.to_owned()),
+        argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: format!("prompt.runners[{index}]"),
+        pinned_count: 0,
+    }
+}
+
 fn preferences_view() -> PreferencesView {
     PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
         language: String::new(),
@@ -59,7 +76,7 @@ fn preferences_view() -> PreferencesView {
         after_run: AfterRunChoice::Exit,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
-        runner_names: vec!["codex".into()],
+        runners: vec![preferences_runner_row(0, "codex")],
         mirror: MirrorConfiguration::default(),
     }))
 }
@@ -349,7 +366,6 @@ fn renderer_exposes_rows_and_clickable_footer_chips() {
         UiCommand::Remove,
         UiCommand::Preferences,
         UiCommand::Health,
-        UiCommand::Runners,
         UiCommand::ToggleDetail,
         UiCommand::Help,
     ] {
@@ -531,7 +547,6 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
                 currently_visible: false,
             },
         ),
-        (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::OpenRunners),
         (KeyCode::Char('r'), KeyModifiers::CONTROL, Action::Reload),
     ];
 
@@ -552,6 +567,19 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
                 "advertised key {code:?} with {modifiers:?} must map"
             );
         }
+    }
+}
+
+#[test]
+fn the_library_maps_no_action_for_a_shift_r_chord() {
+    let browse = state();
+    let geometry = ViewGeometry::default();
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::empty()] {
+        assert_eq!(
+            map_event(key(KeyCode::Char('R'), modifiers), &browse, &geometry),
+            None,
+            "the library keeps no Shift+R chord"
+        );
     }
 }
 
@@ -1069,7 +1097,6 @@ fn contextual_footer_only_advertises_commands_that_can_run_here() {
                 UiCommand::Preferences,
                 UiCommand::Health,
                 UiCommand::Help,
-                UiCommand::Runners,
                 UiCommand::Reload,
                 UiCommand::Quit,
             ],
@@ -1242,7 +1269,6 @@ fn narrow_library_footer_scroll_reaches_every_action_and_reserves_the_status_row
         UiCommand::Remove,
         UiCommand::Preferences,
         UiCommand::Health,
-        UiCommand::Runners,
         UiCommand::Search,
         UiCommand::ToggleDetail,
         UiCommand::Help,
@@ -1281,7 +1307,6 @@ fn narrow_footer_scroll_reaches_all_actions_in_each_supported_locale() {
         UiCommand::Remove,
         UiCommand::Preferences,
         UiCommand::Health,
-        UiCommand::Runners,
         UiCommand::Search,
         UiCommand::ToggleDetail,
         UiCommand::Help,
@@ -1417,7 +1442,6 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
         (UiCommand::Remove, Action::AskRemove),
         (UiCommand::Preferences, Action::OpenPreferences),
         (UiCommand::Health, Action::OpenHealth),
-        (UiCommand::Runners, Action::OpenRunners),
         (UiCommand::Search, Action::BeginSearch),
         (
             UiCommand::ToggleDetail,

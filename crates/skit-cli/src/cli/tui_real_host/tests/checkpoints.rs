@@ -627,10 +627,6 @@ fn strict_projection_refuses_noncanonical_outer_nested_and_screen_tags() {
             json!({"health": "next"}),
         ),
         (
-            Action::Runners(skit_ui::RunnerManagerAction::Previous),
-            json!({"runners": "next"}),
-        ),
-        (
             Action::RunnerEditor(skit_ui::RunnerEditorAction::FocusNext),
             json!({"runner_editor": "cancel"}),
         ),
@@ -676,7 +672,7 @@ fn strict_projection_refuses_noncanonical_outer_nested_and_screen_tags() {
 }
 
 #[test]
-fn serialized_screen_dispatcher_covers_the_typed_nine_variant_vocabulary() {
+fn serialized_screen_dispatcher_covers_the_typed_eight_variant_vocabulary() {
     let mut host = RealWalkerHost::spawn(profile()).unwrap();
     let present = |host: &RealWalkerHost, request, selector: Option<&str>| {
         let action = host
@@ -694,7 +690,6 @@ fn serialized_screen_dispatcher_covers_the_typed_nine_variant_vocabulary() {
         present(&host, HostRequest::Preferences, None),
         present(&host, HostRequest::Add, None),
         present(&host, HostRequest::Health, None),
-        present(&host, HostRequest::Runners, None),
         present(&host, HostRequest::Settings, Some("Reference")),
         present(&host, HostRequest::Rename, Some("Reference")),
         skit_ui::Screen::Report(skit_ui::ReportView {
@@ -708,7 +703,6 @@ fn serialized_screen_dispatcher_covers_the_typed_nine_variant_vocabulary() {
         "preferences",
         "add",
         "health",
-        "runners",
         "settings",
         "form",
         "report",
@@ -726,7 +720,7 @@ fn serialized_screen_dispatcher_covers_the_typed_nine_variant_vocabulary() {
 }
 
 #[test]
-fn typed_action_projection_executes_all_seventy_five_outer_variants() {
+fn typed_action_projection_executes_all_seventy_two_outer_variants() {
     let mut host = RealWalkerHost::spawn(profile()).unwrap();
     let reload = serde_json::to_value(host.dispatch(Effect::Reload).unwrap()).unwrap();
     let surface = reload["replace_surface"]["surface"].clone();
@@ -740,15 +734,6 @@ fn typed_action_projection_executes_all_seventy_five_outer_variants() {
     )
     .unwrap();
     let form = run["present"]["run"].clone();
-    let preferences = serde_json::to_value(
-        host.dispatch(Effect::Open {
-            request: HostRequest::Preferences,
-            selector: None,
-        })
-        .unwrap(),
-    )
-    .unwrap()["present"]["preferences"]
-        .clone();
     let fixtures = vec![
         json!("previous"),
         json!("next"),
@@ -774,7 +759,6 @@ fn typed_action_projection_executes_all_seventy_five_outer_variants() {
         json!("open_settings"),
         json!("open_preferences"),
         json!("open_health"),
-        json!("open_runners"),
         json!("open_presets"),
         json!("open_rename"),
         json!("edit"),
@@ -800,11 +784,9 @@ fn typed_action_projection_executes_all_seventy_five_outer_variants() {
         json!({"add": "continue"}),
         json!("open_add_runner_editor"),
         json!({"health": "previous"}),
-        json!({"runners": "previous"}),
         json!({"runner_editor": "focus_next"}),
         json!({"runner_editor_saved": {"owner": "add", "name": "runner", "message": "saved"}}),
         json!({"runner_editor_save_failed": {"owner": "add", "message": "failed"}}),
-        json!({"runner_manager_closed": {"preferences": preferences}}),
         json!({"preferences": "previous"}),
         json!({"settings": {"action": "focus_next"}}),
         json!({"preferences_saved": {"locale": "en", "message": "saved"}}),
@@ -826,7 +808,7 @@ fn typed_action_projection_executes_all_seventy_five_outer_variants() {
         json!("clear_status"),
         json!("quit"),
     ];
-    assert_eq!(fixtures.len(), 75);
+    assert_eq!(fixtures.len(), 72);
     for fixture in fixtures {
         let projected = host.path_map.normalize_action_json(fixture).unwrap();
         let _: Action = deserialize_canonical(projected, "Action fixture").unwrap();
@@ -903,7 +885,13 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!("next"),
         json!("save"),
         json!("close"),
-        json!("manage_agents"),
+        json!({"runner_cursor": 0}),
+        json!("runner_cursor_previous"),
+        json!("runner_cursor_next"),
+        json!("edit_runner"),
+        json!("new_runner"),
+        json!("toggle_runner_removal"),
+        json!({"runner_staged": {"name": "codex", "argv": ["codex", "{{prompt}}"], "target": "new"}}),
         json!("install_agent_skill"),
         json!({"present_agent_skill_targets": [{"name": "codex", "scope": "user", "base": "/user/base"}]}),
         json!({"select_agent_skill_target": 0}),
@@ -913,7 +901,7 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!({"agent_skill_installed": {"message": "installed"}}),
         json!({"validation_failed": {"bash_path_missing": {"path": "missing"}}}),
     ];
-    assert_eq!(preferences.len(), 23);
+    assert_eq!(preferences.len(), 29);
     let runner_editor = vec![
         json!({"set_name": "name"}),
         json!({"set_command": "runner --flag"}),
@@ -925,29 +913,6 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!({"mutation_failed": "failed"}),
     ];
     assert_eq!(runner_editor.len(), 8);
-    let runners = vec![
-        json!("previous"),
-        json!("next"),
-        json!({"page_previous": 2}),
-        json!({"page_next": 2}),
-        json!("home"),
-        json!("end"),
-        json!({"select": 0}),
-        json!("activate_selected"),
-        json!({"activate_row": 0}),
-        json!("new"),
-        json!("edit_selected"),
-        json!("remove_selected"),
-        json!("close_actions"),
-        json!({"editor": "focus_next"}),
-        json!("cancel_editor"),
-        json!("confirm_remove"),
-        json!("cancel_remove"),
-        json!({"mutation_succeeded": {"rows": [], "selected_name": null, "message": "saved"}}),
-        json!({"mutation_failed": "failed"}),
-        json!("back"),
-    ];
-    assert_eq!(runners.len(), 20);
     let settings = vec![
         json!({"action": "set_field", "key": "name", "value": {"state": "inherit"}}),
         json!({"action": "focus", "key": "name"}),
@@ -979,11 +944,6 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
     for nested in runner_editor {
         host.path_map
             .normalize_action_json(json!({"runner_editor": nested}))
-            .unwrap();
-    }
-    for nested in runners {
-        host.path_map
-            .normalize_action_json(json!({"runners": nested}))
             .unwrap();
     }
     for nested in settings {
@@ -1035,14 +995,12 @@ fn typed_effect_projection_executes_all_outer_and_recorded_nested_variants() {
         json!({"save_run_preset": {"selector": "entry", "name": "preset", "values": {}, "secret_names": []}}),
         json!({"add": ["cancel"]}),
         json!("health_rebuild"),
-        json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": "manager"}}),
-        json!({"remove_runner": {"named": {"name": "runner", "expected": [], "expected_pinned_count": 0}}}),
-        json!("refresh_preferences_after_runners"),
+        json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": {"editor": "add"}}}),
         json!({"preferences": "none"}),
         json!({"edit": {"selector": "entry"}}),
         json!({"remove": {"selector": "entry"}}),
     ];
-    assert_eq!(outer.len(), 16);
+    assert_eq!(outer.len(), 14);
     for raw in outer {
         let mut effect: Effect = deserialize_canonical(raw, "Effect fixture").unwrap();
         host.path_map.project_typed_effect(&mut effect).unwrap();
@@ -1052,10 +1010,11 @@ fn typed_effect_projection_executes_all_outer_and_recorded_nested_variants() {
 
     for nested in [
         json!("none"),
-        json!({"save": {"settings": {}}}),
+        json!({"save": {"settings": {}, "runners": []}}),
         json!("close"),
         json!("confirm_discard"),
-        json!("manage_agents"),
+        json!({"open_runner_editor": {"name": "", "command": "", "target": "new", "focused": "name", "error": null, "host_error": null}}),
+        json!({"runner_staged": {"refused": null}}),
         json!("discover_agent_skill_targets"),
         json!({"install_agent_skill": {"skills_dir": "/skills"}}),
     ] {

@@ -70,7 +70,7 @@ fn corpus_screen_focus_and_hit_reach_the_same_preferences_endpoint() {
     let namespace =
         StableSandboxNamespace::explicit(parent.path().join(STABLE_SANDBOX_NAMESPACE)).unwrap();
     let focus = CorpusOperation::ScreenFocus(skit_tui::ScreenTarget::Preferences(
-        skit_ui::PreferencesControlId::ManageAgents,
+        skit_ui::PreferencesControlId::NewRunner,
     ));
     let keyboard = corpus_parity_after(
         namespace.clone(),
@@ -89,13 +89,21 @@ fn corpus_screen_focus_and_hit_reach_the_same_preferences_endpoint() {
             CorpusOperation::CommandKeyboard(UiCommand::Preferences),
             focus,
             CorpusOperation::ScreenHit(skit_tui::ScreenTarget::Preferences(
-                skit_ui::PreferencesControlId::ManageAgents,
+                skit_ui::PreferencesControlId::NewRunner,
             )),
         ],
     );
 
     assert_eq!(keyboard, mouse);
-    assert!(matches!(keyboard.state.screen(), Screen::Runners(_)));
+    // The door opens the shared runner editor above Preferences; it reaches no other screen.
+    assert!(matches!(
+        keyboard.state.modal(),
+        Some(skit_ui::ModalState::RunnerEditor {
+            owner: skit_ui::RunnerEditorOwner::Preferences,
+            ..
+        })
+    ));
+    assert!(matches!(keyboard.state.screen(), Screen::Preferences(_)));
 }
 
 #[test]

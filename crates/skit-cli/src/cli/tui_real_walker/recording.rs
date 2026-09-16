@@ -13,10 +13,7 @@ use skit_tui_walker_support::{
     engine::{ReplayFactory, WalkerEngine},
     sandbox::{SafeProfileId, SandboxMetadata},
 };
-use skit_ui::{
-    HealthAction, LibraryState, PreferencesControlId, RunnerEditorAction, RunnerManagerAction,
-    UiCommand,
-};
+use skit_ui::{HealthAction, LibraryState, PreferencesControlId, RunnerEditorAction, UiCommand};
 
 use super::{
     corpus::{
@@ -660,9 +657,10 @@ pub(crate) fn canonical_corpus_operations() -> Vec<CorpusOperation> {
     let preferences_focus =
         |target| CorpusOperation::ScreenFocus(ScreenTarget::Preferences(target));
     let preferences_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Preferences(target));
-    let runner_hit = |name: &str| {
+    let runner_hit = |row: usize, name: &str| {
         CorpusOperation::ScreenHit(ScreenTarget::Runner {
-            name: name.to_owned(),
+            row,
+            name: Some(name.to_owned()),
         })
     };
     let mut operations = vec![
@@ -689,11 +687,8 @@ pub(crate) fn canonical_corpus_operations() -> Vec<CorpusOperation> {
             key: control('r'),
         },
         CorpusOperation::LocalHit(LocalActionTarget::Health(HealthAction::Back)),
-        CorpusOperation::CommandKeyboard(UiCommand::Runners),
-        CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::Back),
-            key: plain(CorpusKey::Escape),
-        },
+        CorpusOperation::CommandKeyboard(UiCommand::Help),
+        CorpusOperation::CommandKeyboard(UiCommand::CloseModal),
         CorpusOperation::CommandKeyboard(UiCommand::Preferences),
         CorpusOperation::CommandKeyboard(UiCommand::SavePreferences),
         CorpusOperation::CommandKeyboard(UiCommand::Preferences),
@@ -703,31 +698,22 @@ pub(crate) fn canonical_corpus_operations() -> Vec<CorpusOperation> {
             name: "codex".to_owned(),
             scope: AgentScope::User,
         }),
-        preferences_focus(PreferencesControlId::ManageAgents),
-        preferences_hit(PreferencesControlId::ManageAgents),
-        runner_hit("claude"),
+        preferences_focus(PreferencesControlId::Runners),
+        runner_hit(0, "claude"),
+        CorpusOperation::RawKey(plain(CorpusKey::Delete)),
+        preferences_focus(PreferencesControlId::NewRunner),
+        preferences_hit(PreferencesControlId::NewRunner),
+        CorpusOperation::Paste("walker-agent".to_owned()),
         CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::RemoveSelected),
-            key: plain(CorpusKey::Character('d')),
+            target: LocalActionTarget::RunnerEditor(RunnerEditorAction::FocusNext),
+            key: plain(CorpusKey::Tab),
         },
+        CorpusOperation::Paste("walker-agent {{prompt}}".to_owned()),
         CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::ConfirmRemove),
-            key: plain(CorpusKey::Character('y')),
+            target: LocalActionTarget::RunnerEditor(RunnerEditorAction::Submit),
+            key: plain(CorpusKey::Enter),
         },
-        runner_hit("codex"),
-        CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::RemoveSelected),
-            key: plain(CorpusKey::Character('d')),
-        },
-        CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::ConfirmRemove),
-            key: plain(CorpusKey::Character('y')),
-        },
-        CorpusOperation::LocalKeyboard {
-            target: LocalActionTarget::Runners(RunnerManagerAction::Back),
-            key: plain(CorpusKey::Escape),
-        },
-        CorpusOperation::CommandKeyboard(UiCommand::ClosePreferences),
+        CorpusOperation::CommandKeyboard(UiCommand::SavePreferences),
         CorpusOperation::CommandKeyboard(UiCommand::Add),
         add_hit(AddControlId::BrowseSource),
         CorpusOperation::ScreenHit(ScreenTarget::FilePickerEntry {

@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use skit_application::AgentTarget;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesChangeSet,
-    PreferencesDraft, PreferencesError, PreferencesField, github_preset_names, npm_preset_names,
-    pypi_preset_names,
+    PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError, RunnerDraftRow,
+    github_preset_names, npm_preset_names, pypi_preset_names, runner_row_taken_by_its_key,
 };
+use skit_application::runner_management::RunnerSaveRequest;
 
+use crate::management::RunnerEditorView;
 use crate::{ChoicePresentation, FormInputKind};
 
 /// One catalog key and its unformatted values.
@@ -67,8 +69,10 @@ pub enum PreferencesSectionId {
     Javascript,
     /// Windows-only shell path.
     Bash,
-    /// Prompt-runner and Agent Skill doors.
+    /// Prompt-runner list and its new-agent door.
     Agents,
+    /// Agent Skill installation door.
+    AgentSkill,
     /// Download-mirror axes.
     Mirrors,
 }
@@ -119,8 +123,10 @@ pub enum PreferencesControlId {
     Javascript,
     /// Windows bash path input.
     BashPath,
-    /// Open prompt-runner management.
-    ManageAgents,
+    /// Prompt-runner list with its own row cursor.
+    Runners,
+    /// Open the editor for one new prompt runner.
+    NewRunner,
     /// Open Agent Skill installation.
     InstallAgentSkill,
     /// Mirror master switch.
@@ -170,6 +176,15 @@ pub struct PreferencesChoiceControl {
     pub presentation: ChoicePresentation,
 }
 
+/// One Preferences prompt-runner list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PreferencesRunnerListControl {
+    /// Staged agent rows in configuration order.
+    pub rows: Vec<RunnerDraftRow>,
+    /// Row the keyboard acts on.
+    pub cursor: usize,
+}
+
 /// Widget semantic for one Preferences row.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +195,8 @@ pub enum PreferencesControlKind {
     Choice(PreferencesChoiceControl),
     /// A discoverable action button.
     Button,
+    /// The complete agent list with its own row cursor.
+    RunnerList(PreferencesRunnerListControl),
 }
 
 /// One localized Preferences control description.
@@ -237,8 +254,20 @@ pub enum PreferencesAction {
     Save,
     /// Leave the screen, with a dirty guard.
     Close,
-    /// Open the prompt-runner manager.
-    ManageAgents,
+    /// Move the agent-list cursor to one exact row.
+    RunnerCursor(usize),
+    /// Move the agent-list cursor to the preceding row.
+    RunnerCursorPrevious,
+    /// Move the agent-list cursor to the next row.
+    RunnerCursorNext,
+    /// Open the shared runner editor on the agent-list cursor row.
+    EditRunner,
+    /// Open the shared runner editor for one new agent.
+    NewRunner,
+    /// Stage or cancel the removal of the agent-list cursor row.
+    ToggleRunnerRemoval,
+    /// Apply one validated runner editor result to the draft.
+    RunnerStaged(RunnerSaveRequest),
     /// Open Agent Skill installation.
     InstallAgentSkill,
     /// Present the host-discovered Agent Skill targets, including an empty result.
@@ -273,8 +302,13 @@ pub enum PreferencesEffect {
     Close,
     /// Ask before discarding edits.
     ConfirmDiscard,
-    /// Open prompt-runner management.
-    ManageAgents,
+    /// Open the shared runner editor above Preferences.
+    OpenRunnerEditor(Box<RunnerEditorView>),
+    /// Report one runner editor result to the open editor modal.
+    RunnerStaged {
+        /// Refusal that keeps the editor open. `None` closes it.
+        refused: Option<RunnerDraftError>,
+    },
     /// Ask the host to detect existing agent directories without writing.
     DiscoverAgentSkillTargets,
     /// Install the embedded Agent Skill below one explicitly selected directory.
@@ -323,6 +357,10 @@ pub struct PreferencesView {
     focused: PreferencesControlId,
     error: Option<PreferencesError>,
     agent_skill_install: Option<AgentSkillInstallView>,
+    #[serde(default)]
+    runner_cursor: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    editing_runner_row: Option<usize>,
 }
 
 impl PreferencesView {
@@ -334,6 +372,8 @@ impl PreferencesView {
             focused: PreferencesControlId::Language,
             error: None,
             agent_skill_install: None,
+            runner_cursor: 0,
+            editing_runner_row: None,
         }
     }
 
@@ -359,6 +399,57 @@ impl PreferencesView {
     #[must_use]
     pub const fn agent_skill_install(&self) -> Option<&AgentSkillInstallView> {
         self.agent_skill_install.as_ref()
+    }
+
+    /// Return the agent-list row the keyboard acts on.
+    #[must_use]
+    pub const fn runner_cursor(&self) -> usize {
+        self.runner_cursor
+    }
+
+    /// Return the draft row the open runner editor rewrites, if it has one.
+    #[must_use]
+    pub const fn editing_runner_row(&self) -> Option<usize> {
+        self.editing_runner_row
+    }
+
+    /// Forget the row the runner editor held after the editor closes without a save.
+    pub const fn runner_editor_closed(&mut self) {
+        self.editing_runner_row = None;
+    }
+
+    /// Return the verb of the focused control and the action its Enter key performs.
+    ///
+    /// A control that Enter does not activate returns `None`, so the footer never prints a key
+    /// that does nothing.
+    #[must_use]
+    pub fn activation(&self) -> Option<(&'static str, PreferencesAction)> {
+        match self.focused {
+            PreferencesControlId::Runners => self
+                .draft
+                .runner_rows()
+                .get(self.runner_cursor)
+                .is_some_and(RunnerDraftRow::is_editable)
+                .then_some(("Edit", PreferencesAction::EditRunner)),
+            PreferencesControlId::NewRunner => Some(("New agent…", PreferencesAction::NewRunner)),
+            PreferencesControlId::InstallAgentSkill => Some((
+                "Teach an AI agent skit…",
+                PreferencesAction::InstallAgentSkill,
+            )),
+            PreferencesControlId::Language
+            | PreferencesControlId::Editor
+            | PreferencesControlId::InteractiveForm
+            | PreferencesControlId::AfterRun
+            | PreferencesControlId::Javascript
+            | PreferencesControlId::BashPath
+            | PreferencesControlId::MirrorMaster
+            | PreferencesControlId::PypiChoice
+            | PreferencesControlId::PypiUrl
+            | PreferencesControlId::GithubChoice
+            | PreferencesControlId::GithubUrl
+            | PreferencesControlId::NpmChoice
+            | PreferencesControlId::NpmUrl => None,
+        }
     }
 
     /// Report whether any editable value changed.
@@ -475,12 +566,19 @@ impl PreferencesView {
                 ),
             ));
         }
+        if !self.draft.runner_rows().is_empty() {
+            controls.push(control(
+                PreferencesControlId::Runners,
+                "",
+                "",
+                PreferencesControlKind::RunnerList(PreferencesRunnerListControl {
+                    rows: self.draft.runner_rows().to_vec(),
+                    cursor: self.runner_cursor,
+                }),
+            ));
+        }
         controls.extend([
-            button(
-                PreferencesControlId::ManageAgents,
-                "Manage agents…",
-                "Agents (prompt runners)",
-            ),
+            button(PreferencesControlId::NewRunner, "New agent…", ""),
             button(
                 PreferencesControlId::InstallAgentSkill,
                 "Teach an AI agent skit…",
@@ -616,15 +714,26 @@ impl PreferencesView {
             section(
                 PreferencesSectionId::Agents,
                 "Agents (prompt runners)",
-                "",
-                vec![self.agent_summary()],
+                "The AI agents that run prompt entries.",
+                if self.draft.runner_rows().is_empty() {
+                    vec![PreferencesDisplayText::new("No agents configured.")]
+                } else {
+                    Vec::new()
+                },
                 controls_for(
                     &controls,
                     &[
-                        PreferencesControlId::ManageAgents,
-                        PreferencesControlId::InstallAgentSkill,
+                        PreferencesControlId::Runners,
+                        PreferencesControlId::NewRunner,
                     ],
                 ),
+            ),
+            section(
+                PreferencesSectionId::AgentSkill,
+                "Agent Skill",
+                "Install the skit Agent Skill into an AI agent's skills directory (Claude Code, Codex, …).",
+                Vec::new(),
+                controls_for(&controls, &[PreferencesControlId::InstallAgentSkill]),
             ),
             section(
                 PreferencesSectionId::Mirrors,
@@ -652,22 +761,6 @@ impl PreferencesView {
     #[must_use]
     pub fn control(&self, id: PreferencesControlId) -> Option<PreferencesControl> {
         self.controls().into_iter().find(|control| control.id == id)
-    }
-
-    /// Build the localized agent count and name summary.
-    #[must_use]
-    pub fn agent_summary(&self) -> PreferencesDisplayText {
-        match self.draft.runner_names.as_slice() {
-            [] => PreferencesDisplayText::new("No agents configured."),
-            [name] => PreferencesDisplayText::with_arguments(
-                "{} agent configured: {}",
-                ["1", name.as_str()],
-            ),
-            names => PreferencesDisplayText::with_arguments(
-                "{} agents configured: {}",
-                [names.len().to_string(), names.join(", ")],
-            ),
-        }
     }
 
     /// Report whether a conditional control is reachable.
@@ -722,7 +815,9 @@ impl PreferencesView {
                         self.focused = PreferencesControlId::NpmChoice;
                         self.draft.npm = choice;
                     }
-                    PreferencesField::BashPath => return PreferencesEffect::None,
+                    PreferencesField::BashPath | PreferencesField::Runners => {
+                        return PreferencesEffect::None;
+                    }
                 }
                 self.clear_error_for(field);
             }
@@ -737,7 +832,9 @@ impl PreferencesView {
                     PreferencesField::NpmMirror => {
                         (PreferencesControlId::NpmUrl, &mut self.draft.npm_url)
                     }
-                    PreferencesField::BashPath => return PreferencesEffect::None,
+                    PreferencesField::BashPath | PreferencesField::Runners => {
+                        return PreferencesEffect::None;
+                    }
                 };
                 self.focused = focused;
                 *url = value;
@@ -758,13 +855,59 @@ impl PreferencesView {
                 }
             }
             PreferencesAction::Close => {
+                self.editing_runner_row = None;
                 return if self.dirty() {
                     PreferencesEffect::ConfirmDiscard
                 } else {
                     PreferencesEffect::Close
                 };
             }
-            PreferencesAction::ManageAgents => return PreferencesEffect::ManageAgents,
+            PreferencesAction::RunnerCursor(index) => self.move_runner_cursor(Some(index)),
+            PreferencesAction::RunnerCursorPrevious => {
+                self.move_runner_cursor(self.runner_cursor.checked_sub(1));
+            }
+            PreferencesAction::RunnerCursorNext => {
+                self.move_runner_cursor(Some(self.runner_cursor.saturating_add(1)));
+            }
+            PreferencesAction::EditRunner => return self.open_runner_editor(),
+            PreferencesAction::NewRunner => {
+                self.editing_runner_row = None;
+                return PreferencesEffect::OpenRunnerEditor(Box::default());
+            }
+            PreferencesAction::ToggleRunnerRemoval => {
+                if self.has_control(PreferencesControlId::Runners)
+                    && self.cursor_speaks_for_itself()
+                {
+                    self.focused = PreferencesControlId::Runners;
+                    self.clear_error_for(PreferencesField::Runners);
+                    if self
+                        .draft
+                        .toggle_runner_removal(self.runner_cursor)
+                        .is_err()
+                    {
+                        self.set_error(PreferencesError::RunnerNameTaken);
+                    }
+                    self.clamp_runner_cursor();
+                }
+            }
+            PreferencesAction::RunnerStaged(request) => {
+                self.clear_error_for(PreferencesField::Runners);
+                let refused = self
+                    .draft
+                    .stage_runner(request, self.editing_runner_row)
+                    .err();
+                // The editor keeps the refusal too, so the reason survives its own dismissal.
+                match refused {
+                    None => {
+                        self.editing_runner_row = None;
+                        self.clamp_runner_cursor();
+                    }
+                    Some(RunnerDraftError::DuplicateName) => {
+                        self.set_error(PreferencesError::RunnerNameTaken);
+                    }
+                }
+                return PreferencesEffect::RunnerStaged { refused };
+            }
             PreferencesAction::InstallAgentSkill => {
                 return PreferencesEffect::DiscoverAgentSkillTargets;
             }
@@ -809,6 +952,78 @@ impl PreferencesView {
         PreferencesEffect::None
     }
 
+    fn move_runner_cursor(&mut self, index: Option<usize>) {
+        if !self.has_control(PreferencesControlId::Runners) {
+            return;
+        }
+        self.focused = PreferencesControlId::Runners;
+        if let Some(index) = index {
+            self.runner_cursor = index;
+        }
+        self.clamp_runner_cursor();
+    }
+
+    fn clamp_runner_cursor(&mut self) {
+        let rows = self.draft.runner_rows().len();
+        self.runner_cursor = self.runner_cursor.min(rows.saturating_sub(1));
+        if rows == 0 && self.focused == PreferencesControlId::Runners {
+            self.focused = PreferencesControlId::NewRunner;
+        }
+    }
+
+    fn open_runner_editor(&mut self) -> PreferencesEffect {
+        if !self.has_control(PreferencesControlId::Runners) {
+            return PreferencesEffect::None;
+        }
+        self.focused = PreferencesControlId::Runners;
+        let Some((editing, view)) = self.cursor_editor() else {
+            return PreferencesEffect::None;
+        };
+        self.editing_runner_row = editing;
+        PreferencesEffect::OpenRunnerEditor(Box::new(view))
+    }
+
+    /// Build the editor of the cursor row and the draft row its save rewrites.
+    ///
+    /// An appended row has no stored identity, so its save goes back to the same draft row.
+    fn cursor_editor(&self) -> Option<(Option<usize>, RunnerEditorView)> {
+        if !self.cursor_speaks_for_itself() {
+            return None;
+        }
+        let row = self
+            .draft
+            .runner_rows()
+            .get(self.runner_cursor)
+            .filter(|row| row.is_editable())?;
+        match row {
+            RunnerDraftRow::Added { name, argv } => Some((
+                Some(self.runner_cursor),
+                RunnerEditorView::staged(name, argv),
+            )),
+            // A raw row has no stable key that prompts pin, so its editor repairs the row in
+            // place even after the user typed a name into it.
+            RunnerDraftRow::Existing { row: stored, .. } => {
+                let resolved = row.resolved_row()?;
+                Some((
+                    None,
+                    if stored.name.is_some() {
+                        RunnerEditorView::edit(&resolved)
+                    } else {
+                        RunnerEditorView::repair(&resolved)
+                    },
+                ))
+            }
+        }
+    }
+
+    /// Report whether the cursor row carries its own commands.
+    ///
+    /// A duplicate row of a key that the draft already changes goes with that key. It offers no
+    /// command, so a key or a click on it does nothing.
+    fn cursor_speaks_for_itself(&self) -> bool {
+        !runner_row_taken_by_its_key(self.draft.runner_rows(), self.runner_cursor)
+    }
+
     fn clear_error_for(&mut self, field: PreferencesField) {
         if self
             .error
@@ -834,7 +1049,24 @@ impl PreferencesView {
     }
 
     fn set_error(&mut self, error: PreferencesError) {
-        self.focused = match error.field() {
+        self.focused = self.control_for(error.field());
+        self.error = Some(error);
+    }
+
+    /// Return the control the current refusal belongs to.
+    ///
+    /// A refusal outlives the keystroke that raised it, so the frontend prints it under the
+    /// control it names, not under the control the user moved on to.
+    #[must_use]
+    pub fn error_control(&self) -> Option<PreferencesControlId> {
+        self.error
+            .as_ref()
+            .map(|error| self.control_for(error.field()))
+    }
+
+    /// Return the control one refused field belongs to.
+    fn control_for(&self, field: PreferencesField) -> PreferencesControlId {
+        match field {
             PreferencesField::BashPath => PreferencesControlId::BashPath,
             PreferencesField::PypiMirror if self.draft.custom_pypi_visible() => {
                 PreferencesControlId::PypiUrl
@@ -848,8 +1080,11 @@ impl PreferencesView {
                 PreferencesControlId::NpmUrl
             }
             PreferencesField::NpmMirror => PreferencesControlId::NpmChoice,
-        };
-        self.error = Some(error);
+            PreferencesField::Runners if self.has_control(PreferencesControlId::Runners) => {
+                PreferencesControlId::Runners
+            }
+            PreferencesField::Runners => PreferencesControlId::NewRunner,
+        }
     }
 }
 
@@ -967,6 +1202,11 @@ mod tests {
     use skit_application::preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
         PreferencesDraft, PreferencesError, PreferencesField, PreferencesSnapshot,
+        RunnerDraftError, RunnerDraftMarker,
+    };
+    use skit_application::runner_management::{
+        EditableArgvDialect, RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
+        join_editable_argv,
     };
     use skit_application::{AgentScope, AgentTarget};
 
@@ -974,9 +1214,57 @@ mod tests {
         PreferencesAction, PreferencesControlId, PreferencesControlKind, PreferencesEffect,
         PreferencesSectionId, PreferencesView,
     };
+    use crate::management::{RunnerEditorError, RunnerEditorMode, RunnerEditorView};
 
-    fn view(windows: bool) -> PreferencesView {
-        PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+    fn runner_row(index: usize, name: &str) -> RunnerRow {
+        let identity = RunnerRowIdentity {
+            index: Some(index),
+            snapshot_token: format!("token-{index}"),
+        };
+        RunnerRow {
+            key_identities: vec![identity.clone()],
+            identity,
+            name: Some(name.to_owned()),
+            argv: Some(vec![name.to_owned(), "{{prompt}}".to_owned()]),
+            reason: None,
+            descriptor: format!("prompt.runners[{index}]"),
+            pinned_count: 0,
+        }
+    }
+
+    /// Return the editable command one argv gets on this host, with both dialects pinned.
+    ///
+    /// The editor renders its command through [`EditableArgvDialect::host()`], so the quoting
+    /// follows the platform. The two assertions keep the POSIX text and the Windows text of the
+    /// same argv under test on every host, and the return value is the text this host paints.
+    fn host_editable_command(argv: &[&str], posix: &str, windows: &str) -> String {
+        let argv: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+        assert_eq!(join_editable_argv(&argv, EditableArgvDialect::Posix), posix);
+        assert_eq!(
+            join_editable_argv(&argv, EditableArgvDialect::Windows),
+            windows
+        );
+        join_editable_argv(&argv, EditableArgvDialect::host())
+    }
+
+    /// Return one row without the shape an editor needs.
+    fn malformed_row(index: usize) -> RunnerRow {
+        RunnerRow {
+            identity: RunnerRowIdentity {
+                index: Some(index),
+                snapshot_token: format!("token-{index}"),
+            },
+            name: None,
+            argv: None,
+            reason: Some("row-not-table".to_owned()),
+            descriptor: format!("prompt.runners[{index}]"),
+            key_identities: Vec::new(),
+            pinned_count: 0,
+        }
+    }
+
+    fn snapshot(windows: bool, runners: Vec<RunnerRow>) -> PreferencesSnapshot {
+        PreferencesSnapshot {
             language: String::new(),
             available_languages: vec!["en".to_owned(), "zh-CN".to_owned(), "zh-TW".to_owned()],
             effective_language: "en".to_owned(),
@@ -986,9 +1274,28 @@ mod tests {
             after_run: AfterRunChoice::Exit,
             javascript: JavascriptChoice::Automatic,
             bash_path: windows.then(String::new),
-            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
+            runners,
             mirror: MirrorConfiguration::default(),
-        }))
+        }
+    }
+
+    fn view(windows: bool) -> PreferencesView {
+        PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            windows,
+            vec![runner_row(0, "claude"), runner_row(1, "codex")],
+        )))
+    }
+
+    /// Return the editor an effect opens, or `None` for every other outcome.
+    fn opened_editor(effect: &PreferencesEffect) -> Option<&RunnerEditorView> {
+        match effect {
+            PreferencesEffect::OpenRunnerEditor(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    fn empty_view() -> PreferencesView {
+        PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(false, Vec::new())))
     }
 
     #[test]
@@ -1008,7 +1315,8 @@ mod tests {
                 PreferencesControlId::InteractiveForm,
                 PreferencesControlId::AfterRun,
                 PreferencesControlId::Javascript,
-                PreferencesControlId::ManageAgents,
+                PreferencesControlId::Runners,
+                PreferencesControlId::NewRunner,
                 PreferencesControlId::InstallAgentSkill,
                 PreferencesControlId::MirrorMaster,
                 PreferencesControlId::PypiChoice,
@@ -1018,7 +1326,14 @@ mod tests {
         );
         assert_eq!(view.focused(), PreferencesControlId::Language);
         assert!(!view.dirty());
-        assert_eq!(view.draft().runner_names, ["claude", "codex"]);
+        assert_eq!(view.draft().runner_rows().len(), 2);
+        assert_eq!(view.runner_cursor(), 0);
+        assert!(matches!(
+            view.control(PreferencesControlId::Runners).map(|control| control.kind),
+            Some(PreferencesControlKind::RunnerList(list))
+                if list.cursor == 0 && list.rows.len() == 2
+        ));
+        assert!(!empty_view().has_control(PreferencesControlId::Runners));
     }
 
     #[test]
@@ -1065,15 +1380,11 @@ mod tests {
     }
 
     #[test]
-    fn save_manage_agents_skill_and_dirty_close_are_distinct_typed_effects() {
+    fn save_skill_and_dirty_close_are_distinct_typed_effects() {
         let mut view = view(false);
         assert_eq!(
             view.update(PreferencesAction::Close),
             PreferencesEffect::Close
-        );
-        assert_eq!(
-            view.update(PreferencesAction::ManageAgents),
-            PreferencesEffect::ManageAgents
         );
         assert_eq!(
             view.update(PreferencesAction::InstallAgentSkill),
@@ -1108,6 +1419,7 @@ mod tests {
                 PreferencesSectionId::AfterRun,
                 PreferencesSectionId::Javascript,
                 PreferencesSectionId::Agents,
+                PreferencesSectionId::AgentSkill,
                 PreferencesSectionId::Mirrors,
             ]
         );
@@ -1127,16 +1439,30 @@ mod tests {
             )]
         );
         assert_eq!(
-            sections[6].title.key,
+            sections[7].title.key,
             "Download mirrors (mainland-China acceleration)"
         );
         assert_eq!(
-            sections[6].help.key,
+            sections[7].help.key,
             "Each ecosystem is its own choice — mirror vendors differ per axis."
         );
         assert_eq!(
-            sections[6].help_placement,
+            sections[7].help_placement,
             super::PreferencesTextPlacement::BeforeControls
+        );
+        assert_eq!(
+            sections[5].help.key,
+            "The AI agents that run prompt entries."
+        );
+        assert!(sections[5].status.is_empty());
+        assert_eq!(sections[6].title.key, "Agent Skill");
+        assert_eq!(
+            sections[6].help.key,
+            "Install the skit Agent Skill into an AI agent's skills directory (Claude Code, Codex, …)."
+        );
+        assert_eq!(
+            empty_view().sections()[5].status,
+            [super::PreferencesDisplayText::new("No agents configured.")]
         );
         assert_eq!(
             sections[5].status_placement,
@@ -1203,6 +1529,22 @@ mod tests {
                 PreferencesAction::SetMirrorMaster(false),
                 PreferencesControlId::MirrorMaster,
             ),
+            (
+                PreferencesAction::RunnerCursorNext,
+                PreferencesControlId::Runners,
+            ),
+            (
+                PreferencesAction::RunnerCursorPrevious,
+                PreferencesControlId::Runners,
+            ),
+            (
+                PreferencesAction::RunnerCursor(1),
+                PreferencesControlId::Runners,
+            ),
+            (
+                PreferencesAction::ToggleRunnerRemoval,
+                PreferencesControlId::Runners,
+            ),
         ] {
             assert_eq!(view.update(action), PreferencesEffect::None);
             assert_eq!(view.focused(), focused);
@@ -1217,6 +1559,12 @@ mod tests {
         assert_eq!(view.draft().after_run, AfterRunChoice::Stay);
         assert_eq!(view.draft().javascript, JavascriptChoice::Deno);
         assert!(!view.draft().mirror_master);
+        assert_eq!(view.runner_cursor(), 1);
+        assert_eq!(
+            view.draft().runner_rows()[1].marker(),
+            Some(RunnerDraftMarker::Removed)
+        );
+        view.update(PreferencesAction::ToggleRunnerRemoval);
         let controls = view.controls();
         assert!(matches!(
             controls.iter().find(|control| control.id == PreferencesControlId::InteractiveForm).map(|control| &control.kind),
@@ -1369,28 +1717,484 @@ mod tests {
     }
 
     #[test]
-    fn agent_summary_preserves_empty_singular_and_plural_product_copy() {
-        let empty = view(false);
+    fn the_agent_cursor_moves_inside_the_list_and_clamps_at_both_ends() {
+        let mut view = view(false);
+
         assert_eq!(
-            empty.agent_summary(),
-            super::PreferencesDisplayText::with_arguments(
-                "{} agents configured: {}",
-                ["2", "claude, codex"],
+            view.update(PreferencesAction::RunnerCursorPrevious),
+            PreferencesEffect::None
+        );
+        assert_eq!(view.runner_cursor(), 0);
+        view.update(PreferencesAction::RunnerCursorNext);
+        assert_eq!(view.runner_cursor(), 1);
+        view.update(PreferencesAction::RunnerCursorNext);
+        assert_eq!(view.runner_cursor(), 1);
+        view.update(PreferencesAction::RunnerCursor(9));
+        assert_eq!(view.runner_cursor(), 1);
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+
+        let mut empty = empty_view();
+        assert_eq!(
+            empty.update(PreferencesAction::RunnerCursor(0)),
+            PreferencesEffect::None
+        );
+        assert_eq!(empty.focused(), PreferencesControlId::Language);
+        assert_eq!(
+            empty.update(PreferencesAction::Focus(PreferencesControlId::Runners)),
+            PreferencesEffect::None
+        );
+        assert_eq!(empty.focused(), PreferencesControlId::Language);
+        assert_eq!(
+            empty.update(PreferencesAction::ToggleRunnerRemoval),
+            PreferencesEffect::None
+        );
+        let opened = empty.update(PreferencesAction::EditRunner);
+        assert_eq!(opened, PreferencesEffect::None);
+        assert_eq!(opened_editor(&opened), None);
+        assert!(!empty.dirty());
+    }
+
+    #[test]
+    fn dropping_the_only_agent_row_hides_the_list_and_rehomes_the_focus() {
+        let mut view = empty_view();
+        assert_eq!(
+            view.update(PreferencesAction::NewRunner),
+            PreferencesEffect::OpenRunnerEditor(Box::default())
+        );
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "only".to_owned(),
+            argv: vec!["only".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        view.update(PreferencesAction::RunnerCursor(0));
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+
+        assert!(view.draft().runner_rows().is_empty());
+        assert!(!view.has_control(PreferencesControlId::Runners));
+        assert_eq!(view.focused(), PreferencesControlId::NewRunner);
+        assert_eq!(view.runner_cursor(), 0);
+        assert!(!view.dirty());
+    }
+
+    /// The footer verb, the row chip and the editor door read one predicate.
+    #[test]
+    fn the_focused_control_publishes_the_verb_that_enter_performs() {
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            false,
+            vec![runner_row(0, "claude"), malformed_row(1)],
+        )));
+
+        assert_eq!(view.activation(), None);
+        view.update(PreferencesAction::Focus(PreferencesControlId::NewRunner));
+        assert_eq!(
+            view.activation(),
+            Some(("New agent…", PreferencesAction::NewRunner))
+        );
+        view.update(PreferencesAction::Focus(
+            PreferencesControlId::InstallAgentSkill,
+        ));
+        assert_eq!(
+            view.activation(),
+            Some((
+                "Teach an AI agent skit…",
+                PreferencesAction::InstallAgentSkill
+            ))
+        );
+
+        view.update(PreferencesAction::RunnerCursor(0));
+        assert_eq!(
+            view.activation(),
+            Some(("Edit", PreferencesAction::EditRunner))
+        );
+
+        // A row Enter cannot open advertises no verb: a staged removal and a shapeless row.
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        assert_eq!(view.activation(), None);
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        assert_eq!(
+            view.activation(),
+            Some(("Edit", PreferencesAction::EditRunner))
+        );
+        view.update(PreferencesAction::RunnerCursor(1));
+        assert_eq!(view.activation(), None);
+        assert_eq!(
+            view.update(PreferencesAction::EditRunner),
+            PreferencesEffect::None
+        );
+    }
+
+    /// The door labels the footer prints must be the labels the doors paint.
+    #[test]
+    fn every_activation_verb_is_the_label_of_its_own_control() {
+        let mut view = view(false);
+        for id in [
+            PreferencesControlId::NewRunner,
+            PreferencesControlId::InstallAgentSkill,
+        ] {
+            view.update(PreferencesAction::Focus(id));
+            let (verb, _) = view.activation().expect("a door advertises its verb");
+            assert_eq!(
+                verb,
+                view.control(id).expect("the door is reachable").label,
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_editor_leaves_the_staged_row_and_the_cursor_alone() {
+        let mut view = empty_view();
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "only".to_owned(),
+            argv: vec!["only".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        view.update(PreferencesAction::RunnerCursor(0));
+        let opened = view.update(PreferencesAction::EditRunner);
+        assert!(opened_editor(&opened).is_some());
+        assert_eq!(view.editing_runner_row(), Some(0));
+
+        view.runner_editor_closed();
+
+        assert_eq!(view.editing_runner_row(), None);
+        assert_eq!(view.runner_cursor(), 0);
+        assert_eq!(view.draft().runner_rows().len(), 1);
+
+        // A second new agent must append instead of rewriting the row the cancelled editor held.
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "second".to_owned(),
+            argv: vec!["second".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        assert_eq!(view.draft().runner_rows().len(), 2);
+
+        view.update(PreferencesAction::RunnerCursor(0));
+        let opened = view.update(PreferencesAction::EditRunner);
+        assert!(opened_editor(&opened).is_some());
+        assert_eq!(view.editing_runner_row(), Some(0));
+        view.update(PreferencesAction::Close);
+        assert_eq!(view.editing_runner_row(), None);
+    }
+
+    /// The key removal owns every duplicate row of that key, so those rows take no command.
+    #[test]
+    fn a_row_the_key_change_takes_answers_no_key_of_its_own() {
+        let mut duplicate = runner_row(1, "claude");
+        duplicate.reason = Some("duplicate".to_owned());
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            false,
+            vec![runner_row(0, "claude"), duplicate],
+        )));
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::RunnerCursor(1));
+
+        assert_eq!(
+            view.update(PreferencesAction::EditRunner),
+            PreferencesEffect::None
+        );
+        assert_eq!(
+            view.update(PreferencesAction::ToggleRunnerRemoval),
+            PreferencesEffect::None
+        );
+
+        assert_eq!(view.runner_cursor(), 1);
+        assert!(view.draft().runner_rows()[0].is_removed());
+        assert!(!view.draft().runner_rows()[1].is_removed());
+        assert_eq!(view.error(), None);
+
+        // The restored key gives every duplicate its own commands back.
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::RunnerCursor(1));
+        assert!(opened_editor(&view.update(PreferencesAction::EditRunner)).is_some());
+    }
+
+    /// A cancelled removal brings a name back, so it is refused while another row holds it.
+    #[test]
+    fn a_refused_restore_keeps_the_removal_and_names_the_agent_list() {
+        let mut view = view(false);
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "claude".to_owned(),
+            argv: vec![
+                "claude".to_owned(),
+                "--new".to_owned(),
+                "{{prompt}}".to_owned(),
+            ],
+            target: RunnerSaveTarget::New,
+        }));
+        view.update(PreferencesAction::RunnerCursor(0));
+
+        assert_eq!(
+            view.update(PreferencesAction::ToggleRunnerRemoval),
+            PreferencesEffect::None
+        );
+
+        assert_eq!(view.error(), Some(&PreferencesError::RunnerNameTaken));
+        assert_eq!(
+            view.error().map(PreferencesError::field),
+            Some(PreferencesField::Runners)
+        );
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+        assert!(view.draft().runner_rows()[0].is_removed());
+        assert_eq!(view.draft().runner_rows().len(), 3);
+
+        // Dropping the appended row frees the name, and the next restore clears the refusal.
+        view.update(PreferencesAction::RunnerCursor(2));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::RunnerCursor(0));
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        assert_eq!(view.error(), None);
+        assert!(!view.draft().runner_rows()[0].is_removed());
+    }
+
+    #[test]
+    fn a_forged_agent_cursor_opens_no_editor() {
+        let view = view(false);
+        let mut value = serde_json::to_value(&view).unwrap();
+        value["runner_cursor"] = serde_json::json!(99);
+        let mut forged: PreferencesView = serde_json::from_value(value).unwrap();
+
+        assert_eq!(
+            forged.update(PreferencesAction::EditRunner),
+            PreferencesEffect::None
+        );
+        assert_eq!(forged.focused(), PreferencesControlId::Runners);
+    }
+
+    #[test]
+    fn removing_the_last_agent_row_moves_focus_to_the_new_agent_door() {
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            false,
+            vec![runner_row(0, "claude")],
+        )));
+        view.update(PreferencesAction::NewRunner);
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "extra".to_owned(),
+            argv: vec!["extra".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        view.update(PreferencesAction::RunnerCursor(1));
+        assert_eq!(view.runner_cursor(), 1);
+
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        assert_eq!(view.runner_cursor(), 0);
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        view.update(PreferencesAction::ValidationFailed(
+            PreferencesError::RunnersChanged,
+        ));
+        assert_eq!(view.focused(), PreferencesControlId::Runners);
+    }
+
+    #[test]
+    fn an_empty_agent_list_takes_the_save_refusal_on_the_new_agent_door() {
+        let mut view = empty_view();
+
+        assert_eq!(
+            view.update(PreferencesAction::ValidationFailed(
+                PreferencesError::RunnerPinsChanged {
+                    name: "claude".to_owned(),
+                    actual: 2,
+                },
+            )),
+            PreferencesEffect::None
+        );
+
+        assert_eq!(view.focused(), PreferencesControlId::NewRunner);
+        assert_eq!(
+            view.error().map(PreferencesError::field),
+            Some(PreferencesField::Runners)
+        );
+    }
+
+    #[test]
+    fn the_new_agent_door_and_an_edited_row_open_distinct_typed_editors() {
+        let mut view = view(false);
+
+        let opened = view.update(PreferencesAction::NewRunner);
+        let editor = opened_editor(&opened).expect("the door opens the shared editor");
+        assert_eq!(editor.mode(), RunnerEditorMode::New);
+        assert_eq!(editor.name(), "");
+
+        view.update(PreferencesAction::RunnerCursor(1));
+        let opened = view.update(PreferencesAction::EditRunner);
+        let editor = opened_editor(&opened).expect("the cursor row opens the shared editor");
+        assert_eq!(editor.mode(), RunnerEditorMode::Edit);
+        assert_eq!(editor.name(), "codex");
+        assert_eq!(
+            editor.command(),
+            host_editable_command(
+                &["codex", "{{prompt}}"],
+                "codex '{{prompt}}'",
+                "codex {{prompt}}"
             )
         );
+    }
 
-        let mut singular = view(false);
-        singular.draft.runner_names = vec!["solo".to_owned()];
+    #[test]
+    fn a_staged_row_reopens_prefilled_and_its_save_rewrites_only_that_row() {
+        let mut view = view(false);
+        view.update(PreferencesAction::NewRunner);
         assert_eq!(
-            singular.agent_summary(),
-            super::PreferencesDisplayText::with_arguments("{} agent configured: {}", ["1", "solo"],)
+            view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+                name: "extra".to_owned(),
+                argv: vec!["extra".to_owned(), "{{prompt}}".to_owned()],
+                target: RunnerSaveTarget::New,
+            })),
+            PreferencesEffect::RunnerStaged { refused: None }
+        );
+        assert_eq!(view.draft().runner_rows().len(), 3);
+
+        view.update(PreferencesAction::RunnerCursor(2));
+        let opened = view.update(PreferencesAction::EditRunner);
+        let editor = opened_editor(&opened).expect("a staged row reopens its editor");
+        assert_eq!(editor.mode(), RunnerEditorMode::New);
+        assert_eq!(editor.name(), "extra");
+
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "renamed".to_owned(),
+            argv: vec!["renamed".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        assert_eq!(view.draft().runner_rows().len(), 3);
+        assert_eq!(view.draft().runner_rows()[2].name(), Some("renamed"));
+
+        // One staged result answers one editor. The next `New` request appends again.
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "second".to_owned(),
+            argv: vec!["second".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::New,
+        }));
+        assert_eq!(view.draft().runner_rows().len(), 4);
+        assert_eq!(view.draft().runner_rows()[2].name(), Some("renamed"));
+        assert_eq!(view.draft().runner_rows()[3].name(), Some("second"));
+
+        assert_eq!(
+            view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+                name: "claude".to_owned(),
+                argv: vec!["claude".to_owned(), "{{prompt}}".to_owned()],
+                target: RunnerSaveTarget::New,
+            })),
+            PreferencesEffect::RunnerStaged {
+                refused: Some(RunnerDraftError::DuplicateName),
+            }
+        );
+        assert_eq!(view.draft().runner_rows().len(), 4);
+    }
+
+    #[test]
+    fn a_row_staged_for_removal_and_a_malformed_container_have_no_editor() {
+        let mut view = view(false);
+        view.update(PreferencesAction::ToggleRunnerRemoval);
+        assert_eq!(
+            view.update(PreferencesAction::EditRunner),
+            PreferencesEffect::None
         );
 
-        singular.draft.runner_names.clear();
+        let mut container = PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            false,
+            vec![RunnerRow {
+                identity: RunnerRowIdentity {
+                    index: None,
+                    snapshot_token: "container".to_owned(),
+                },
+                name: None,
+                argv: None,
+                reason: Some("row-not-table".to_owned()),
+                descriptor: "prompt.runners".to_owned(),
+                key_identities: Vec::new(),
+                pinned_count: 0,
+            }],
+        )));
         assert_eq!(
-            singular.agent_summary(),
-            super::PreferencesDisplayText::new("No agents configured.")
+            container.update(PreferencesAction::EditRunner),
+            PreferencesEffect::None
         );
+        assert_eq!(container.focused(), PreferencesControlId::Runners);
+    }
+
+    #[test]
+    fn a_repairable_malformed_row_opens_the_repair_editor_with_its_staged_values() {
+        let mut view = PreferencesView::new(PreferencesDraft::from_snapshot(snapshot(
+            false,
+            vec![RunnerRow {
+                identity: RunnerRowIdentity {
+                    index: Some(3),
+                    snapshot_token: "raw".to_owned(),
+                },
+                name: None,
+                argv: Some(vec!["broken".to_owned(), "{{prompt}}".to_owned()]),
+                reason: Some("name".to_owned()),
+                descriptor: "prompt.runners[3]".to_owned(),
+                key_identities: Vec::new(),
+                pinned_count: 0,
+            }],
+        )));
+
+        let opened = view.update(PreferencesAction::EditRunner);
+        let editor = opened_editor(&opened).expect("a repairable row opens the repair editor");
+        assert_eq!(editor.mode(), RunnerEditorMode::Repair);
+        assert_eq!(
+            editor.command(),
+            host_editable_command(
+                &["broken", "{{prompt}}"],
+                "broken '{{prompt}}'",
+                "broken {{prompt}}"
+            )
+        );
+        assert_eq!(editor.name(), "");
+
+        view.update(PreferencesAction::RunnerStaged(RunnerSaveRequest {
+            name: "repaired".to_owned(),
+            argv: vec![
+                "repaired".to_owned(),
+                "--fast".to_owned(),
+                "{{prompt}}".to_owned(),
+            ],
+            target: RunnerSaveTarget::RawRow {
+                expected: RunnerRowIdentity {
+                    index: Some(3),
+                    snapshot_token: "raw".to_owned(),
+                },
+            },
+        }));
+        let opened = view.update(PreferencesAction::EditRunner);
+        let editor = opened_editor(&opened).expect("the staged repair reopens with its own values");
+        assert_eq!(
+            editor.command(),
+            host_editable_command(
+                &["repaired", "--fast", "{{prompt}}"],
+                "repaired --fast '{{prompt}}'",
+                "repaired --fast {{prompt}}"
+            )
+        );
+        // A raw row keeps its raw target, and the name the user typed comes back with it.
+        assert_eq!(editor.name(), "repaired");
+        assert_eq!(editor.mode(), RunnerEditorMode::Repair);
+        assert!(view.dirty());
+    }
+
+    #[test]
+    fn a_typed_editor_error_replaces_any_earlier_host_refusal() {
+        let mut editor = RunnerEditorView::new();
+        editor.reduce(crate::management::RunnerEditorAction::MutationFailed(
+            "an earlier host refusal".to_owned(),
+        ));
+        assert_eq!(editor.host_error(), Some("an earlier host refusal"));
+
+        editor.refuse(RunnerEditorError::NameTaken);
+
+        assert_eq!(editor.error(), Some(&RunnerEditorError::NameTaken));
+        assert_eq!(editor.host_error(), None);
     }
 
     #[test]

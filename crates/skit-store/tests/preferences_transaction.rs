@@ -335,6 +335,50 @@ runners = [
     assert_eq!(rows[3]["future"].as_integer(), Some(9));
 }
 
+/// One save can drop a duplicate raw row and edit the key that row repeats.
+///
+/// The removal runs first, so the edit must expect only the rows that stay. A batch that expects
+/// the removed row refuses itself and writes nothing.
+#[test]
+fn a_batch_removes_a_duplicate_row_and_edits_the_key_it_repeats() {
+    let data_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let store = written(
+        &config_dir,
+        r#"[prompt]
+runners_seeded = true
+runners = [
+  { name = "claude", argv = ["claude", "{{prompt}}"] },
+  { name = "claude", argv = ["claude", "--old", "{{prompt}}"] },
+  { name = "codex", argv = ["codex", "{{prompt}}"] },
+]
+"#,
+    );
+    let duplicate = row_at(&store, 1);
+    let primary = vec![row_at(&store, 0)];
+
+    assert_eq!(
+        management(&data_dir, &config_dir)
+            .commit_preferences(
+                &BTreeMap::new(),
+                &[
+                    RunnerMutation::RemoveRow {
+                        expected: duplicate,
+                    },
+                    RunnerMutation::ReplaceNamed {
+                        runner: runner("claude", "new"),
+                        expected: primary,
+                    },
+                ],
+            )
+            .unwrap(),
+        PreferencesCommit::Committed
+    );
+
+    assert_eq!(stored_names(&config_dir), ["claude", "codex"]);
+    assert_eq!(argv_of(&store, "claude"), ["new", "{{prompt}}"]);
+}
+
 #[test]
 fn a_duplicate_add_refuses_the_batch() {
     let data_dir = TempDir::new().unwrap();

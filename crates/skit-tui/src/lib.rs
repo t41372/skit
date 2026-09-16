@@ -36,7 +36,8 @@ pub use local_action::{
 };
 #[doc(hidden)]
 pub use screen_target::{
-    ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit, ScreenTargetInventory,
+    RunnerChip, ScreenFocusInventory, ScreenTarget, ScreenTargetError, ScreenTargetHit,
+    ScreenTargetInventory,
 };
 pub use screens::add::{
     AddControlId, AddHitRegion, AddScreenEvent, AddScreenGeometry, AddScreenSession, AddTextField,
@@ -223,7 +224,6 @@ fn header_kind(state: &LibraryState) -> Option<HeaderKind<'_>> {
         Screen::Preferences(_)
         | Screen::Add(_)
         | Screen::Health(_)
-        | Screen::Runners(_)
         | Screen::Run(_)
         | Screen::Form(_)
         | Screen::Settings(_) => None,
@@ -255,7 +255,6 @@ fn minimum_body_height(state: &LibraryState) -> u16 {
         | Screen::Settings(_)
         | Screen::Add(_)
         | Screen::Health(_)
-        | Screen::Runners(_)
         | Screen::Report(_) => 3,
     }
 }
@@ -358,7 +357,6 @@ fn render_screen(
         Screen::Settings(view) => session.render_settings(frame, area, view, locale),
         Screen::Add(view) => session.render_add(frame, area, view, locale),
         Screen::Health(view) => session.render_health(frame, area, view, locale),
-        Screen::Runners(view) => session.render_runners(frame, area, view, locale),
         Screen::Form(form) => session.render_form(frame, area, form, locale),
         Screen::Report(report) => session.render_report(frame, area, report, locale),
     }
@@ -434,6 +432,9 @@ fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Opti
                 CommandContext::LibrarySearch | CommandContext::Form | CommandContext::RunForm,
                 UiCommand::Backspace
             ) | (CommandContext::LibrarySearch, UiCommand::ClearSearch)
+                // The focused Preferences control owns Enter and dispatches its own verb. The
+                // chip carries the same verb to the mouse.
+                | (CommandContext::Preferences, UiCommand::Submit)
         ) {
             return None;
         }
@@ -545,7 +546,7 @@ mod tests {
                 after_run: AfterRunChoice::Exit,
                 javascript: JavascriptChoice::Automatic,
                 bash_path: None,
-                runner_names: Vec::new(),
+                runners: Vec::new(),
                 mirror: MirrorConfiguration::default(),
             }));
         let mut preferences_state = LibraryState::default();
