@@ -2,11 +2,9 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs, io,
-    io::{Read as _, Write as _},
     path::Path,
 };
 
-use clap::{CommandFactory as _, Parser as _};
 use skit_application::{DiagnosticCode, ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode,

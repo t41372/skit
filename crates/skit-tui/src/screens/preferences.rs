@@ -2960,7 +2960,6 @@ mod tests {
         FormInputKind, PreferencesAction, PreferencesChoiceControl, PreferencesControlId,
         PreferencesOption, PreferencesTextControl, PreferencesView,
     };
-    use unicode_width::UnicodeWidthStr as _;
 
     use super::*;
 

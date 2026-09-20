@@ -86,7 +86,7 @@ mutation_workflow_platforms_are_exact() {
   fi
 }
 
-expect_text Cargo.toml 'tree-sitter = "0.26.12"'
+expect_text Cargo.toml 'tree-sitter = "0.27.0"'
 mutation_profile="$(awk '
   $0 == "[profile.mutants]" { capture = 1; next }
   capture && /^\[/ { exit }

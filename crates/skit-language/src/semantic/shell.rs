@@ -772,15 +772,12 @@ pub(super) fn normalize_typed(
 
 fn has_ifs_prefix(document: &ParsedDocument, command: tree_sitter::Node<'_>) -> bool {
     (0..command.child_count()).any(|index| {
-        u32::try_from(index)
-            .ok()
-            .and_then(|index| command.child(index))
-            .is_some_and(|child| {
-                child.kind() == "variable_assignment"
-                    && child
-                        .child_by_field_name("name")
-                        .is_some_and(|name| text(document, name) == "IFS")
-            })
+        command.child(index).is_some_and(|child| {
+            child.kind() == "variable_assignment"
+                && child
+                    .child_by_field_name("name")
+                    .is_some_and(|name| text(document, name) == "IFS")
+        })
     })
 }
 
@@ -854,26 +851,23 @@ fn mutated_names(document: &ParsedDocument) -> BTreeSet<String> {
         }
         "binary_expression" => {
             let assignment = (0..node.child_count()).any(|index| {
-                u32::try_from(index)
-                    .ok()
-                    .and_then(|index| node.child(index))
-                    .is_some_and(|child| {
-                        !child.is_named()
-                            && matches!(
-                                child.kind(),
-                                "=" | "+="
-                                    | "-="
-                                    | "*="
-                                    | "/="
-                                    | "%="
-                                    | "**="
-                                    | "<<="
-                                    | ">>="
-                                    | "&="
-                                    | "|="
-                                    | "^="
-                            )
-                    })
+                node.child(index).is_some_and(|child| {
+                    !child.is_named()
+                        && matches!(
+                            child.kind(),
+                            "=" | "+="
+                                | "-="
+                                | "*="
+                                | "/="
+                                | "%="
+                                | "**="
+                                | "<<="
+                                | ">>="
+                                | "&="
+                                | "|="
+                                | "^="
+                        )
+                })
             });
             if assignment
                 && let Some(left) = node.child_by_field_name("left")
@@ -970,7 +964,6 @@ fn command_name<'a>(
 fn command_arguments(command: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
     (0..command.child_count())
         .filter_map(|index| {
-            let index = u32::try_from(index).ok()?;
             (command.field_name_for_child(index) == Some("argument"))
                 .then(|| command.child(index))
                 .flatten()
@@ -980,11 +973,7 @@ fn command_arguments(command: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_
 
 fn assignment_operator(node: tree_sitter::Node<'_>) -> &str {
     (0..node.child_count())
-        .filter_map(|index| {
-            u32::try_from(index)
-                .ok()
-                .and_then(|index| node.child(index))
-        })
+        .filter_map(|index| node.child(index))
         .find(|child| matches!(child.kind(), "=" | "+="))
         .map_or("=", |child| child.kind())
 }

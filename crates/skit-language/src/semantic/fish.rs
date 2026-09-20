@@ -285,7 +285,6 @@ fn command_arguments(document: &ParsedDocument, command: tree_sitter::Node<'_>) 
 
 fn command_argument_nodes(command: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
     (0..command.child_count())
-        .map_while(|index| u32::try_from(index).ok())
         .filter_map(|index| {
             (command.field_name_for_child(index) == Some("argument"))
                 .then(|| command.child(index))
