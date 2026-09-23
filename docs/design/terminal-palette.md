@@ -1,6 +1,7 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0 to 5 are done, and phase 6 is in progress; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0 to 6 are done; see "Phases". Not verified:
+Windows, and the mutation gate (deferred by the owner).
 
 ## Decision
 
@@ -403,9 +404,9 @@ first, because the output filter does not depend on the role refactor.
    supports virtual terminal processing wherever skit's interface runs. `TEXTUAL_COLOR_SYSTEM`,
    a Textual override, is not ported.
 5. `terminal` theme. Done on 2026-09-23 so far:
-   - `skit config theme terminal|skit` (commit `a2a863bf`). The `config` help line keeps its
-     version 0.4 wording, which a contract test pins, so the new key shows in `skit config`, in
-     `--json`, and in shell completion instead.
+   - `skit config theme terminal|skit` (commit "feat(tui): add the terminal theme"). The `config`
+     help line keeps its version 0.4 wording, which a contract test pins, so the new key shows in
+     `skit config`, in `--json`, and in shell completion instead.
    - Every census environment names its theme in `config.toml`. Four terminal-theme environments
      (dark, light, unknown background, `NO_COLOR`) bring the census to 312 files, and each
      terminal-theme frame passes the rule check: no 24-bit color, no index above 15, no black,
@@ -431,10 +432,11 @@ first, because the output filter does not depend on the role refactor.
      depth, background, and `NO_COLOR`. A session that started in the `skit` theme did not ask
      for the background, so a switch to `terminal` during the session has no accent hue until
      the next start.
-   - The default switch (commit `7038e6f6`). `DEFAULT_THEME` in skit-store and `tui_theme` in
-     skit-cli both give `terminal`, and `the_default_theme_is_terminal` and
-     `the_terminal_theme_is_the_default` pin it. The switch sent the color question to every
-     existing PTY test, and three failures showed that the answers share the input with the keys:
+   - The default switch (commit "feat(tui): default to the terminal theme"). `DEFAULT_THEME` in
+     skit-store and `tui_theme` in skit-cli both give `terminal`, and
+     `the_default_theme_is_terminal` and `the_terminal_theme_is_the_default` pin it. The switch sent
+     the color question to every existing PTY test, and three failures showed that the answers share
+     the input with the keys:
      - The question read the `Esc` that a test typed ahead. skit now asks only when no input is
        waiting (`crossterm::event::poll` with a zero timeout, in raw mode).
      - A late answer became keys: it opened the selected entry and typed `gb:ffff/…` into its
@@ -473,6 +475,24 @@ first, because the output filter does not depend on the role refactor.
      section, the color question with its input rules, and the reverse selection under
      `NO_COLOR`. No item went to `docs/parity-backlog.md`: every version 0.4 gap that this design
      found was restored in phases 1, 3, and 4.
+   - `WT_SESSION` in `environment` (commit "feat(tui): default to the terminal theme"); see the
+     Windows note in phase 5.
+   - Gates on Linux (`skit-linux`): the full workspace suite, the walker review corpus
+     (`generates_and_reinstalls_the_stable_review_corpus`, 1015 s), and the coverage gate. The first
+     coverage run found 17 lines that no test ran. End-to-end tests closed most of them; code that
+     no frame can reach was restructured, and the forwarders got the one isolated test of phase 1
+     (commit "fix(tui): mark buttons, titles, and overlays in the terminal theme"). The gate then
+     reported complete line coverage. The mutation gate stays deferred by the owner's ruling.
+   - A review of the whole branch found six defects in the terminal theme: idle buttons that read
+     as plain text, titles that carried the dim of their border, two post-passes sized by the
+     widget's click region instead of its painted cells, an overlay border that looked idle,
+     idle selects that were not dim, and a gray English "No items". Each got a failing
+     end-to-end test first (same commit); see "Widgets that need a post-pass" for the
+     button rule.
+   - Demo assets: `scripts/record_demo.sh` re-recorded the 12 tracked README screenshots with the
+     new default. VHS draws with xterm.js, which answers OSC 11 (`rgb:1717/1717/1717`, dark) and
+     DA1, so the screenshots show the cyan accent that a dark terminal gets. The three videos are
+     not tracked (`.gitignore`), so a release must upload them again.
 
 At the end of each wave, the Linux prompt reruns the census on Linux and diffs it against the
 committed files, and runs the walker corpus.

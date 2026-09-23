@@ -131,9 +131,39 @@ npm run types:check
 npm run build
 ```
 
-The screenshot and video pipeline is `bash scripts/record_demo.sh`. It needs Docker. Regenerate the
-assets when TUI copy or layout changes. VHS does not record a mouse pointer, so the generated demo
-does not include a mouse pointer.
+### Demo assets
+
+`bash scripts/record_demo.sh` renders the 12 README screenshots
+(`docs/assets/tui-*-{en,zh-CN,zh-TW}.png`) and the three demo videos
+(`docs/assets/demo-{en,zh-CN,zh-TW}.mp4`). It needs Docker. Regenerate the assets when TUI copy,
+layout, or colors change.
+
+Git ignores the videos. GitHub serves an mp4 file from the repository as a download, so each README
+`<video>` tag points at a GitHub attachment URL (`github.com/user-attachments/assets/…`). To refresh
+a video, drag the new file into a pull request or issue comment, copy the attachment URL that
+GitHub makes, and put it in the `src` of the `<video>` tag of that locale's README:
+`demo-en.mp4` in `README.md`, `demo-zh-CN.mp4` in `README.zh-CN.md`, and `demo-zh-TW.mp4` in
+`README.zh-TW.md`.
+
+`docs/assets/demo-mouse.gif` shows skit driven by the mouse alone. VHS cannot drive a mouse, so a
+person records this clip by hand. It is the only demo asset that the pipeline does not make. It
+shows the English interface and appears in all three READMEs. `record_demo.sh` does not change it,
+so record it again when the screens in it change. Record the screen (for example, with QuickTime),
+then convert the part to keep:
+
+```bash
+SRC=recording.mov  # macOS puts a narrow no-break space before AM or PM in the name: use a glob
+START=16           # first second to keep
+LENGTH=21          # seconds to keep, before the 1.5x speed-up
+common="setpts=PTS/1.5,fps=15,scale=1000:-1:flags=lanczos"
+ffmpeg -y -ss "$START" -t "$LENGTH" -i "$SRC" -vf "${common},palettegen=stats_mode=diff" pal.png
+ffmpeg -y -ss "$START" -t "$LENGTH" -i "$SRC" -i pal.png \
+  -lavfi "${common} [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
+  docs/assets/demo-mouse.gif
+```
+
+Keep the clip short: about 15 seconds after the speed-up and less than 2 MB. A full-length clip of
+one minute came out at about 18 MB.
 
 ## Benchmarks
 
