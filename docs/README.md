@@ -11,9 +11,11 @@ This directory is two things:
 
 ## Editing content
 
-Pages are the MDX files in `content/docs/`; sidebar order lives in
-`content/docs/meta.json`. English-only for now — the i18n structure is ready
-(`lib/i18n.ts`), no translated content exists yet.
+Pages are the MDX files in `content/docs/`. English is the source locale. Each English page has
+`.<locale>.mdx` siblings for Simplified Chinese and Traditional Chinese. The sidebar files are
+`meta.json`, `meta.zh-CN.json`, and `meta.zh-TW.json`. Keep headings linked across locales with the
+English anchor. `scripts/sync-readme.mjs` copies all three repository READMEs into `.generated/`
+before development and production builds.
 
 ## Commands
 

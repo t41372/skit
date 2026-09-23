@@ -1,0 +1,14 @@
+{
+  "title": "文件",
+  "pages": [
+    "index",
+    "cli",
+    "parameters",
+    "script-types",
+    "prompts",
+    "ai-agents",
+    "environment",
+    "configuration",
+    "troubleshooting"
+  ]
+}

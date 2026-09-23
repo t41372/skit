@@ -1,0 +1,1048 @@
+//! Mechanical port of the Python oracle module `tests/test_add_lane_contracts.py`
+//! (`origin/main@206f9ef`): "Add-lane contracts — real-behavior coverage (exit codes,
+//! stored meta, filesystem)." Each `#[test]` keeps its Python `def test_*` name and its
+//! WHY comment, so it traces back to its origin.
+//!
+//! Every oracle test drives the CLI end-to-end through `typer.testing.CliRunner`. This port
+//! drives the real `skit` binary via `assert_cmd` inside a fresh four-directory sandbox
+//! (`SKIT_DATA_DIR`/`SKIT_STATE_DIR`/`SKIT_CONFIG_DIR` + a scratch dir for sources and
+//! sentinel editors), so skit writes only inside the temp sandbox.
+//!
+//! Concept mapping:
+//! - Python `runner.invoke(cli.app, ["add", …], input=…)` -> `Sandbox::command().args(…)
+//!   .write_stdin(…)`.
+//! - Python `result.output` (CliRunner merges stdout+stderr) -> `combined(&output)` (Rust
+//!   refusals go to stderr, notices/summaries to stdout — the merged view matches the oracle).
+//!   `_flat` (collapse rich soft-wrap) -> `flat(&output)`.
+//! - Python `store.resolve(name).meta` / `store.resolve` raising `NotFoundError` ->
+//!   `Sandbox::show_json(name)` / `Sandbox::entry_exists(name)` (`skit show NAME --json`).
+//! - Python `entry.meta.params` for a prompt -> `params --json` `"placeholders"`.
+//! - Python `store.list_entries()` -> `skit list --json` (an empty array == nothing landed).
+//! - Python `store.add_python(path, name=…)` -> `skit add PATH -n NAME --no-input`.
+//! - Python `drafts_dir().glob("skit-*")` -> `drafts(&sandbox)` over `<data>/drafts`.
+//! - Python `monkeypatch.setattr(cli.editor, "open_in_editor", …)` -> a real sentinel editor
+//!   script on `$EDITOR`/`$VISUAL`: a `writer_editor` (copies fixture bytes into the draft) or
+//!   a `boom_editor` (touches a marker; the test asserts the marker is absent). The Rust editor
+//!   lane (`add_draft`, cli.rs:1399) does NOT gate on an interactive terminal, so these lanes
+//!   are reachable under `assert_cmd`.
+//! - Python `monkeypatch.setattr(cli, "_is_interactive", lambda: True)` -> a real PTY for the one
+//!   contract that depends on both streams being terminals. The helper waits for command output;
+//!   it does not use a fixed sleep.
+//!
+//! Bucket disposition (all 21 oracle defs plus one Rust-additive commit-failure reverse drive the
+//! binary; zero absent/cross-crate stubs):
+//! - 20 active oracle contracts plus the Rust-additive failed-commit reverse: the
+//!   selector-collision contract, the 5
+//!   versioned/piped/reader-notice lanes, both editor-lane
+//!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
+//!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
+//!   early-refusal lanes, the post-editor Python-flag refusal, and the managed-form flip note.
+//! - 1 semantic-duplicate closure: the path-lane reference refusal is owned by the stronger
+//!   all-flags boundary matrix in `port_test_add_validation_contracts`.
+
+use std::fs;
+#[cfg(unix)]
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+use std::process::Output;
+#[cfg(unix)]
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+use tempfile::TempDir;
+
+struct Sandbox {
+    data: TempDir,
+    state: TempDir,
+    config: TempDir,
+    scratch: TempDir,
+}
+
+impl Sandbox {
+    fn new() -> Self {
+        Self {
+            data: TempDir::new().unwrap(),
+            state: TempDir::new().unwrap(),
+            config: TempDir::new().unwrap(),
+            scratch: TempDir::new().unwrap(),
+        }
+    }
+
+    fn command(&self) -> assert_cmd::Command {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", self.data.path())
+            .env("SKIT_STATE_DIR", self.state.path())
+            .env("SKIT_CONFIG_DIR", self.config.path())
+            .env("SKIT_LANG", "en");
+        command
+    }
+
+    #[cfg(unix)]
+    fn run_pty_until(&self, args: &[&str], editor: &Path, needle: &str) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 200,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.cwd(self.scratch.path());
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("VISUAL", editor);
+        command.env("EDITOR", editor);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let drain_target = Arc::clone(&captured);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = thread::spawn(move || {
+            let mut buffer = [0_u8; 1024];
+            while let Ok(count) = reader.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                drain_target
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..count]);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = String::from_utf8_lossy(&captured.lock().unwrap()).contains(needle);
+            if found {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY output never contained {needle:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        drain.join().unwrap();
+        let bytes = captured.lock().unwrap().clone();
+        let output = String::from_utf8_lossy(&bytes)
+            .replace("\r\n", "\n")
+            .replace('\r', "");
+        (status.exit_code(), output)
+    }
+
+    /// Python `store.resolve(name)` via `skit show NAME --json` — parse stdout as one document.
+    fn show_json(&self, name: &str) -> Value {
+        let output = self
+            .command()
+            .args(["show", name, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "show --json failed: {}",
+            combined(&output)
+        );
+        serde_json::from_slice(&output.stdout).expect("stdout is exactly one JSON document")
+    }
+
+    /// The `skit params NAME --json` document (its `"unmanaged"` / `"placeholders"` fields).
+    fn params_json(&self, name: &str) -> Value {
+        let output = self
+            .command()
+            .args(["params", name, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "params --json failed: {}",
+            combined(&output)
+        );
+        serde_json::from_slice(&output.stdout).expect("stdout is exactly one JSON document")
+    }
+
+    /// Python `store.resolve(name)` succeeds (no `NotFoundError`).
+    fn entry_exists(&self, name: &str) -> bool {
+        self.command()
+            .args(["show", name, "--json"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+}
+
+/// Python `result.output` — the merged streams a CliRunner user would see (stdout then stderr).
+fn combined(output: &Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push('\n');
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
+/// Python `_flat(text)` — collapse rich's soft-wrap so an 80-col-split message matches as one.
+fn flat(output: &Output) -> String {
+    combined(output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Python `store.list_entries()` via `skit list --json` — the array of stored entries.
+fn list_entries(sandbox: &Sandbox) -> Vec<Value> {
+    let output = sandbox.command().args(["list", "--json"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "list --json failed: {}",
+        combined(&output)
+    );
+    serde_json::from_slice::<Value>(&output.stdout)
+        .expect("stdout is exactly one JSON document")
+        .as_array()
+        .expect("list --json is an array")
+        .clone()
+}
+
+/// Python `drafts_dir().glob("skit-*")` — the files under skit's OWN drafts home.
+fn drafts(sandbox: &Sandbox) -> Vec<PathBuf> {
+    let dir = sandbox.data.path().join("drafts");
+    match fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("skit-"))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Sentinel `$EDITOR` that copies `content` into the draft skit opens (`$1`) — the oracle's
+/// `_editor_writes` monkeypatch. Bytes go through a payload file so no shell quoting is needed.
+#[cfg(unix)]
+fn writer_editor(dir: &Path, content: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let payload = dir.join("editor-payload");
+    fs::write(&payload, content).unwrap();
+    let script = dir.join("writer-editor.sh");
+    fs::write(&script, format!("#!/bin/sh\ncat {payload:?} > \"$1\"\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// Sentinel `$EDITOR` that touches `marker` when launched — the oracle's `_boom_editor`. A test
+/// that must not open the editor asserts `marker` never appears.
+#[cfg(unix)]
+fn boom_editor(dir: &Path, marker: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("boom-editor.sh");
+    fs::write(&script, format!("#!/bin/sh\ntouch {marker:?}\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+// ==========================================================================
+// 1. Lane selectors are mutually exclusive
+// ==========================================================================
+
+#[cfg(unix)]
+#[test]
+fn test_selector_collisions_are_refused_one_voice() {
+    // --cmd / --edit / stdin('-') / a file path each pick a DIFFERENT add lane; any pair is
+    // a usage error with the single 'each pick a different way to add' voice, BEFORE the flag
+    // matrix or any editor. Nothing is added and skit's drafts home is never touched.
+    let sandbox = Sandbox::new();
+    // The editor must never open for the --edit collisions (the refusal precedes dispatch).
+    let marker = sandbox.scratch.path().join("editor-ran");
+    let editor = boom_editor(sandbox.scratch.path(), &marker);
+    let real = sandbox.scratch.path().join("real.py");
+    fs::write(&real, "print(1)\n").unwrap();
+    let real = real.display().to_string();
+    let cases: [Vec<String>; 5] = [
+        vec![
+            "add".into(),
+            "--cmd".into(),
+            "echo {x}".into(),
+            "--edit".into(),
+        ],
+        vec![
+            "add".into(),
+            real.clone(),
+            "--cmd".into(),
+            "echo {x}".into(),
+        ],
+        vec!["add".into(), "-".into(), "--cmd".into(), "echo {x}".into()],
+        vec!["add".into(), "--edit".into(), real.clone()],
+        vec!["add".into(), "--edit".into(), "-".into()],
+    ];
+    let expected = [
+        "--cmd, --edit each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+    ];
+    for (argv, expected) in cases.into_iter().zip(expected) {
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let scratch_before = snapshot_tree(sandbox.scratch.path());
+        let source_before = fs::read(&real).unwrap();
+        let output = sandbox
+            .command()
+            .env("EDITOR", &editor)
+            .env("VISUAL", &editor)
+            .args(&argv)
+            .write_stdin("print(1)\n")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{argv:?}: {}",
+            combined(&output)
+        );
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{argv:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{argv:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{argv:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.scratch.path()),
+            scratch_before,
+            "{argv:?}"
+        );
+        assert_eq!(fs::read(&real).unwrap(), source_before, "{argv:?}");
+        assert!(list_entries(&sandbox).is_empty(), "{argv:?}"); // nothing landed
+        assert!(drafts(&sandbox).is_empty(), "{argv:?}"); // drafts home untouched
+        assert!(!marker.exists(), "the editor stayed shut: {argv:?}");
+        let flat = flat(&output);
+        assert!(flat.contains(expected), "{argv:?}: {flat}");
+    }
+}
+
+// ==========================================================================
+// 2. Versioned python shebang is the registry's rule on every lane
+// ==========================================================================
+
+#[test]
+fn test_stdin_versioned_python_shebang_lands_as_python() {
+    // `#!/usr/bin/env python3.12` piped in with no --kind is a python entry — the stdin lane
+    // reads the shebang through the same registry rule as the path/editor lanes.
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["add", "-", "-n", "v"])
+        .write_stdin("#!/usr/bin/env python3.12\nprint(1)\n")
+        .assert()
+        .success();
+    assert_eq!(sandbox.show_json("v")["kind"], "python");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_editor_lane_versioned_python_shebang_onboards_as_python() {
+    // A draft whose shebang names python3.12 is onboarded as python (not refused as an
+    // unregistered interpreter) — the versioned rule reaches the editor lane too.
+    let sandbox = Sandbox::new();
+    let editor = writer_editor(
+        sandbox.scratch.path(),
+        "#!/usr/bin/env python3.12\nprint('hi')\n",
+    );
+    let (code, output) = sandbox.run_pty_until(&["add", "-e", "-n", "vpy"], &editor, "Added:");
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(sandbox.show_json("vpy")["kind"], "python");
+}
+
+// ==========================================================================
+// 3. --runner is validated before any editor opens or a draft materializes
+// ==========================================================================
+
+#[test]
+fn test_stdin_prompt_bogus_runner_refused_before_any_draft() {
+    // A bogus --runner on the stdin prompt lane exits 2 with 'Unknown runner' and
+    // materializes NO draft (the old code left a silent, anonymous file behind).
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .command()
+        .args(["add", "-", "--prompt", "--runner", "bogus", "-n", "p"])
+        .write_stdin("x {{u}}\n")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("Unknown runner"),
+        "{}",
+        combined(&output)
+    );
+    assert!(list_entries(&sandbox).is_empty());
+    assert!(drafts(&sandbox).is_empty()); // nothing was written to drafts/ before the refusal
+}
+
+#[cfg(unix)]
+#[test]
+fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
+    // --runner names static config, so the TTY prompt-editor lane refuses it BEFORE opening
+    // $EDITOR — the editor is never launched (the same before-authoring rule as name conflicts).
+    let sandbox = Sandbox::new();
+    let marker = sandbox.scratch.path().join("editor-ran");
+    let editor = boom_editor(sandbox.scratch.path(), &marker);
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .env("VISUAL", &editor)
+        .args(["add", "--prompt", "--runner", "bogus", "-n", "p"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("Unknown runner"),
+        "{}",
+        combined(&output)
+    );
+    assert!(!marker.exists()); // editor stayed shut
+    assert!(drafts(&sandbox).is_empty());
+}
+
+// ==========================================================================
+// 4. --no-input on the editor lanes
+// ==========================================================================
+
+#[cfg(unix)]
+#[test]
+fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
+    // --edit opens an editor — interaction — so --no-input cannot keep the never-prompt
+    // promise: it is refused up front, pointing at the stdin spelling. (The oracle forces
+    // interactive True to prove the no_input check fires first, not the interactivity gate;
+    // Rust's check is unconditional.)
+    let sandbox = Sandbox::new();
+    let marker = sandbox.scratch.path().join("editor-ran");
+    let editor = boom_editor(sandbox.scratch.path(), &marker);
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .env("VISUAL", &editor)
+        .args(["add", "-e", "-n", "x", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    assert_eq!(
+        flat(&output),
+        "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME"
+    ); // the pipe spelling
+    assert!(!marker.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_prompt_editor_no_input_in_a_terminal_is_refused() {
+    // --prompt with no path in a terminal opens an editor; --no-input there is refused with
+    // the prompt pipe spelling — no body can arrive from a keyboard-attached stdin.
+    let sandbox = Sandbox::new();
+    let marker = sandbox.scratch.path().join("editor-ran");
+    let editor = boom_editor(sandbox.scratch.path(), &marker);
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let drafts_before = snapshot_tree(&sandbox.data.path().join("drafts"));
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "--prompt", "-n", "p", "--no-input"],
+        &editor,
+        "skit add - --prompt",
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(!marker.exists());
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(
+        snapshot_tree(&sandbox.data.path().join("drafts")),
+        drafts_before
+    );
+    let frozen = "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME";
+    assert!(
+        output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains(frozen),
+        "{output}"
+    );
+}
+
+#[test]
+fn test_prompt_no_input_piped_still_adds() {
+    // The documented non-interactive route: under a pipe there is no editor, so --prompt
+    // --no-input reads the body from stdin and adds — this must keep working.
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["add", "--prompt", "-n", "pp", "--no-input"])
+        .write_stdin("Summarize {{url}}\n")
+        .assert()
+        .success();
+    assert_eq!(sandbox.show_json("pp")["kind"], "prompt");
+    // Python `entry.meta.params == ["url"]`; the prompt placeholder list is `params --json`
+    // `"placeholders"`.
+    assert_eq!(
+        sandbox.params_json("pp")["placeholders"],
+        serde_json::json!(["url"])
+    );
+}
+
+// ==========================================================================
+// 5. --description threads into the editor-lane stored entry
+// ==========================================================================
+
+#[cfg(unix)]
+#[test]
+fn test_edit_description_flag_wins_over_python_docstring() {
+    // A python draft with a docstring: --description is stored verbatim, not the docstring
+    // (the flag threads through the editor lane to the python add).
+    let sandbox = Sandbox::new();
+    let editor = writer_editor(
+        sandbox.scratch.path(),
+        "\"\"\"Docstring one\"\"\"\nprint(1)\n",
+    );
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dpy", "--description", "flag wins"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(sandbox.show_json("dpy")["description"], "flag wins");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_edit_description_flag_on_non_python_draft_is_stored() {
+    // A bash-shebang draft records --description too (the drafted-kind add now threads it) —
+    // the description is not a python-only field.
+    let sandbox = Sandbox::new();
+    let editor = writer_editor(sandbox.scratch.path(), "#!/usr/bin/env bash\necho hi\n");
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dsh", "--description", "shell note"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
+    let entry = sandbox.show_json("dsh");
+    assert_eq!(entry["kind"], "shell");
+    assert_eq!(entry["description"], "shell note");
+}
+
+// ==========================================================================
+// 6. A post-editor refusal keeps the draft AND says so (short form)
+// ==========================================================================
+
+#[cfg(unix)]
+#[test]
+fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
+    // --dep against a non-python draft is refused post-editor. The draft is the user's only
+    // copy: it is kept on disk AND the SHORT 'kept at' line is printed (not the long
+    // 'fix the problem and add it with' resumable form — this usage refusal names its own fix).
+    let sandbox = Sandbox::new();
+    let editor = writer_editor(
+        sandbox.scratch.path(),
+        "#!/usr/bin/env bash\necho drafted\n",
+    );
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "d", "--dep", "foo"],
+        &editor,
+        "Your draft was kept at",
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("python flags"), "{output}"); // the --dep refusal
+    assert!(output.contains("Your draft was kept at"), "{output}"); // the kept announcement…
+    assert!(
+        !output.contains("fix the problem and add it with"),
+        "{output}"
+    ); // …in its SHORT form
+    assert_eq!(drafts(&sandbox).len(), 1, "the draft survived the refusal");
+    assert!(!sandbox.entry_exists("d")); // nothing added
+}
+
+// ==========================================================================
+// 8. Resume cleanup on the CLI path lane
+// ==========================================================================
+
+#[test]
+fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
+    // A resumed draft (a file living in skit's OWN drafts home) added in copy mode reaches
+    // the store, then the source is unlinked — the same 'the store holds the copy' cleanup the
+    // authoring lanes do. Only files under drafts home; a user's original is never touched.
+    let sandbox = Sandbox::new();
+    let drafts_dir = sandbox.data.path().join("drafts");
+    fs::create_dir_all(&drafts_dir).unwrap();
+    let draft = drafts_dir.join("skit-new-resumeme.py");
+    const SOURCE: &[u8] = b"print('resume')\n";
+    fs::write(&draft, SOURCE).unwrap();
+    sandbox
+        .command()
+        .args(["add", draft.to_str().unwrap(), "-n", "res", "--no-input"])
+        .assert()
+        .success();
+    let shown = sandbox.show_json("res");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["kind"], "python");
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/res/script.py")).unwrap(),
+        SOURCE,
+        "the durable stored copy exists before source cleanup can count as success"
+    );
+    assert!(
+        sandbox.data.path().join("scripts/res/meta.toml").is_file(),
+        "metadata committed"
+    );
+    assert!(
+        sandbox.data.path().join("registry.toml").is_file(),
+        "registry committed"
+    );
+    assert!(!draft.exists()); // the resumed draft was cleaned up
+}
+
+#[test]
+fn rust_additive_failed_copy_commit_keeps_the_owned_draft() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.scratch.path().join("original.py");
+    fs::write(&original, b"print('original')\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            original.to_str().unwrap(),
+            "-n",
+            "taken",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let entry = sandbox.data.path().join("scripts/taken");
+    let payload_before = fs::read(entry.join("script.py")).unwrap();
+    let meta_before = fs::read(entry.join("meta.toml")).unwrap();
+    let registry_before = fs::read(sandbox.data.path().join("registry.toml")).unwrap();
+
+    let drafts = sandbox.data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-conflict.py");
+    let draft_bytes = b"print('only copy')\n";
+    fs::write(&draft, draft_bytes).unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", draft.to_str().unwrap(), "-n", "taken", "--no-input"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", combined(&output));
+    assert_eq!(fs::read(&draft).unwrap(), draft_bytes);
+    assert_eq!(fs::read(entry.join("script.py")).unwrap(), payload_before);
+    assert_eq!(fs::read(entry.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+}
+
+#[test]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical three-locale, real-PTY guard-before-question, full-tree no-write owner is port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref. Keep this frozen path-lane body for oracle accounting."]
+fn test_path_add_of_a_drafts_home_file_refuses_reference() {
+    // --ref on skit's OWN kept draft is refused: a reference entry pointing into drafts/ would
+    // leave a live entry's file listed as a resumable draft — offered for re-adding and for
+    // deletion as "the only copy", both lies. Exit 2, the draft is kept, no entry is created.
+    let sandbox = Sandbox::new();
+    let drafts_dir = sandbox.data.path().join("drafts");
+    fs::create_dir_all(&drafts_dir).unwrap();
+    let draft = drafts_dir.join("skit-new-keepme.py");
+    fs::write(&draft, "print('keep')\n").unwrap();
+    let output = sandbox
+        .command()
+        .args([
+            "add",
+            draft.to_str().unwrap(),
+            "-n",
+            "kep",
+            "--ref",
+            "--no-input",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    let flat = flat(&output);
+    assert!(flat.contains("one of skit's own kept drafts"), "{flat}");
+    assert!(flat.contains("Drop --ref"), "{flat}");
+    assert!(draft.exists()); // a refused add consumes nothing
+    assert!(!sandbox.entry_exists("kep"));
+}
+
+#[test]
+fn test_path_add_of_a_normal_file_never_unlinks_the_original() {
+    // The cleanup is scoped to drafts home: a normal user file added in copy mode is left
+    // exactly where it was (skit copies it into the store, never moves it).
+    let sandbox = Sandbox::new();
+    let src = sandbox.scratch.path().join("mine.py");
+    fs::write(&src, "print('mine')\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", src.to_str().unwrap(), "-n", "mine", "--no-input"])
+        .assert()
+        .success();
+    assert_eq!(sandbox.show_json("mine")["mode"], "copy");
+    assert!(src.exists()); // the user's original is untouched
+}
+
+// ==========================================================================
+// 9. The reader notice is one voice for every add lane
+// ==========================================================================
+
+#[test]
+fn test_shell_getopts_add_prints_the_read_notice() {
+    // A shell script whose getopts optstring skit CAN model statically prints the same
+    // '✓ skit read this script's own arguments' notice the python lane does.
+    let sandbox = Sandbox::new();
+    let sh = sandbox.scratch.path().join("flags.sh");
+    fs::write(
+        &sh,
+        "#!/usr/bin/env bash\nwhile getopts \"n:v\" opt; do :; done\n",
+    )
+    .unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", sh.to_str().unwrap(), "-n", "flags", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("skit read this script's own arguments"),
+        "{}",
+        combined(&output)
+    );
+}
+
+#[test]
+fn test_shell_dynamic_getopts_add_prints_the_passthrough_notice() {
+    // A DYNAMIC optstring is detected but unmodelable: the honest passthrough variant fires
+    // and names the framework (getopts) — not silence, not a false 'read your form'.
+    let sandbox = Sandbox::new();
+    let sh = sandbox.scratch.path().join("dyn.sh");
+    fs::write(
+        &sh,
+        "#!/usr/bin/env bash\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" opt; do :; done\n",
+    )
+    .unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", sh.to_str().unwrap(), "-n", "dyn", "--no-input"])
+        .output()
+        .unwrap();
+    let combined = combined(&output);
+    assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert!(combined.contains("parses its own arguments"), "{combined}");
+    assert!(combined.contains("getopts"), "{combined}"); // the framework is named
+
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let shown = sandbox.show_json("dyn");
+    assert_eq!(shown["param_source"], "argparse");
+    assert_eq!(shown["degraded_reason"], "dynamic");
+    assert_eq!(shown["fields"], serde_json::json!([]));
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+}
+
+#[test]
+fn test_js_parseargs_add_prints_the_read_notice() {
+    // The reader notice is not shell-only: a js entry with parseArgs surfaces it too.
+    let sandbox = Sandbox::new();
+    let js = sandbox.scratch.path().join("cli.js");
+    fs::write(
+        &js,
+        "#!/usr/bin/env node\nimport { parseArgs } from 'node:util'\nconst { values } = parseArgs({ options: { name: { type: 'string' } } })\nconsole.log(values)\n",
+    )
+    .unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", js.to_str().unwrap(), "-n", "jscli", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("skit read this script's own arguments"),
+        "{}",
+        combined(&output)
+    );
+}
+
+// ==========================================================================
+// 10. A python argparse read view no longer advertises --manage
+// ==========================================================================
+
+#[test]
+fn test_params_python_argparse_read_view_is_plain() {
+    // A python entry that parses its own arguments is reader-driven like every kind: its
+    // parser IS the run form, so the read view says the plain 'no managed parameters.' and does
+    // NOT advertise --manage; --json reports unmanaged == [] (no candidate offered).
+    let sandbox = Sandbox::new();
+    let src = sandbox.scratch.path().join("ap.py");
+    fs::write(
+        &src,
+        "import argparse\nOUT = 'hi'\np = argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\nprint(OUT)\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args(["add", src.to_str().unwrap(), "-n", "ap", "--no-input"])
+        .assert()
+        .success();
+    let plain = sandbox.command().args(["params", "ap"]).output().unwrap();
+    assert_eq!(plain.status.code(), Some(0), "{}", combined(&plain));
+    assert!(
+        combined(&plain).contains("has no managed parameters."),
+        "{}",
+        combined(&plain)
+    );
+    assert!(
+        !combined(&plain).contains("--manage"),
+        "{}",
+        combined(&plain)
+    ); // reader-driven: --manage would shadow argparse
+    assert_eq!(
+        sandbox.params_json("ap")["unmanaged"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn test_params_python_constants_only_still_offers_manage() {
+    // The gate is scoped to reader-driven entries: a constants-only python (no argparse) is
+    // NOT reader-driven, so it keeps advertising --manage and lists the detected candidate.
+    let sandbox = Sandbox::new();
+    let src = sandbox.scratch.path().join("co.py");
+    fs::write(&src, "OUT = 'hi'\nprint(OUT)\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", src.to_str().unwrap(), "-n", "co", "--no-input"])
+        .assert()
+        .success();
+    let result = sandbox.command().args(["params", "co"]).output().unwrap();
+    assert_eq!(result.status.code(), Some(0), "{}", combined(&result));
+    assert!(
+        combined(&result).contains("--manage"),
+        "{}",
+        combined(&result)
+    ); // a bare-constant python still offers management
+    assert_eq!(
+        sandbox.params_json("co")["unmanaged"],
+        serde_json::json!(["OUT"])
+    );
+}
+
+// ==========================================================================
+// 11. Flipping a reader-driven entry to managed params announces the trade-off
+// ==========================================================================
+
+#[test]
+fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
+    // A getopts shell entry that ALSO holds a constant: the first `--manage CONST` prints the
+    // flip note naming getopts (managed params REPLACE the reader form). A second --manage on the
+    // now-managed entry does NOT reprint it (it was reader-driven only before the first flip).
+    let sandbox = Sandbox::new();
+    let sh = sandbox.scratch.path().join("both.sh");
+    fs::write(
+        &sh,
+        "#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts \"n:v\" opt; do :; done\necho $CITY\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args(["add", sh.to_str().unwrap(), "-n", "both", "--no-input"])
+        .assert()
+        .success();
+    let first = sandbox
+        .command()
+        .args(["params", "both", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0), "{}", combined(&first));
+    let first_text = combined(&first);
+    let receipt = "Updated both. Managed parameters: CITY";
+    let flip_note = "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage).";
+    let receipt_at = first_text
+        .find(receipt)
+        .unwrap_or_else(|| panic!("missing receipt: {first_text}"));
+    let note_at = first_text
+        .find(flip_note)
+        .unwrap_or_else(|| panic!("missing flip note: {first_text}"));
+    assert!(receipt_at < note_at, "{first_text}");
+
+    // Repeating an already-managed name changes no form owner and prints no second flip note.
+    let already = sandbox
+        .command()
+        .args(["params", "both", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(already.status.code(), Some(0), "{}", combined(&already));
+    assert!(
+        !combined(&already).contains("The run form now asks for the managed parameters"),
+        "{}",
+        combined(&already)
+    );
+
+    // A constant is already managed now → the entry is no longer reader-driven-only, so a
+    // second manage prints no flip note.
+    let sh2 = sandbox.scratch.path().join("second.sh");
+    fs::write(
+        &sh2,
+        "#!/usr/bin/env bash\nCITY=Taipei\nPORT=8080\nwhile getopts \"n:v\" opt; do :; done\necho $CITY $PORT\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args(["add", sh2.to_str().unwrap(), "-n", "second", "--no-input"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["params", "second", "--manage", "CITY"]) // first flip (has the note)
+        .assert()
+        .success();
+    let again = sandbox
+        .command()
+        .args(["params", "second", "--manage", "PORT"])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(0), "{}", combined(&again));
+    assert!(
+        !combined(&again).contains("The run form now asks for the managed parameters"),
+        "{}",
+        combined(&again)
+    );
+
+    // A dynamic getopts surface has no modeled fields to set aside. Managing a constant is
+    // additive there, so detecting the framework alone must not trigger the note.
+    let dynamic = sandbox.scratch.path().join("dynamic.sh");
+    fs::write(
+        &dynamic,
+        "#!/usr/bin/env bash\nCITY=Taipei\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" opt; do :; done\necho $CITY\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            dynamic.to_str().unwrap(),
+            "-n",
+            "dynamic",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let dynamic_manage = sandbox
+        .command()
+        .args(["params", "dynamic", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        dynamic_manage.status.code(),
+        Some(0),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        combined(&dynamic_manage).contains("Updated dynamic. Managed parameters: CITY"),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        !combined(&dynamic_manage).contains("The run form now asks for the managed parameters"),
+        "{}",
+        combined(&dynamic_manage)
+    );
+}
+
+#[test]
+fn test_manage_flip_json_stdout_is_exactly_one_document() {
+    // Under --json the flip note is silent (the maybe-quiet console) and stdout is EXACTLY one
+    // JSON document — the note must never leak a human line onto the machine contract.
+    let sandbox = Sandbox::new();
+    let sh = sandbox.scratch.path().join("j.sh");
+    fs::write(
+        &sh,
+        "#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts \"n:v\" opt; do :; done\necho $CITY\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args(["add", sh.to_str().unwrap(), "-n", "jflip", "--no-input"])
+        .assert()
+        .success();
+    let output = sandbox
+        .command()
+        .args(["params", "jflip", "--manage", "CITY", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    // parses whole stdout — one document, no leaked line
+    let payload: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout is exactly one JSON document");
+    let names = payload["params"]
+        .as_array()
+        .expect("params is an array")
+        .iter()
+        .map(|param| {
+            param["name"]
+                .as_str()
+                .expect("a param name is a string")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"CITY".to_owned()), "{names:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("The run form now asks"), "{stdout}");
+}

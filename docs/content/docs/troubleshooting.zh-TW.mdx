@@ -1,0 +1,58 @@
+---
+title: 疑難排解與常見問題
+description: 已知的特異之處、它們的因應辦法，以及常見問題的簡短回答。
+---
+
+## Shell 程式在 Windows 上無法執行 [#shell-scripts-do-not-run-on-windows]
+
+Shell 項目需要 bash：skit 先看 `PATH`，然後看 `shell.bash_path`
+組態鍵，然後以結束碼 126 拒絕並給出提示 —— 它從不靜默改道走 WSL。
+PowerShell 項目需要 `pwsh`（或 `powershell.exe`）。
+
+## 在中國大陸下載失敗 [#downloads-fail-in-mainland-china]
+
+把每個生態指向一個當地鏡像 —— `mirror.*` 鍵見[組態](/zh-TW/docs/configuration)。
+對於最開始的 `uv tool install skit-cli`（那時 skit 還不存在，幫不上忙），
+請為那一條命令匯出
+`UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple`。
+
+## 常見問題 [#faq]
+
+**skit 會修改我的程式嗎？**
+只會修改 `[tool.skit]` 註解區塊，而且只在 skit 儲存的副本中（參照項目根本不會被寫入）。
+編輯會保留檔案自身的行尾 —— 包括 CRLF —— 以及非 UTF-8 位元組。唯一的例外是需要
+主動開啟的 `skit params --normalize NAME`（僅 shell），它在你同意後把儲存副本中的
+一處 `NAME=value` 改寫為 `${NAME:-value}`。
+
+**我改了程式中的一個常數 —— 為什麼執行時用的還是舊值？**
+自 0.4.0 起不會這樣了：預設值在每次執行時從程式目前的原始檔讀取，
+而不是來自管理時的快取。如果定義看起來是舊的，
+`skit params NAME --resync` 會更新它們。
+
+**我如何傳遞空字串？**
+在啟動選單中清空預先填入的欄位，或使用 `--set NAME=`。在類型支援的地方，
+空值會作為真正的 `''` 傳遞 —— 參見
+[空就是空](/zh-TW/docs/parameters#empty-means-empty)。
+
+**我設定過一次 `-- --model opus` —— 它會一直保留嗎？**
+會：每個項目都記住它上次的 `--` 尾端引數，並在不帶引數的執行中重播
+（並在標準錯誤上給出說明）。`--forget-args` 清除它；`--raw` 乾淨地執行。
+
+**deno 會給我的程式加沙箱嗎？**
+不會。當 deno 是解析出的執行器時，skit 會傳遞 `--allow-all`，
+這樣同一個程式在 deno、bun 與 node 下表現完全一致。skit 是一個啟動器，
+不是沙箱。
+
+**提示詞裡放機密值安全嗎？**
+不安全 —— 提示詞不是機密值通道。把預留位置標示為機密可以阻止 skit 保存它，
+並在真正執行前給你一個警告，但算繪後的文字仍會進入接收代理自己的工作階段記錄。
+
+**我的資料在哪裡，解除安裝會移除什麼？**
+`skit doctor` 會印出解析後的程式庫路徑。`uv tool uninstall skit-cli`
+會移除 skit 及其 `PATH` 墊片，但刻意保留你的程式庫、組態與預設 ——
+重新安裝就回來了。skit 從不寫入你的 `PATH`、shell 設定檔或全域 uv 組態。
+
+**skit 需要哪些執行環境？**
+skit 是一個 Rust 執行檔，不需要 Python。Python 項目需要 uv。
+在你同意後，skit 可以下載一份固定版本、經過總和檢查碼驗證的專用 uv 副本。
+對於 JS/TS，請你提供 deno、bun 或 node。skit 從不安裝 JS 執行環境。

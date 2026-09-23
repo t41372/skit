@@ -1,0 +1,14 @@
+{
+  "title": "文档",
+  "pages": [
+    "index",
+    "cli",
+    "parameters",
+    "script-types",
+    "prompts",
+    "ai-agents",
+    "environment",
+    "configuration",
+    "troubleshooting"
+  ]
+}

@@ -45,6 +45,39 @@ function idsOf(file) {
 
 const problems = [];
 
+for (const [locale, title] of [
+  ['en', '# CLI reference'],
+  ['zh-CN', '# CLI 参考'],
+  ['zh-TW', '# CLI 參考'],
+]) {
+  const markdown = join(OUT, 'llms.mdx', locale, 'docs', 'cli', 'content.md');
+  if (!existsSync(markdown)) {
+    problems.push(`missing ${locale} CLI markdown output`);
+  } else if (!readFileSync(markdown, 'utf8').startsWith(title)) {
+    problems.push(`${locale} CLI markdown output has the wrong locale`);
+  }
+  if (!existsSync(join(OUT, 'og', 'docs', locale, 'cli', 'image.png'))) {
+    problems.push(`missing ${locale} CLI social image`);
+  }
+}
+
+const searchPath = join(OUT, 'api', 'search');
+if (!existsSync(searchPath)) {
+  problems.push('missing static search index');
+} else {
+  const search = JSON.parse(readFileSync(searchPath, 'utf8'));
+  let cjkTokens = 0;
+  const countCjkKeys = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (/\p{Script=Han}/u.test(key)) cjkTokens += 1;
+      countCjkKeys(nested);
+    }
+  };
+  countCjkKeys(search.index?.indexes);
+  if (cjkTokens === 0) problems.push('static search index has no CJK tokens');
+}
+
 for (const file of htmlFiles) {
   const html = readFileSync(file, 'utf8');
   const pageRel = `/${relative(OUT, file).split(/[\\/]/).join('/')}`;
