@@ -301,7 +301,10 @@ impl Fixture {
         }
         let config = FileConfigStore::new(fixture.path("config"));
         config.mark_mirror_configured().unwrap();
-        config.set("theme", environment.theme).unwrap();
+        // An empty theme leaves `config.toml` without the key, as a fresh install has it.
+        if !environment.theme.is_empty() {
+            config.set("theme", environment.theme).unwrap();
+        }
         let data = fixture.path("data");
         write_command_entry(
             &data,
@@ -1306,4 +1309,106 @@ fn a_theme_saved_in_preferences_repaints_the_session() {
     );
     let config = fs::read_to_string(fixture.path("config").join("config.toml")).unwrap();
     assert!(config.contains("theme = \"terminal\""), "{config}");
+}
+
+/// A `config.toml` with no `theme` gets the terminal theme.
+#[test]
+fn the_terminal_theme_is_the_default() {
+    const DEFAULT: Environment = Environment {
+        name: "default-theme",
+        variables: &[("COLORTERM", "truecolor")],
+        theme: "",
+        colors: TerminalColors::Unknown,
+    };
+    let fixture = Fixture::new(&DEFAULT);
+    let library = &SCREENS[0];
+    let raw = fixture.capture(&DEFAULT, library);
+    let parser = replay(&raw, library.rows, library.columns);
+    let row = cells_of(&parser, "│Alpha")[1..].to_vec();
+    assert!(
+        all(&row, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Default),
+        "selected row with the default theme: {}",
+        describe(&row)
+    );
+}
+
+/// A terminal that answers the color questions after skit stopped waiting must not type keys.
+///
+/// crossterm reads a late `ESC ] 11 ; rgb:…` as Alt+`]` and then one key per character, and the
+/// library binds `r` (Rerun) and `/` (Search). The library must look the same after the late
+/// answers arrive, and no run may start.
+#[test]
+fn a_late_color_answer_never_becomes_keys() {
+    const LATE: Environment = Environment {
+        name: "terminal-late",
+        variables: &[("COLORTERM", "truecolor")],
+        theme: "terminal",
+        colors: TerminalColors::LateDark,
+    };
+    let fixture = Fixture::new(&LATE);
+    let state = fixture.path("state").join("values").join("alpha.toml");
+    let before = fs::read(&state).unwrap();
+    let library = &SCREENS[0];
+    let mut child = fixture.spawn(&LATE, library);
+    child.wait_cursor_query_after(0);
+    wait_for_screen(&mut child, library, LIBRARY_READY);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !child.late_color_answers_sent() {
+        assert!(Instant::now() < deadline, "the late answers never went out");
+        // A checkpoint drains the output, which is where the harness answers.
+        let _ = child.checkpoint();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.settle_quiet(Duration::from_millis(500));
+    let raw = child.raw_after(0);
+    let mut parser = vt100::Parser::new(library.rows, library.columns, 0);
+    parser.process(&raw);
+    let shown = parser.screen().contents();
+    assert!(
+        parser.screen().alternate_screen(),
+        "the session left the interface, as a run does:\n{shown}"
+    );
+    assert!(!shown.contains("Back to list"), "search opened:\n{shown}");
+    assert!(
+        shown.contains("2/5 entries") || shown.contains("entries"),
+        "{shown}"
+    );
+    assert_eq!(
+        fs::read(&state).unwrap(),
+        before,
+        "a run changed the state of Alpha"
+    );
+    quit(&mut child);
+}
+
+/// Over a remote login skit does not ask for the terminal colors: answers from a slow link can
+/// arrive after any timeout. The terminal theme then has no accent hue.
+#[test]
+fn a_remote_login_skips_the_color_question() {
+    const REMOTE: Environment = Environment {
+        name: "terminal-remote",
+        variables: &[
+            ("COLORTERM", "truecolor"),
+            ("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22"),
+        ],
+        theme: "terminal",
+        colors: TerminalColors::Dark,
+    };
+    let fixture = Fixture::new(&REMOTE);
+    let library = &SCREENS[0];
+    let raw = fixture.capture(&REMOTE, library);
+    assert!(
+        !raw.windows(b"\x1b]11;?".len())
+            .any(|window| window == b"\x1b]11;?"),
+        "skit asked for the background over a remote login"
+    );
+    let parser = replay(&raw, library.rows, library.columns);
+    let key = cells_of(&parser, " Enter ");
+    assert!(
+        all(&key, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Default),
+        "the keycap took a hue: {}",
+        describe(&key)
+    );
 }

@@ -12,7 +12,11 @@ description: skit 讀取的每個變數，以及它為子行程設定的變數�
 | `SKIT_CONFIG_DIR` | 覆寫組態根目錄 —— `config.toml` |
 | `SKIT_LANG` | 本行程的介面語言（`SKIT_LANG=zh-TW skit`） |
 | `VISUAL` / `EDITOR` | 當 `editor` 組態鍵未設定時使用的編輯器 |
-| `TERM` | `TERM=dumb` 把互動流程切換為純文字逐行提問（螢幕閱讀器、Emacs shell） |
+| `TERM` | `TERM=dumb` 把互動流程切換為純文字逐行提問（螢幕閱讀器、Emacs shell）。在 `skit` 配色下，後綴是 `256color` 或 `kitty` 時用 256 色，其他值用 16 色 |
+| `COLORTERM` | 值為 `truecolor` 或 `24bit` 時，`skit` 配色使用 24 位元全彩。Windows 上 `skit` 配色一律使用 24 位元色 |
+| `NO_COLOR` | 拿掉所有顏色，保留粗體、暗淡和反白。介面只要設定了這個變數就生效（空值也算）；逐行輸出只在值不是空的時候生效 |
+| `SSH_CONNECTION` / `SSH_TTY` | skit 不向終端機詢問背景色，所以 `terminal` 配色不用強調色 |
+| `WT_SESSION`（Windows） | Windows Terminal 會設定它。在 Windows 上，只有設定了它，skit 才向終端機詢問背景色 |
 | `PATHEXT`（Windows） | 在分類執行檔時，決定哪些副檔名算作可執行 |
 
 優先順序細節：

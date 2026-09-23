@@ -37,7 +37,7 @@ const GITHUB_PRESETS: &[(&str, &str)] = &[("nju", "https://mirror.nju.edu.cn/git
 const NPM_PRESETS: &[(&str, &str)] = &[("npmmirror", "https://registry.npmmirror.com")];
 
 /// The palette of the interactive interface when `config.toml` names none.
-const DEFAULT_THEME: &str = "skit";
+const DEFAULT_THEME: &str = "terminal";
 
 /// Supported setting names in the v0.4 listing order, then the settings that version 0.5 adds.
 pub const CONFIG_KEYS: [&str; 11] = [

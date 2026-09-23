@@ -82,14 +82,23 @@ pub(crate) enum TerminalColors {
     Light,
     /// No answer to OSC 10 or OSC 11, only to DA1, like a terminal without color queries.
     Unknown,
+    /// White text on black, answered only after [`LATE_REPLY`], like a slow remote link.
+    LateDark,
 }
+
+/// How long a [`TerminalColors::LateDark`] terminal waits before it answers.
+pub(crate) const LATE_REPLY: Duration = Duration::from_millis(1_500);
 
 impl TerminalColors {
     fn reply(self, query: &[u8]) -> Option<&'static [u8]> {
         match (self, query) {
             (_, DEVICE_ATTRIBUTES_QUERY) => Some(DEVICE_ATTRIBUTES_REPLY),
-            (Self::Dark, FOREGROUND_QUERY) => Some(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"),
-            (Self::Dark, BACKGROUND_QUERY) => Some(b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
+            (Self::Dark | Self::LateDark, FOREGROUND_QUERY) => {
+                Some(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\")
+            }
+            (Self::Dark | Self::LateDark, BACKGROUND_QUERY) => {
+                Some(b"\x1b]11;rgb:0000/0000/0000\x1b\\")
+            }
             (Self::Light, FOREGROUND_QUERY) => Some(b"\x1b]10;rgb:0000/0000/0000\x1b\\"),
             (Self::Light, BACKGROUND_QUERY) => Some(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"),
             _ => None,
@@ -138,6 +147,8 @@ pub(crate) struct PtyChild {
     /// questions.
     colors: TerminalColors,
     color_queries_scanned: usize,
+    /// When a late terminal first saw a color question.
+    color_query_seen: Option<Instant>,
 }
 
 impl PtyChild {
@@ -180,7 +191,15 @@ impl PtyChild {
             answer,
             colors: TerminalColors::Unknown,
             color_queries_scanned: 0,
+            color_query_seen: None,
         }
+    }
+
+    /// Whether a late terminal has sent its color answers.
+    pub(crate) fn late_color_answers_sent(&self) -> bool {
+        self.colors == TerminalColors::LateDark
+            && self.color_query_seen.is_some()
+            && self.color_queries_scanned > 0
     }
 
     /// Report `colors` to every later color question. Call it before the first wait.
@@ -198,11 +217,26 @@ impl PtyChild {
     }
 
     /// Answer each color question once, in the order the child asked (invariant 3).
+    ///
+    /// Both lanes answer: `AnswerQueries::Off` exists because a lane scripts its own cursor
+    /// reply, and no lane scripts a color reply. An unanswered color question makes the child
+    /// wait for its timeout and read the keys a test types meanwhile.
     fn answer_new_color_queries(&mut self) {
-        if self.answer == AnswerQueries::Off {
-            return;
-        }
         let queries = [FOREGROUND_QUERY, BACKGROUND_QUERY, DEVICE_ATTRIBUTES_QUERY];
+        if self.colors == TerminalColors::LateDark {
+            let asked = queries.iter().any(|query| {
+                self.output[self.color_queries_scanned..]
+                    .windows(query.len())
+                    .any(|window| window == *query)
+            });
+            if !asked {
+                return;
+            }
+            let seen = *self.color_query_seen.get_or_insert_with(Instant::now);
+            if seen.elapsed() < LATE_REPLY {
+                return;
+            }
+        }
         while let Some((at, query)) = queries
             .iter()
             .filter_map(|query| {

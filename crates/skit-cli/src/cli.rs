@@ -1,3 +1,4 @@
+use ratatui_crossterm::crossterm::event as crossterm_event;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -8478,30 +8479,108 @@ fn tui_appearance() -> skit_tui::Appearance {
 ///
 /// Only the terminal theme uses the answer, to pick its accent. The question goes out only when
 /// both standard streams are a terminal, before the interface claims the terminal. A terminal that
-/// does not answer within the timeout, or answers only the device-attributes question that follows,
-/// leaves the background unknown, and the theme then uses no hue.
+/// answers only the device-attributes question that follows leaves the background unknown, and the
+/// theme then uses no hue.
+///
+/// The answers arrive on the same input as the keys, so four rules keep them apart:
+/// - Keys that the user typed before the question stay for the interface: with input waiting,
+///   skit does not ask.
+/// - Over a remote login skit does not ask, because a slow link can deliver the answers after
+///   any timeout.
+/// - On Windows skit asks only Windows Terminal ([`console_answers_colors`]).
+/// - After a timeout, skit reads and drops input for [`LATE_ANSWER_WINDOW`], so a late answer
+///   cannot reach the interface as keys (crossterm would read `ESC ] 11 ; rgb:…` as one key per
+///   character).
 fn terminal_background() -> skit_tui::Background {
     use std::io::IsTerminal as _;
-    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+        || env::var_os("SSH_CONNECTION").is_some()
+        || env::var_os("SSH_TTY").is_some()
+        || !console_answers_colors()
+    {
+        return skit_tui::Background::Unknown;
+    }
+    let Some(_raw) = RawModeGuard::enter() else {
+        return skit_tui::Background::Unknown;
+    };
+    if crossterm_event::poll(Duration::ZERO).unwrap_or(true) {
         return skit_tui::Background::Unknown;
     }
     let mut options = terminal_colorsaurus::QueryOptions::default();
-    options.timeout = Duration::from_millis(500);
+    options.timeout = COLOR_QUESTION_TIMEOUT;
     match terminal_colorsaurus::theme_mode(options) {
         Ok(terminal_colorsaurus::ThemeMode::Dark) => skit_tui::Background::Dark,
         Ok(terminal_colorsaurus::ThemeMode::Light) => skit_tui::Background::Light,
+        Err(terminal_colorsaurus::Error::Timeout(_)) => {
+            drop_late_answers();
+            skit_tui::Background::Unknown
+        }
         Err(_) => skit_tui::Background::Unknown,
     }
 }
 
-/// The palette that the `theme` setting names. A setting that cannot be read keeps the default.
+/// Whether this Windows console answers the color question.
+///
+/// `terminal-colorsaurus` supports Windows Terminal 1.22 and later, which sets `WT_SESSION`.
+/// Another console can answer nothing, and the keys typed meanwhile are then lost, or it can
+/// answer late, and the console then turns the answer into keys.
+#[cfg(windows)]
+fn console_answers_colors() -> bool {
+    env::var_os("WT_SESSION").is_some()
+}
+
+/// Every Unix terminal gets the color question.
+#[cfg(not(windows))]
+const fn console_answers_colors() -> bool {
+    true
+}
+
+/// How long skit waits for the color answers. `terminal-colorsaurus` sizes its own default for a
+/// slow connection.
+const COLOR_QUESTION_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long skit drops input after the color question timed out.
+const LATE_ANSWER_WINDOW: Duration = Duration::from_secs(1);
+
+/// Read and drop every input event until [`LATE_ANSWER_WINDOW`] ends.
+fn drop_late_answers() {
+    let deadline = std::time::Instant::now() + LATE_ANSWER_WINDOW;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match crossterm_event::poll(left) {
+            Ok(true) => {
+                let _ = crossterm_event::read();
+            }
+            Ok(false) | Err(_) => break,
+        }
+    }
+}
+
+/// Raw mode for the color question, turned off again on every return.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Option<Self> {
+        ratatui_crossterm::crossterm::terminal::enable_raw_mode()
+            .ok()
+            .map(|()| Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = ratatui_crossterm::crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// The palette that the `theme` setting names. A setting that cannot be read keeps the default,
+/// the terminal theme.
 fn tui_theme() -> skit_tui::ThemeName {
     let theme = resolve_config_dir()
         .ok()
         .and_then(|directory| FileConfigStore::new(directory).get("theme").ok());
     match theme.as_deref() {
-        Some("terminal") => skit_tui::ThemeName::Terminal,
-        _ => skit_tui::ThemeName::Skit,
+        Some("skit") => skit_tui::ThemeName::Skit,
+        _ => skit_tui::ThemeName::Terminal,
     }
 }
 

@@ -137,3 +137,13 @@ fn the_config_key_completes() {
         "{candidates}"
     );
 }
+
+/// With no `theme` in `config.toml`, the interface follows the terminal's colors.
+#[test]
+fn the_default_theme_is_terminal() {
+    let sandbox = Sandbox::new();
+    assert_eq!(sandbox.run(&["config", "theme"]).stdout, "terminal\n");
+    let listing = sandbox.run(&["config", "--json"]);
+    assert_eq!(json(&listing.stdout)["theme"], "terminal");
+    assert!(!sandbox.config_file().contains("theme"));
+}

@@ -20,6 +20,7 @@ for machines. Everything lands in `config.toml` in skit's config directory
 | `mirror.pypi` | `tsinghua` / `aliyun` / `ustc` / a URL / `off` | Python package index |
 | `mirror.github` | `nju` / an `https://` base URL / `off` | Python builds + the uv binary — https required, since the downloaded binary is executed |
 | `mirror.npm` | `npmmirror` / a URL / `off` | JS/TS package registry |
+| `theme` | `terminal` / `skit` | interface colors: the terminal's own palette (default), or skit's fixed palette |
 
 Notes:
 
@@ -27,6 +28,16 @@ Notes:
   axis. Writing an axis while the master switch is off warns on stderr.
 - Mirror settings never touch your global uv config or shell; they ride as
   environment overlays on skit's child processes — see
+  [Environment variables](/en/docs/environment).
+- `theme = terminal` uses your terminal's own colors. Text stays in the
+  terminal's default color, and bold, dim, and reverse video show the state.
+  One accent hue marks borders and selection markers: cyan on a dark
+  background, magenta on a light background. To find the background, skit
+  asks the terminal once at start. It does not ask over SSH, and on Windows
+  it asks only Windows Terminal. With no answer, it uses no hue.
+- `theme = skit` keeps the fixed skit palette of version 0.4. You can also
+  pick the theme in Preferences, under Colors.
+- `NO_COLOR` removes every color in both themes — see
   [Environment variables](/en/docs/environment).
 - Prompt runners also live in this file (`[[prompt.runners]]`), but you manage
   them through `skit runner add` / `remove` / `list`, not raw keys.

@@ -1,6 +1,6 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0 to 4 are done, and phase 5 is in progress; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0 to 5 are done, and phase 6 is in progress; see "Phases".
 
 ## Decision
 
@@ -386,9 +386,10 @@ first, because the output filter does not depend on the role refactor.
      border in the default foreground. `status_spans` and `status_line` color only a leading
      ✓ ✗ ⚠ → glyph; every locale keeps the glyph first. The add review's select and check boxes
      get their own roles, because the `skit` theme drew them in `ratatui-interact` defaults.
-   - Background: skit-cli asks with `terminal-colorsaurus` 1.0.3 (500 ms timeout) only when the
+   - Background: skit-cli asks with `terminal-colorsaurus` 1.0.3 (1 s timeout) only when the
      theme is `terminal`, `NO_COLOR` is absent, and both standard streams are a terminal, before
-     the interface claims the terminal. The PTY harness answers OSC 10, OSC 11, and DA1.
+     the interface claims the terminal. The PTY harness answers OSC 10, OSC 11, and DA1 in every
+     color lane.
    - Preferences: a "Colors" section with a radio choice. It comes after every version 0.4
      control, because ported version 0.4 tests pin the focus order (Language and Editor are
      adjacent stops). A save writes `theme` only when it changed, so a clean save keeps the
@@ -397,11 +398,48 @@ first, because the output filter does not depend on the role refactor.
      depth, background, and `NO_COLOR`. A session that started in the `skit` theme did not ask
      for the background, so a switch to `terminal` during the session has no accent hue until
      the next start.
-   Still to do: the default switch, which is pinned by one end-to-end test and changes only
-   skit-cli's config default. The reverse
-   selection under `NO_COLOR` is tested here, as an addition. When `Appearance` gains a field,
-   `with_no_color` must build `Self { no_color, ..self }`, or it drops the theme.
-6. Documentation, records, and demo assets.
+   - The default switch (commit `7038e6f6`). `DEFAULT_THEME` in skit-store and `tui_theme` in
+     skit-cli both give `terminal`, and `the_default_theme_is_terminal` and
+     `the_terminal_theme_is_the_default` pin it. The switch sent the color question to every
+     existing PTY test, and three failures showed that the answers share the input with the keys:
+     - The question read the `Esc` that a test typed ahead. skit now asks only when no input is
+       waiting (`crossterm::event::poll` with a zero timeout, in raw mode).
+     - A late answer became keys: it opened the selected entry and typed `gb:ffff/…` into its
+       form. After a timeout, skit now reads and drops input for 1 s
+       (`a_late_color_answer_never_becomes_keys`, with a harness mode that answers 1.5 s late).
+     - A slow remote link can deliver the answer after any timeout, so skit does not ask when
+       `SSH_CONNECTION` or `SSH_TTY` is set (`a_remote_login_skips_the_color_question`).
+     Harness waits that looked for raw bytes now wait on the replayed screen, because Ratatui
+     skips a cell whose style did not change. The full skit-cli suite (1902 tests) passed on
+     macOS, and the full workspace (5468 tests) passed on Linux.
+   - Windows (2026-09-23). No Windows host is available, so the question on Windows is gated
+     before it is tested. The ways it can fail, written before the code:
+     1. A console that answers neither OSC 11 nor DA1 makes skit wait 1 s and then drop input
+        for 1 s. The first keys are lost. The `run_in_pty` tests in `terminal_pty.rs` send `q`
+        after a short quiet time, so they would hang on the CI Windows job.
+     2. A console that answers DA1 itself and also passes the question on gets a second answer
+        late. On Windows, the console turns an escape sequence it does not know into key events,
+        so the answer can reach the interface as keys.
+     3. Windows Terminal before 1.22 answers only DA1. skit gets an unknown background at once.
+        This is safe.
+     4. A console that is not Windows Terminal inherits `WT_SESSION` from a parent process. The
+        question then goes to a console of case 1 or 2.
+     5. The gate reaches Unix too. The census `terminal-dark` and `terminal-light` files then lose
+        their accent, and the census fails.
+     The rule: on Windows, skit asks only when `WT_SESSION` is set, because
+     `terminal-colorsaurus` supports Windows Terminal 1.22 and later. Case 4 stays open.
+     `a_windows_console_outside_windows_terminal_gets_no_color_question` pins cases 1 and 2 on
+     the CI Windows job. The Windows accent in Windows Terminal is not verified on a real host.
+   The reverse selection under `NO_COLOR` is tested here, as an addition. When `Appearance` gains
+   a field, `with_no_color` must build `Self { no_color, ..self }`, or it drops the theme.
+6. Documentation, records, and demo assets. Done on 2026-09-23 so far:
+   - The documentation site: the `theme` key and its notes in `configuration`, and `NO_COLOR`,
+     `COLORTERM`, the `TERM` suffix, and `SSH_CONNECTION` / `SSH_TTY` in `environment`, in
+     English, Simplified Chinese, and Traditional Chinese.
+   - `docs/behavior-changes.md`: the default theme, the `theme` setting and its Preferences
+     section, the color question with its input rules, and the reverse selection under
+     `NO_COLOR`. No item went to `docs/parity-backlog.md`: every version 0.4 gap that this design
+     found was restored in phases 1, 3, and 4.
 
 At the end of each wave, the Linux prompt reruns the census on Linux and diffs it against the
 committed files, and runs the walker corpus.

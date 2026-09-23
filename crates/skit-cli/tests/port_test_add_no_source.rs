@@ -185,8 +185,14 @@ impl Sandbox {
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         let early_status = loop {
-            let shown = terminal_text(&child.raw_after(0));
-            if shown.contains(wait_for) {
+            let raw = child.raw_after(0);
+            let shown = terminal_text(&raw);
+            // The replayed screen also counts: Ratatui moves the cursor over a default-style
+            // space instead of writing it, so the text history can lose the spaces of a prompt.
+            let size = pty_size();
+            if shown.contains(wait_for)
+                || pty::final_terminal_screen(&raw, size.rows, size.cols).contains(wait_for)
+            {
                 break None;
             }
             if let Some(status) = child.try_wait_status() {
@@ -301,6 +307,13 @@ fn combined(stdout: &[u8], stderr: &[u8]) -> String {
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(stderr));
     text
+}
+
+/// Remove every whitespace character, for a phrase whose spaces the terminal skipped.
+fn squash(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 /// Collapse whitespace so an assertion on a phrase is not broken by wrapping.
@@ -1225,8 +1238,12 @@ fn unknown_tui_form_keeps_kind_selection_inside_the_hosted_workflow() {
     );
 
     assert_eq!(status.exit_code(), 130, "{status:?}: {output}");
+    // Ratatui moves the cursor over a default-style space instead of writing it, so the history
+    // is compared without whitespace.
     assert!(
-        output.contains("What is mystery.xyz? skit can't tell from the name."),
+        squash(&output).contains(&squash(
+            "What is mystery.xyz? skit can't tell from the name."
+        )),
         "the hosted kind stage never rendered: {output}"
     );
     assert!(
