@@ -1861,6 +1861,11 @@ impl TuiSession {
         self.theme
     }
 
+    /// Draw every later frame with `theme`.
+    pub(crate) const fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
     /// Apply completed background work before the next draw.
     #[must_use]
     pub fn refresh_background(&mut self) -> bool {

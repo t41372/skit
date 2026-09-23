@@ -1,6 +1,6 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0 to 3 are done; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0 to 4 are done; see "Phases".
 
 ## Decision
 
@@ -359,9 +359,16 @@ first, because the output filter does not depend on the role refactor.
    Buttons with a fixed dark background keep white text. Seven old unit assertions that checked
    the port's white, bright black, or indigo scrollbar now check the version 0.4 value. One
    skit-tui PTY marker became one word, because Ratatui skips a default-style space.
-4. `skit` theme color depth. Only the `no-colorterm` census changes, and no cell in it keeps a
-   `#rrggbb` color. This phase follows the role refactor on purpose: each palette entry then holds
-   its 24-bit, 256-color, and 16-color forms, so no color can reach the output without a mapping.
+4. `skit` theme color depth (done 2026-09-23). Three end-to-end tests failed first: no 24-bit
+   color without `COLORTERM`, no color above 15 when `TERM` names no color count, and Rich's own
+   256-color forms (accent 173, selection 254 on 52). skit-cli now decides the depth with Rich's
+   rule (`tui_color_depth` in `crates/skit-cli/src/cli.rs`), and `theme.rs` maps each fixed color
+   through `fixed()`, a table of Rich's precomputed forms. The census gained a `basic-term`
+   environment (156 files). The `no-colorterm` files changed only from 24-bit colors to Rich's
+   256-color indices; the `truecolor` and `no-color` files did not change. On Windows the depth is
+   24-bit, because Textual turns off the legacy console and Rich then asks the console, which
+   supports virtual terminal processing wherever skit's interface runs. `TEXTUAL_COLOR_SYSTEM`,
+   a Textual override, is not ported.
 5. `terminal` theme with the OSC 11 accent, the footer chip, the config key, the Preferences
    control, the CLI, and i18n. Then the default switches. The reverse selection under `NO_COLOR`
    is tested here, as an addition. When `Appearance` gains a field, `with_no_color` must build

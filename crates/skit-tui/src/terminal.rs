@@ -389,6 +389,7 @@ where
         .map_or_else(TuiSession::default, |provider| {
             TuiSession::with_path_completion(provider)
         });
+    session.set_theme(options.appearance.theme());
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
@@ -692,6 +693,7 @@ where
         .map_or_else(TuiSession::default, |provider| {
             TuiSession::with_path_completion(provider)
         });
+    session.set_theme(options.appearance.theme());
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;

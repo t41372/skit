@@ -30,7 +30,7 @@
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "└──────────────────────────────────────────────────────────────────────────────────────────────────┘", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "╭──────────────────────────────────────────────────────────────────────────────────────────────────╮", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│", "fg": "default", "bg": "default", "attrs": []}, {"text": " Esc Close ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "                                                                                       │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": []}, {"text": " Esc Close ", "fg": "idx:173", "bg": "idx:16", "attrs": ["bold"]}, {"text": "                                                                                       │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│5/5 entries                                                                                       │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "╰──────────────────────────────────────────────────────────────────────────────────────────────────╯", "fg": "default", "bg": "default", "attrs": []}]
   ]

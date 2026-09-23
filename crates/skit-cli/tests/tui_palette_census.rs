@@ -236,6 +236,11 @@ const NO_COLOR: Environment = Environment {
     name: "no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "1")],
 };
+/// A terminal that names no color count: Rich 15.0.0 picks the 16-color system.
+const BASIC_TERM: Environment = Environment {
+    name: "basic-term",
+    variables: &[("TERM", "xterm")],
+};
 const EMPTY_NO_COLOR: Environment = Environment {
     name: "empty-no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "")],
@@ -785,6 +790,11 @@ fn census_with_no_color() {
     run_census(&NO_COLOR);
 }
 
+#[test]
+fn census_on_a_basic_terminal() {
+    run_census(&BASIC_TERM);
+}
+
 /// Every cell of the selected library row that shows `Alpha`, and every cell on the screen.
 fn library_cells(environment: &Environment) -> (Vec<vt100::Cell>, Vec<vt100::Cell>) {
     let fixture = Fixture::new();
@@ -951,4 +961,86 @@ fn skit_theme_widget_labels_use_the_default_foreground() {
             describe(&label)
         );
     }
+}
+
+/// Every color that `screen` shows in `environment`, by name.
+fn colors_on(environment: &Environment, name: &str) -> Vec<String> {
+    let parser = shown(environment, name);
+    let screen = parser.screen();
+    let (rows, columns) = screen.size();
+    (0..rows)
+        .flat_map(|row| (0..columns).map(move |column| (row, column)))
+        .flat_map(|(row, column)| {
+            let cell = screen.cell(row, column).unwrap();
+            [color_name(cell.fgcolor()), color_name(cell.bgcolor())]
+        })
+        .collect()
+}
+
+const DEPTH_SCREENS: [&str; 5] = [
+    "library",
+    "run-form",
+    "entry-settings",
+    "preferences",
+    "remove",
+];
+
+/// Version 0.4 lets Rich pick the color system: with no `COLORTERM`, a `TERM` that ends in
+/// `-256color` gives 256 colors (`console.py:789-811`), and Rich converts every 24-bit color.
+#[test]
+fn skit_theme_uses_256_colors_without_colorterm() {
+    for name in DEPTH_SCREENS {
+        let rgb = colors_on(&NO_COLORTERM, name)
+            .into_iter()
+            .filter(|color| color.starts_with('#'))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            rgb.is_empty(),
+            "{name}: 24-bit colors on a 256-color terminal: {rgb:?}"
+        );
+    }
+}
+
+/// A `TERM` with no color suffix gives Rich's 16-color system.
+#[test]
+fn skit_theme_uses_16_colors_on_a_basic_terminal() {
+    for name in DEPTH_SCREENS {
+        let wide = colors_on(&BASIC_TERM, name)
+            .into_iter()
+            .filter(|color| {
+                color.starts_with('#')
+                    || color
+                        .strip_prefix("idx:")
+                        .is_some_and(|index| index.parse::<u8>().unwrap() >= 16)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            wide.is_empty(),
+            "{name}: colors beyond 16 on a basic terminal: {wide:?}"
+        );
+    }
+}
+
+/// The 256-color forms are Rich's own conversions (`color.py:512-568`): the accent `#D97757`
+/// becomes 173, the selection `#EEEEEE` on `#5A2D1E` becomes 254 on 52.
+#[test]
+fn skit_theme_256_color_forms_match_rich() {
+    let library = shown(&NO_COLORTERM, "library");
+    let selected = cells_of(&library, "│Alpha")[1..].to_vec();
+    assert!(
+        selected.iter().all(|cell| {
+            cell.fgcolor() == vt100::Color::Idx(254) && cell.bgcolor() == vt100::Color::Idx(52)
+        }),
+        "selected row: {}",
+        describe(&selected)
+    );
+    let run = shown(&NO_COLORTERM, "run-form");
+    let required = cells_of(&run, "required");
+    assert!(
+        required
+            .iter()
+            .all(|cell| cell.fgcolor() == vt100::Color::Idx(173)),
+        "required mark: {}",
+        describe(&required)
+    );
 }

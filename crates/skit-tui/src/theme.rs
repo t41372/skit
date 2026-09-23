@@ -11,6 +11,8 @@
 use std::cell::Cell;
 
 use ratatui_core::style::{Color, Modifier, Style};
+
+use crate::appearance::ColorDepth;
 use ratatui_interact::components::{ButtonStyle, ButtonVariant, CheckBoxStyle, ListPickerStyle};
 use ratatui_widgets::{
     block::{Block, Padding},
@@ -30,15 +32,21 @@ const PILL_BACKGROUND: Color = Color::Rgb(0x2A, 0x21, 0x1C);
 const SCROLLBAR: Color = Color::Rgb(0x4A, 0x41, 0x3C);
 
 /// The palette that a frame draws with.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Theme {
-    /// The version 0.4 look: a fixed btop-style palette with a terracotta accent.
-    #[default]
-    Skit,
+    /// The version 0.4 look: a fixed btop-style palette with a terracotta accent, in the forms
+    /// that the terminal's color depth can show.
+    Skit(ColorDepth),
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::Skit(ColorDepth::TrueColor)
+    }
 }
 
 thread_local! {
-    static CURRENT: Cell<Theme> = const { Cell::new(Theme::Skit) };
+    static CURRENT: Cell<Theme> = const { Cell::new(Theme::Skit(ColorDepth::TrueColor)) };
 }
 
 /// The theme of the frame being drawn on this thread.
@@ -67,6 +75,39 @@ impl Drop for ThemeScope {
     }
 }
 
+/// A fixed `skit` color in the form that the frame's color depth can show.
+///
+/// The 256-color and 16-color forms are Rich 15.0.0's own conversions (`color.py:512-568`), which
+/// version 0.4 applied to the same colors. The census checks that no 24-bit color reaches a
+/// terminal of lower depth.
+fn fixed(color: Color) -> Color {
+    let Theme::Skit(depth) = current();
+    match depth {
+        ColorDepth::TrueColor => color,
+        ColorDepth::EightBit => match color {
+            ACCENT => Color::Indexed(173),
+            SELECT_BG => Color::Indexed(52),
+            SELECT_FG => Color::Indexed(254),
+            BOX_GREEN => Color::Indexed(65),
+            BOX_INDIGO => Color::Indexed(61),
+            BOX_MAROON => Color::Indexed(95),
+            BOX_DIM => Color::Indexed(237),
+            PILL_BACKGROUND => Color::Indexed(16),
+            SCROLLBAR => Color::Indexed(238),
+            other => other,
+        },
+        ColorDepth::Standard => match color {
+            ACCENT => Color::LightRed,
+            SELECT_BG | BOX_GREEN | BOX_DIM | SCROLLBAR => Color::DarkGray,
+            SELECT_FG => Color::White,
+            BOX_INDIGO => Color::LightBlue,
+            BOX_MAROON => Color::Yellow,
+            PILL_BACKGROUND => Color::Black,
+            other => other,
+        },
+    }
+}
+
 /// A bordered panel. Each panel has its own border tint in the `skit` theme.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Panel {
@@ -85,11 +126,13 @@ pub(crate) enum Panel {
 /// The border color of `panel`.
 pub(crate) fn panel_color(panel: Panel) -> Color {
     match current() {
-        Theme::Skit => match panel {
-            Panel::Library | Panel::Health => BOX_GREEN,
-            Panel::Detail | Panel::Settings | Panel::Preferences | Panel::Picker => BOX_INDIGO,
-            Panel::Run | Panel::Form | Panel::Add => BOX_MAROON,
-            Panel::Dialog => ACCENT,
+        Theme::Skit(_) => match panel {
+            Panel::Library | Panel::Health => fixed(BOX_GREEN),
+            Panel::Detail | Panel::Settings | Panel::Preferences | Panel::Picker => {
+                fixed(BOX_INDIGO)
+            }
+            Panel::Run | Panel::Form | Panel::Add => fixed(BOX_MAROON),
+            Panel::Dialog => fixed(ACCENT),
         },
     }
 }
@@ -118,14 +161,14 @@ pub(crate) fn padded_panel(label: String, panel: Panel) -> Block<'static> {
 /// inside a styled parent, as the bright white it replaces did.
 pub(crate) fn text() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(Color::Reset),
+        Theme::Skit(_) => Style::default().fg(Color::Reset),
     }
 }
 
 /// A panel title. Version 0.4: `ansi_bright_white`, bold.
 pub(crate) fn title() -> Style {
     match current() {
-        Theme::Skit => Style::default()
+        Theme::Skit(_) => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     }
@@ -134,7 +177,7 @@ pub(crate) fn title() -> Style {
 /// The header row of the library table. Version 0.4: `ansi_bright_white`, bold.
 pub(crate) fn table_header() -> Style {
     match current() {
-        Theme::Skit => Style::default()
+        Theme::Skit(_) => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     }
@@ -143,21 +186,27 @@ pub(crate) fn table_header() -> Style {
 /// A section heading inside a panel. Version 0.4: `$accent`.
 pub(crate) fn heading() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Theme::Skit(_) => Style::default()
+            .fg(fixed(ACCENT))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
 /// The `required` mark beside a run form field. Version 0.4: `$accent`.
 pub(crate) fn required() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Theme::Skit(_) => Style::default()
+            .fg(fixed(ACCENT))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
 /// The name of the entry that the detail pane shows. Version 0.4: bold `$accent`.
 pub(crate) fn emphasis() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Theme::Skit(_) => Style::default()
+            .fg(fixed(ACCENT))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -165,7 +214,7 @@ pub(crate) fn emphasis() -> Style {
 /// Version 0.4: `[dim]`.
 pub(crate) fn hint() -> Style {
     match current() {
-        Theme::Skit => Style::default()
+        Theme::Skit(_) => Style::default()
             .fg(Color::Reset)
             .add_modifier(Modifier::DIM),
     }
@@ -174,42 +223,42 @@ pub(crate) fn hint() -> Style {
 /// Secondary copy that is already dim.
 pub(crate) fn muted() -> Style {
     match current() {
-        Theme::Skit => Style::default().add_modifier(Modifier::DIM),
+        Theme::Skit(_) => Style::default().add_modifier(Modifier::DIM),
     }
 }
 
 /// The untyped rest of a path suggestion after the typed text.
 pub(crate) fn suggestion() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(Color::DarkGray),
+        Theme::Skit(_) => Style::default().fg(Color::DarkGray),
     }
 }
 
 /// A scrollbar beside a panel. Version 0.4: `#4A413C` for every panel.
 pub(crate) fn scrollbar() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(SCROLLBAR),
+        Theme::Skit(_) => Style::default().fg(fixed(SCROLLBAR)),
     }
 }
 
 /// A key name inside copy, such as `Ctrl+N`.
 pub(crate) fn key_hint() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT),
+        Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
     }
 }
 
 /// A focus marker or a choice glyph.
 pub(crate) fn marker() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT),
+        Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
     }
 }
 
 /// A notice or a question line in the add flow.
 pub(crate) fn notice() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT),
+        Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
     }
 }
 
@@ -224,7 +273,7 @@ pub(crate) enum Status {
 /// The color of a status line or glyph.
 pub(crate) fn status_color(status: Status) -> Color {
     match current() {
-        Theme::Skit => match status {
+        Theme::Skit(_) => match status {
             Status::Success => Color::Green,
             Status::Warning => Color::Yellow,
             Status::Danger => Color::Red,
@@ -239,11 +288,11 @@ pub(crate) fn status(status: Status) -> Style {
 /// The border color of an input, a text area, or a select.
 pub(crate) fn border_color(focused: bool) -> Color {
     match current() {
-        Theme::Skit => {
+        Theme::Skit(_) => {
             if focused {
-                ACCENT
+                fixed(ACCENT)
             } else {
-                BOX_DIM
+                fixed(BOX_DIM)
             }
         }
     }
@@ -256,16 +305,16 @@ pub(crate) fn border(focused: bool) -> Style {
 /// The selected row of a list, a table, or an option set.
 pub(crate) fn selection() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(SELECT_FG).bg(SELECT_BG),
+        Theme::Skit(_) => Style::default().fg(fixed(SELECT_FG)).bg(fixed(SELECT_BG)),
     }
 }
 
 /// The cursor cell of a text area.
 pub(crate) fn caret(focused: bool) -> Style {
     match current() {
-        Theme::Skit => {
+        Theme::Skit(_) => {
             if focused {
-                Style::default().fg(Color::Black).bg(ACCENT)
+                Style::default().fg(Color::Black).bg(fixed(ACCENT))
             } else {
                 text()
             }
@@ -276,10 +325,10 @@ pub(crate) fn caret(focused: bool) -> Style {
 /// A list of choices with an arrow on the selected row.
 pub(crate) fn list_picker_style() -> ListPickerStyle {
     match current() {
-        Theme::Skit => ListPickerStyle {
+        Theme::Skit(_) => ListPickerStyle {
             selected_style: Style::default()
                 .fg(Color::Black)
-                .bg(ACCENT)
+                .bg(fixed(ACCENT))
                 .add_modifier(Modifier::BOLD),
             normal_style: text(),
             indicator_style: marker(),
@@ -293,8 +342,8 @@ pub(crate) fn list_picker_style() -> ListPickerStyle {
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
     match current() {
-        Theme::Skit => CheckBoxStyle::unicode()
-            .focused_fg(ACCENT)
+        Theme::Skit(_) => CheckBoxStyle::unicode()
+            .focused_fg(fixed(ACCENT))
             .unfocused_fg(Color::Reset)
             .checked_fg(Color::Green),
     }
@@ -302,10 +351,10 @@ pub(crate) fn checkbox_style() -> CheckBoxStyle {
 
 pub(crate) fn select_style() -> ratatui_interact::components::SelectStyle {
     match current() {
-        Theme::Skit => ratatui_interact::components::SelectStyle {
+        Theme::Skit(_) => ratatui_interact::components::SelectStyle {
             focused_border: border_color(true),
             unfocused_border: border_color(false),
-            dropdown_border: ACCENT,
+            dropdown_border: fixed(ACCENT),
             highlight_style: selection(),
             text_fg: Color::Reset,
             option_style: text(),
@@ -316,10 +365,10 @@ pub(crate) fn select_style() -> ratatui_interact::components::SelectStyle {
 
 pub(crate) fn radio_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::Toggle)
-            .focused(SELECT_FG, SELECT_BG)
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::Toggle)
+            .focused(fixed(SELECT_FG), fixed(SELECT_BG))
             .unfocused(Color::Reset, Color::Reset)
-            .toggled(SELECT_FG, SELECT_BG),
+            .toggled(fixed(SELECT_FG), fixed(SELECT_BG)),
     }
 }
 
@@ -330,58 +379,58 @@ pub(crate) fn radio_style() -> ButtonStyle {
 /// colours instead.
 pub(crate) fn focused_radio_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => radio_style().toggled(SELECT_FG, ACCENT),
+        Theme::Skit(_) => radio_style().toggled(fixed(SELECT_FG), fixed(ACCENT)),
     }
 }
 
 /// A button in a confirmation dialog.
 pub(crate) fn dialog_button_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(Color::Black, ACCENT)
-            .unfocused(Color::White, BOX_DIM),
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(Color::Black, fixed(ACCENT))
+            .unfocused(Color::White, fixed(BOX_DIM)),
     }
 }
 
 /// An action button inside a panel, such as a Preferences action.
 pub(crate) fn action_button_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(Color::White, ACCENT)
-            .unfocused(Color::White, BOX_DIM),
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(Color::White, fixed(ACCENT))
+            .unfocused(Color::White, fixed(BOX_DIM)),
     }
 }
 
 /// A chip on a run form row, such as `▾ insert`.
 pub(crate) fn run_chip_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(Color::White, ACCENT)
-            .unfocused(ACCENT, SELECT_BG),
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(Color::White, fixed(ACCENT))
+            .unfocused(fixed(ACCENT), fixed(SELECT_BG)),
     }
 }
 
 /// A command chip in a footer.
 pub(crate) fn footer_chip_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(ACCENT, PILL_BACKGROUND)
-            .unfocused(ACCENT, PILL_BACKGROUND),
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(fixed(ACCENT), fixed(PILL_BACKGROUND))
+            .unfocused(fixed(ACCENT), fixed(PILL_BACKGROUND)),
     }
 }
 
 /// The arrow that shows more footer rows above or below.
 pub(crate) fn footer_indicator() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(ACCENT),
+        Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
     }
 }
 
 /// A command chip in the action row at the bottom of a health or runner dialog.
 pub(crate) fn dialog_footer_chip_style() -> ButtonStyle {
     match current() {
-        Theme::Skit => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(Color::White, BOX_DIM)
-            .unfocused(Color::White, BOX_DIM),
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(Color::White, fixed(BOX_DIM))
+            .unfocused(Color::White, fixed(BOX_DIM)),
     }
 }

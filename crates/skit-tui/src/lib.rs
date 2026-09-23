@@ -30,7 +30,7 @@ pub use agent_review::{
     AGENT_REVIEW_SNAPSHOT_VERSION, AgentReviewSnapshot, AgentReviewSnapshotError,
     RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION,
 };
-pub use appearance::Appearance;
+pub use appearance::{Appearance, ColorDepth};
 use layout::{RootLayoutPlan, ViewportProfile};
 pub use local_action::{
     LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,

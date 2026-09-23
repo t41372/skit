@@ -8452,7 +8452,42 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
 /// empty (Textual 8.2.8 `app.py:614`). The line output keeps Rich's non-empty test in
 /// [`colour_is_welcome`]; both are version 0.4 behavior.
 fn tui_appearance() -> skit_tui::Appearance {
-    skit_tui::Appearance::default().with_no_color(env::var_os("NO_COLOR").is_some())
+    skit_tui::Appearance::default()
+        .with_no_color(env::var_os("NO_COLOR").is_some())
+        .with_color_depth(tui_color_depth())
+}
+
+/// The color depth of the terminal, decided as version 0.4 decides it.
+///
+/// This is Rich 15.0.0 `Console._detect_color_system` (`console.py:789-811`) for a terminal:
+/// `COLORTERM` of `truecolor` or `24bit` gives 24-bit color; otherwise the text after the last
+/// hyphen of `TERM` decides, where `256color` and `kitty` give 256 colors and anything else gives
+/// the 16 standard colors.
+#[cfg(not(windows))]
+fn tui_color_depth() -> skit_tui::ColorDepth {
+    let lowered = |name| {
+        env::var_os(name)
+            .map(|value| value.to_string_lossy().trim().to_lowercase())
+            .unwrap_or_default()
+    };
+    if matches!(lowered("COLORTERM").as_str(), "truecolor" | "24bit") {
+        return skit_tui::ColorDepth::TrueColor;
+    }
+    let term = lowered("TERM");
+    match term
+        .rsplit_once('-')
+        .map_or(term.as_str(), |(_, colors)| colors)
+    {
+        "256color" | "kitty" => skit_tui::ColorDepth::EightBit,
+        _ => skit_tui::ColorDepth::Standard,
+    }
+}
+
+/// On Windows, Rich asks the console, and Textual turns off the legacy console, so a console
+/// that runs skit's interface (virtual terminal processing) gets 24-bit color.
+#[cfg(windows)]
+fn tui_color_depth() -> skit_tui::ColorDepth {
+    skit_tui::ColorDepth::TrueColor
 }
 
 fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {

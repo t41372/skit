@@ -1,11 +1,27 @@
 //! How a session paints color on the terminal.
 
+use crate::theme::Theme;
 use ratatui_core::{
     backend::{Backend, ClearType, WindowSize},
     buffer::Cell,
     layout::{Position, Size},
     style::Color,
 };
+
+/// How many colors the terminal can show.
+///
+/// The composition root decides it the way version 0.4 does, through Rich's color-system
+/// detection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorDepth {
+    /// 24-bit color.
+    #[default]
+    TrueColor,
+    /// The xterm 256-color palette.
+    EightBit,
+    /// The 16 standard ANSI colors.
+    Standard,
+}
 
 /// The color choices of one terminal session.
 ///
@@ -14,6 +30,7 @@ use ratatui_core::{
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Appearance {
     no_color: bool,
+    depth: ColorDepth,
 }
 
 impl Appearance {
@@ -24,7 +41,18 @@ impl Appearance {
     /// output (Textual `NoColor`).
     #[must_use]
     pub const fn with_no_color(self, no_color: bool) -> Self {
-        Self { no_color }
+        Self { no_color, ..self }
+    }
+
+    /// Draw the fixed colors of the `skit` theme in the forms that `depth` can show.
+    #[must_use]
+    pub const fn with_color_depth(self, depth: ColorDepth) -> Self {
+        Self { depth, ..self }
+    }
+
+    /// The theme that frames of this session draw with.
+    pub(crate) const fn theme(self) -> Theme {
+        Theme::Skit(self.depth)
     }
 
     /// Wrap the backend that a session draws on, so its output follows this appearance.
