@@ -240,7 +240,12 @@ const SCREENS: &[Screen] = &[
         ],
     ),
     screen("health", &[step(b"D", "Issues")]),
-    screen("health-rebuilt", &[step(b"D", "Issues"), step(CTRL_R, "")]),
+    // The rebuild is a host effect: raw mode is off until it ends, and a Ctrl+C then is a SIGINT.
+    // So the step waits for the result, not for a quiet terminal.
+    screen(
+        "health-rebuilt",
+        &[step(b"D", "Issues"), step(CTRL_R, "rebuilt")],
+    ),
     screen("add", &[OPEN_ADD]),
     screen(
         "add-missing-source",
@@ -500,7 +505,7 @@ impl Fixture {
             }
         }
         let raw = child.raw_after(0);
-        quit(&mut child);
+        quit(&mut child, screen.name);
         raw
     }
 }
@@ -509,17 +514,44 @@ impl Fixture {
 ///
 /// A screen that already shows the quit notice ends at the first press. A killed child never
 /// writes its coverage profile, so the census would add no coverage.
-fn quit(child: &mut PtyChild) {
+fn quit(child: &mut PtyChild, screen: &str) {
+    let before = child.checkpoint();
     child.send(CTRL_C);
+    // Wait until the first press has an effect, then until the terminal goes quiet.
+    let deadline = Instant::now() + STEP_BUDGET;
+    while child.raw_after(before).is_empty() && child.try_wait_status().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "{screen}: Ctrl+C changed nothing"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     child.settle();
-    // The child may be gone already. A failed write then only confirms it.
-    let _ = child.try_send(CTRL_C);
+    // A screen that shows the quit notice ends at the first press. skit leaves the interface
+    // before it turns raw mode off, and a Ctrl+C that arrives after that is a SIGINT, which
+    // kills the child before it exits cleanly. So press again only while the interface shows.
+    if in_interface(&child.raw_after(0)) {
+        // The child may be gone already. A failed write then only confirms it.
+        let _ = child.try_send(CTRL_C);
+    }
     let status = child.wait_exit_within(Duration::from_secs(10));
-    assert!(
-        status.success(),
-        "the session did not end cleanly: {}",
-        status.exit_code()
-    );
+    if !status.success() {
+        // skit writes its error after it leaves the interface, so the end of the output names it.
+        let raw = child.raw_after(0);
+        let tail = String::from_utf8_lossy(&raw[raw.len().saturating_sub(800)..]).into_owned();
+        panic!(
+            "{screen}: the session did not end cleanly: {} (signal {:?}); last output: {tail:?}",
+            status.exit_code(),
+            status.signal()
+        );
+    }
+}
+
+/// Whether the output leaves the terminal on the alternate screen, where the interface draws.
+fn in_interface(raw: &[u8]) -> bool {
+    let mut parser = vt100::Parser::new(ROWS, COLUMNS, 0);
+    parser.process(raw);
+    parser.screen().alternate_screen()
 }
 
 /// Wait until the replayed screen shows `needle`, then until the terminal goes quiet.
@@ -1483,7 +1515,7 @@ fn terminal_theme_footer_labels_stay_plain_in_a_wide_script() {
     child.wait_cursor_query_after(0);
     wait_for_screen(&mut child, library, label);
     let raw = child.raw_after(0);
-    quit(&mut child);
+    quit(&mut child, library.name);
     let parser = replay(&raw, library.rows, library.columns);
     let screen = parser.screen();
     let (rows, columns) = screen.size();
@@ -1636,7 +1668,7 @@ fn keys_typed_ahead_skip_the_color_question() {
     child.wait_cursor_query_after(0);
     wait_for_screen(&mut child, library, "failed");
     let raw = child.raw_after(0);
-    quit(&mut child);
+    quit(&mut child, library.name);
     assert!(
         !raw.windows(b"\x1b]11;?".len())
             .any(|window| window == b"\x1b]11;?"),
@@ -1824,7 +1856,7 @@ fn a_late_color_answer_never_becomes_keys() {
         before,
         "a run changed the state of Alpha"
     );
-    quit(&mut child);
+    quit(&mut child, library.name);
 }
 
 /// Over a remote login skit does not ask for the terminal colors: answers from a slow link can
