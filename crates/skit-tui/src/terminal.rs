@@ -12,6 +12,7 @@ use ratatui_crossterm::{
             self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
         },
         execute,
+        style::{Colored, force_color_output},
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
 };
@@ -23,7 +24,7 @@ use skit_ui::{
 };
 use thiserror::Error;
 
-use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
+use crate::{Appearance, EventHandling, TuiSession, ViewGeometry, render_with_session};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TerminalEventWait {
@@ -212,12 +213,17 @@ impl Localize for TuiError {
 }
 
 /// Run the terminal frontend and send each requested effect to its host adapter.
-pub fn run<F, E>(state: LibraryState, host: F, locale: Locale) -> Result<(), TuiError>
+pub fn run<F, E>(
+    state: LibraryState,
+    host: F,
+    locale: Locale,
+    appearance: Appearance,
+) -> Result<(), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    run_preflighted(state, |_| Ok::<(), E>(()), host, locale)
+    run_preflighted(state, |_| Ok::<(), E>(()), host, locale, appearance)
 }
 
 /// Run the terminal frontend with asynchronous path completion.
@@ -225,13 +231,21 @@ pub fn run_with_path_completion<F, E>(
     state: LibraryState,
     host: F,
     locale: Locale,
+    appearance: Appearance,
     provider: Arc<dyn PathCompletionProvider>,
 ) -> Result<(), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    run_preflighted_with_path_completion(state, |_| Ok::<(), E>(()), host, locale, provider)
+    run_preflighted_with_path_completion(
+        state,
+        |_| Ok::<(), E>(()),
+        host,
+        locale,
+        appearance,
+        provider,
+    )
 }
 
 /// Run the terminal frontend with a check that occurs before terminal suspension.
@@ -243,14 +257,22 @@ pub fn run_preflighted<F, P, E>(
     preflight: P,
     host: F,
     locale: Locale,
+    appearance: Appearance,
 ) -> Result<(), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     P: FnMut(&Effect) -> Result<(), E>,
     E: Localize,
 {
-    let _: Option<()> =
-        run_hosted_state(state, Vec::new(), preflight, host, locale, |_| None, None)?;
+    let _: Option<()> = run_hosted_state(
+        state,
+        Vec::new(),
+        preflight,
+        host,
+        locale,
+        |_| None,
+        SessionOptions::new(appearance, None),
+    )?;
     Ok(())
 }
 
@@ -260,6 +282,7 @@ pub fn run_preflighted_with_path_completion<F, P, E>(
     preflight: P,
     host: F,
     locale: Locale,
+    appearance: Appearance,
     provider: Arc<dyn PathCompletionProvider>,
 ) -> Result<(), TuiError>
 where
@@ -274,7 +297,7 @@ where
         host,
         locale,
         |_| None,
-        Some(provider),
+        SessionOptions::new(appearance, Some(provider)),
     )?;
     Ok(())
 }
@@ -289,6 +312,7 @@ pub fn run_add_workflow<F, E>(
     opening: Vec<Action>,
     host: F,
     locale: Locale,
+    appearance: Appearance,
 ) -> Result<Option<Slug>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -303,7 +327,7 @@ where
         host,
         locale,
         add_workflow_outcome,
-        None,
+        SessionOptions::new(appearance, None),
     )
     .map(|outcome| {
         outcome.and_then(|outcome| match outcome {
@@ -327,7 +351,7 @@ fn run_hosted_state<F, P, E, O>(
     mut host: F,
     mut locale: Locale,
     mut observe: impl FnMut(&Action) -> Option<O>,
-    path_completion: Option<Arc<dyn PathCompletionProvider>>,
+    options: SessionOptions,
 ) -> Result<Option<O>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -354,12 +378,17 @@ where
     }
     claim_terminal()?;
     let _restore = RestoreTerminal::new(restore_terminal);
-    let backend = CrosstermBackend::new(io::stdout());
+    let _colors = ColorOutputClaim::new();
+    let backend = options
+        .appearance
+        .backend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
-        TuiSession::with_path_completion(provider)
-    });
+    let mut session = options
+        .path_completion
+        .map_or_else(TuiSession::default, |provider| {
+            TuiSession::with_path_completion(provider)
+        });
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
@@ -581,12 +610,18 @@ pub fn collect_form<F, E>(
     form: FormView,
     host: F,
     locale: Locale,
+    appearance: Appearance,
 ) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    collect_screen(Screen::Form(form), host, locale, None)
+    collect_screen(
+        Screen::Form(form),
+        host,
+        locale,
+        SessionOptions::new(appearance, None),
+    )
 }
 
 /// Collect one typed launch form and restore the terminal before returning its values.
@@ -598,12 +633,18 @@ pub fn collect_run_form<F, E>(
     form: RunFormView,
     host: F,
     locale: Locale,
+    appearance: Appearance,
 ) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    collect_screen(Screen::Run(Box::new(form)), host, locale, None)
+    collect_screen(
+        Screen::Run(Box::new(form)),
+        host,
+        locale,
+        SessionOptions::new(appearance, None),
+    )
 }
 
 /// Collect one typed launch form with asynchronous path completion.
@@ -611,20 +652,26 @@ pub fn collect_run_form_with_path_completion<F, E>(
     form: RunFormView,
     host: F,
     locale: Locale,
+    appearance: Appearance,
     provider: Arc<dyn PathCompletionProvider>,
 ) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    collect_screen(Screen::Run(Box::new(form)), host, locale, Some(provider))
+    collect_screen(
+        Screen::Run(Box::new(form)),
+        host,
+        locale,
+        SessionOptions::new(appearance, Some(provider)),
+    )
 }
 
 fn collect_screen<F, E>(
     screen: Screen,
     mut host: F,
     mut locale: Locale,
-    path_completion: Option<Arc<dyn PathCompletionProvider>>,
+    options: SessionOptions,
 ) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -634,12 +681,17 @@ where
     state.update(Action::Present(screen));
     claim_terminal()?;
     let _restore = RestoreTerminal::new(restore_terminal);
-    let backend = CrosstermBackend::new(io::stdout());
+    let _colors = ColorOutputClaim::new();
+    let backend = options
+        .appearance
+        .backend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
-        TuiSession::with_path_completion(provider)
-    });
+    let mut session = options
+        .path_completion
+        .map_or_else(TuiSession::default, |provider| {
+            TuiSession::with_path_completion(provider)
+        });
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
@@ -749,6 +801,48 @@ where
     let first = first();
     let second = second();
     first.and(second)
+}
+
+/// Session settings that the terminal loop needs and the reducer does not.
+struct SessionOptions {
+    appearance: Appearance,
+    path_completion: Option<Arc<dyn PathCompletionProvider>>,
+}
+
+impl SessionOptions {
+    fn new(
+        appearance: Appearance,
+        path_completion: Option<Arc<dyn PathCompletionProvider>>,
+    ) -> Self {
+        Self {
+            appearance,
+            path_completion,
+        }
+    }
+}
+
+/// Let the session, not crossterm, decide whether a frame carries color.
+///
+/// When `NO_COLOR` holds a value, crossterm 0.29 writes `ESC[;m` in place of each color change.
+/// That sequence resets every attribute, so bold, dim, and reverse vanished from the frame. The
+/// session removes color itself (see [`Appearance`]), so crossterm writes colors unchanged until
+/// the session ends and the previous setting returns.
+struct ColorOutputClaim {
+    was_disabled: bool,
+}
+
+impl ColorOutputClaim {
+    fn new() -> Self {
+        let was_disabled = Colored::ansi_color_disabled_memoized();
+        force_color_output(true);
+        Self { was_disabled }
+    }
+}
+
+impl Drop for ColorOutputClaim {
+    fn drop(&mut self) {
+        force_color_output(!self.was_disabled);
+    }
 }
 
 struct RestoreTerminal<F>
@@ -1119,6 +1213,7 @@ mod tests {
             vec![Action::AddCancelled],
             harmless_host,
             Locale::En,
+            Appearance::default(),
         )
         .unwrap();
         assert_eq!(cancelled, None);
@@ -1134,6 +1229,7 @@ mod tests {
             }],
             harmless_host,
             Locale::En,
+            Appearance::default(),
         )
         .unwrap();
         assert_eq!(completed, Some(slug));
@@ -1152,6 +1248,7 @@ mod tests {
                 })
             },
             Locale::En,
+            Appearance::default(),
         )
         .unwrap();
         assert_eq!(hosted, Some(slug));
@@ -1371,8 +1468,13 @@ mod tests {
     #[test]
     #[ignore = "runs only as the piped child of the public wrapper contract"]
     fn public_run_collection_rejects_piped_child() {
-        let error = collect_run_form(empty_run_form(), harmless_host, Locale::En)
-            .expect_err("a collected form must reject non-terminal test streams");
+        let error = collect_run_form(
+            empty_run_form(),
+            harmless_host,
+            Locale::En,
+            Appearance::default(),
+        )
+        .expect_err("a collected form must reject non-terminal test streams");
         assert!(matches!(
             &error,
             TuiError::Io(error)

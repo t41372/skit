@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod agent_review;
+mod appearance;
 mod footer;
 mod layout;
 mod local_action;
@@ -29,6 +30,7 @@ pub use agent_review::{
     AGENT_REVIEW_SNAPSHOT_VERSION, AgentReviewSnapshot, AgentReviewSnapshotError,
     RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION,
 };
+pub use appearance::Appearance;
 use layout::{RootLayoutPlan, ViewportProfile};
 pub use local_action::{
     LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,

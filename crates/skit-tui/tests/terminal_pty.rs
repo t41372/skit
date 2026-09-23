@@ -10,8 +10,8 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_application::path_completion::{PathCompletionProvider, PathCompletionRequest};
 use skit_i18n::{Locale, Localize, Message};
 use skit_tui::{
-    collect_form, collect_run_form, collect_run_form_with_path_completion, run, run_preflighted,
-    run_with_path_completion,
+    Appearance, collect_form, collect_run_form, collect_run_form_with_path_completion, run,
+    run_preflighted, run_with_path_completion,
 };
 use skit_ui::{Action, Effect, FormField, FormPurpose, FormView, LibraryState, RunFormView};
 
@@ -56,6 +56,7 @@ fn collect_form_child() {
         form,
         |_effect: Effect| -> Result<Action, HostError> { Ok(Action::ClearStatus) },
         Locale::En,
+        Appearance::default(),
     )
     .unwrap();
     assert_eq!(result, None);
@@ -73,11 +74,18 @@ fn delayed_collect_form_child() {
 fn public_terminal_wrapper_child() {
     let mode = std::env::var("SKIT_TUI_WRAPPER").expect("the PTY owner sets one wrapper");
     match mode.as_str() {
-        "run" => run(LibraryState::default(), harmless_host, Locale::En).unwrap(),
+        "run" => run(
+            LibraryState::default(),
+            harmless_host,
+            Locale::En,
+            Appearance::default(),
+        )
+        .unwrap(),
         "run-with-path" => run_with_path_completion(
             LibraryState::default(),
             harmless_host,
             Locale::En,
+            Appearance::default(),
             Arc::new(EmptyPathProvider),
         )
         .unwrap(),
@@ -95,6 +103,7 @@ fn public_terminal_wrapper_child() {
                     Ok(Action::ClearStatus)
                 },
                 Locale::En,
+                Appearance::default(),
             )
             .unwrap();
         }
@@ -108,6 +117,7 @@ fn public_terminal_wrapper_child() {
                 Ok(Action::ClearStatus)
             },
             Locale::En,
+            Appearance::default(),
         )
         .unwrap(),
         "collect-run" => {
@@ -122,7 +132,7 @@ fn public_terminal_wrapper_child() {
                 "",
             );
             assert_eq!(
-                collect_run_form(form, harmless_host, Locale::En).unwrap(),
+                collect_run_form(form, harmless_host, Locale::En, Appearance::default()).unwrap(),
                 None
             );
         }
@@ -142,6 +152,7 @@ fn public_terminal_wrapper_child() {
                     form,
                     harmless_host,
                     Locale::En,
+                    Appearance::default(),
                     Arc::new(EmptyPathProvider),
                 )
                 .unwrap(),

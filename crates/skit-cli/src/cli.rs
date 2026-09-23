@@ -1476,8 +1476,14 @@ fn hosted_add(
     let locale = host.locale();
     let workflow = tui_add_workflow(service.repository(), &state_dir, config_dir)?
         .with_review_defaults(add_review_defaults(config_dir, &state_dir, options)?);
-    let slug = skit_tui::run_add_workflow(workflow, opening, |effect| host.serve(effect), locale)?
-        .ok_or(CliError::AddCancelled)?;
+    let slug = skit_tui::run_add_workflow(
+        workflow,
+        opening,
+        |effect| host.serve(effect),
+        locale,
+        tui_appearance(),
+    )?
+    .ok_or(CliError::AddCancelled)?;
     let entry = service.show(slug.as_str())?;
     print_add_summary(service.repository(), &entry)?;
     Ok(())
@@ -2255,6 +2261,7 @@ fn run_entry(
             forms.enhanced,
             |effect| host.serve(effect),
             locale,
+            tui_appearance(),
             path_completion_provider(),
         )?
         .ok_or(CliError::Aborted)?
@@ -8433,9 +8440,19 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
         |effect| host.preflight(effect),
         |effect| host.serve(effect),
         locale,
+        tui_appearance(),
         path_completion_provider(),
     )
     .map_err(CliError::from)
+}
+
+/// The color choices of a terminal session.
+///
+/// Version 0.4's interface counts `NO_COLOR` as set when the variable is present, even when it is
+/// empty (Textual 8.2.8 `app.py:614`). The line output keeps Rich's non-empty test in
+/// [`colour_is_welcome`]; both are version 0.4 behavior.
+fn tui_appearance() -> skit_tui::Appearance {
+    skit_tui::Appearance::default().with_no_color(env::var_os("NO_COLOR").is_some())
 }
 
 fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
