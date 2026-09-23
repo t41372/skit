@@ -154,8 +154,18 @@ The `skit` column is the value today. Phase 3 changes a role only where version 
 
 ## Accent hue
 
-Decision (delegated by the owner, 2026-09-23): pick the hue from the background. The accent is
-decoration only, so a weak hue costs less, but no single hue works on every default profile:
+The `accent` setting (owner, 2026-09-23, after PR #54 opened) lets a person pick the hue:
+`auto`, `none`, or one of the six ANSI hues and their bright forms. A color name picks that color
+of the terminal's own palette, so the setting still follows the terminal's colors. Black, white,
+and gray are not choices: rule 2 bans them as a foreground. Red, green, and yellow are choices,
+but the Preferences help says that they also show errors, success, and warnings. Only `auto` reads
+the background, so any other value skips the startup question. The rest of this section describes
+`auto`, the default. To make `none` the default, change `DEFAULT_ACCENT` in skit-store and
+re-bless the census.
+
+Decision for `auto` (delegated by the owner, 2026-09-23): pick the hue from the background. The
+accent is decoration only, so a weak hue costs less, but no single hue works on every default
+profile:
 
 - Dark background: ANSI 6 (cyan). Lowest measured value 4.8.
 - Light background: ANSI 5 (magenta). Lowest value in the table 4.2 (Solarized Light). Terminal.app's
@@ -282,8 +292,10 @@ skit-cli selects the palette in the composition root. skit-tui never reads the e
   top-level key and keeps it on save (`src/skit/config.py:91-103` at `v0.4.0`), so a downgrade is
   safe.
 - `skit config theme [VALUE]` with `--json`, deterministic exit codes, and dynamic completion.
-- A Preferences control, with English, Simplified Chinese, and Traditional Chinese copy.
-- `skills/skit/SKILL.md` lists the new key.
+- `CONFIG_KEYS` also gets `accent` (default `auto`), with the same CLI surface.
+- Preferences controls in a Colors section: a radio choice for the theme and a picker for the
+  accent, with English, Simplified Chinese, and Traditional Chinese copy.
+- `skills/skit/SKILL.md` lists both keys.
 
 ## Scope
 
@@ -493,6 +505,15 @@ first, because the output filter does not depend on the role refactor.
      new default. VHS draws with xterm.js, which answers OSC 11 (`rgb:1717/1717/1717`, dark) and
      DA1, so the screenshots show the cyan accent that a dark terminal gets. The three videos are
      not tracked (`.gitignore`), so a release must upload them again.
+
+7. The `accent` setting (2026-09-23, owner request after PR #54 opened). Failing end-to-end tests
+   came first: the CLI contract for every value, every fixed hue on the keycaps with no color
+   question, `none`, and a Preferences switch that repaints. The census rule check then caught a
+   defect that the new control exposed: a focused select drew its border label in the accent, so
+   `patch_border_title` now runs after each labeled select. The type-ahead test raced the child
+   under full-suite load, so the harness now writes keys into the terminal before the child
+   starts (`PtyChild::spawn_with_typeahead`). No existing census file changed; the census adds a
+   `preferences-accent` screen.
 
 At the end of each wave, the Linux prompt reruns the census on Linux and diffs it against the
 committed files, and runs the walker corpus.

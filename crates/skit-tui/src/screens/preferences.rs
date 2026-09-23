@@ -22,8 +22,9 @@ use ratatui_interact::{
 };
 use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesField,
-    RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, ThemeChoice, runner_row_taken_by_its_key,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
+    PreferencesField, RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, ThemeChoice,
+    runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::{EditableArgvDialect, join_editable_argv};
 use skit_application::{AgentScope, AgentTarget};
@@ -1406,6 +1407,9 @@ impl PreferencesWidgetSession {
                         .style(theme::select_style())
                         .render_stateful(frame, area);
                     theme::patch_idle_border(frame.buffer_mut(), region.area, state.focused);
+                    // The widget draws its label in the border color, which is the accent when
+                    // the select has the focus.
+                    theme::patch_border_title(frame.buffer_mut(), region.area);
                     *select_area = Some(region.area);
                 } else {
                     let style = theme::select_style();
@@ -2829,6 +2833,7 @@ fn input_action(id: PreferencesControlId, value: String) -> PreferencesEventHand
         },
         PreferencesControlId::Language
         | PreferencesControlId::Theme
+        | PreferencesControlId::Accent
         | PreferencesControlId::InteractiveForm
         | PreferencesControlId::AfterRun
         | PreferencesControlId::Javascript
@@ -2859,6 +2864,9 @@ fn choice_action(id: PreferencesControlId, value: &str) -> PreferencesEventHandl
             AfterRunChoice::Exit
         }),
         PreferencesControlId::Theme => PreferencesAction::SetTheme(ThemeChoice::from_config(value)),
+        PreferencesControlId::Accent => {
+            PreferencesAction::SetAccent(AccentChoice::from_config(value))
+        }
         PreferencesControlId::Javascript => PreferencesAction::SetJavascript(match value {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,
@@ -2908,6 +2916,7 @@ fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
         }
         PreferencesControlId::Language
         | PreferencesControlId::Theme
+        | PreferencesControlId::Accent
         | PreferencesControlId::Editor
         | PreferencesControlId::InteractiveForm
         | PreferencesControlId::AfterRun
@@ -3000,6 +3009,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![
@@ -3020,6 +3030,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: Some(String::new()),
             runners: vec![
@@ -3552,6 +3563,7 @@ mod tests {
                     form: InteractiveFormChoice::Tui,
                     after_run: AfterRunChoice::Exit,
                     theme: ThemeChoice::Terminal,
+                    accent: AccentChoice::Auto,
                     javascript: JavascriptChoice::Automatic,
                     bash_path: None,
                     runners: vec![pinned_row],
@@ -3582,6 +3594,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![pinned_row],
@@ -3647,6 +3660,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![preferences_runner_row(0, "claude"), duplicate],
@@ -3796,6 +3810,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![skit_ui::RunnerRow {
@@ -3874,6 +3889,7 @@ mod tests {
                         form: InteractiveFormChoice::Tui,
                         after_run: AfterRunChoice::Exit,
                         theme: ThemeChoice::Terminal,
+                        accent: AccentChoice::Auto,
                         javascript: JavascriptChoice::Automatic,
                         bash_path: None,
                         runners: vec![malformed],
@@ -3927,6 +3943,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![repairable, shapeless],
@@ -3992,6 +4009,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![
@@ -4417,6 +4435,7 @@ mod tests {
                     form: InteractiveFormChoice::Tui,
                     after_run: AfterRunChoice::Exit,
                     theme: ThemeChoice::Terminal,
+                    accent: AccentChoice::Auto,
                     javascript: JavascriptChoice::Automatic,
                     bash_path: None,
                     runners: Vec::new(),

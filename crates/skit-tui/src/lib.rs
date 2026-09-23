@@ -526,8 +526,8 @@ mod tests {
     #[test]
     fn minimum_body_height_preserves_screen_and_modal_content() {
         use skit_application::preferences::{
-            AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-            PreferencesDraft, PreferencesSnapshot, ThemeChoice,
+            AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice,
+            MirrorConfiguration, PreferencesDraft, PreferencesSnapshot, ThemeChoice,
         };
         use skit_ui::{FormPurpose, PreferencesView};
 
@@ -548,6 +548,7 @@ mod tests {
                 form: InteractiveFormChoice::Tui,
                 after_run: AfterRunChoice::Exit,
                 theme: ThemeChoice::Terminal,
+                accent: AccentChoice::Auto,
                 javascript: JavascriptChoice::Automatic,
                 bash_path: None,
                 runners: Vec::new(),

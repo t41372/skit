@@ -271,6 +271,7 @@ skit edit <name>       # open the stored source in the user's editor
 skit config js.runner deno         # pin the JS/TS runner (default: auto — deno > bun > node)
 skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-detects)
 skit config theme skit             # interface colors: terminal (default; the terminal's own palette) or skit
+skit config accent blue            # terminal-theme hue: auto (default), none, or a color (red … cyan, bright-…)
 ```
 
 `doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run

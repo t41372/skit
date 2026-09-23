@@ -276,6 +276,7 @@ fn preferences() -> PreferencesView {
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
         theme: ThemeChoice::Terminal,
+        accent: skit_application::preferences::AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),

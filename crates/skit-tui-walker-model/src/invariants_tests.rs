@@ -114,6 +114,7 @@ fn preferences_snapshot() -> PreferencesSnapshot {
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Stay,
         theme: ThemeChoice::Terminal,
+        accent: skit_application::preferences::AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: vec![preferences_runner_row(0, "codex")],

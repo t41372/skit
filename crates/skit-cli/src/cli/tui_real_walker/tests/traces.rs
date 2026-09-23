@@ -669,6 +669,7 @@ fn real_frontend_switches_locale_only_when_it_consumes_preferences_saved() {
                     locale: tag.to_owned(),
                     message: "saved".to_owned(),
                     theme: None,
+                    accent: None,
                 })
                 .unwrap(),
             Effect::None

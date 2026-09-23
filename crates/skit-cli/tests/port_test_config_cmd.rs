@@ -181,6 +181,7 @@ fn test_bare_config_json() {
         "shell.bash_path",
         "js.runner",
         "theme",
+        "accent",
     ]
     .into_iter()
     .map(str::to_owned)

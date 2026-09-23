@@ -673,7 +673,7 @@ fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
 /// choice section a ↓ steps into.
 fn preferences_view() -> skit_ui::PreferencesView {
     use skit_application::preferences::{
-        AfterRunChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
+        AccentChoice, AfterRunChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
         PreferencesSnapshot, ThemeChoice,
     };
     skit_ui::PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
@@ -685,6 +685,7 @@ fn preferences_view() -> skit_ui::PreferencesView {
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
         theme: ThemeChoice::Terminal,
+        accent: AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),

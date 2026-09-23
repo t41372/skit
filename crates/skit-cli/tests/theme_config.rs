@@ -1,8 +1,10 @@
-//! End-to-end contract of the `theme` setting on the command line.
+//! End-to-end contract of the `theme` and `accent` settings on the command line.
 //!
 //! `theme` picks the palette of the interactive interface: `terminal` follows the terminal's own
-//! colors, and `skit` keeps the version 0.4 look. Each test runs the real binary against its own
-//! temporary directories and leaves the resulting `config.toml` as the checked artifact.
+//! colors, and `skit` keeps the version 0.4 look. `accent` picks the one hue of the terminal
+//! theme: `auto` follows the background, `none` uses no hue, and a color name picks that color of
+//! the terminal's own palette. Each test runs the real binary against its own temporary
+//! directories and leaves the resulting `config.toml` as the checked artifact.
 
 use std::{collections::BTreeMap, fs};
 
@@ -136,6 +138,21 @@ fn the_config_key_completes() {
         candidates.lines().any(|line| line == "theme"),
         "{candidates}"
     );
+    let output = sandbox
+        .command()
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "true")
+        .args(["--", "skit", "config", "ac"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let candidates = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        candidates.lines().any(|line| line == "accent"),
+        "{candidates}"
+    );
 }
 
 /// With no `theme` in `config.toml`, the interface follows the terminal's colors.
@@ -146,4 +163,92 @@ fn the_default_theme_is_terminal() {
     let listing = sandbox.run(&["config", "--json"]);
     assert_eq!(json(&listing.stdout)["theme"], "terminal");
     assert!(!sandbox.config_file().contains("theme"));
+}
+
+/// Every accent choice, in the order that `skit config` names them.
+const ACCENTS: [&str; 14] = [
+    "auto",
+    "none",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "bright-red",
+    "bright-green",
+    "bright-yellow",
+    "bright-blue",
+    "bright-magenta",
+    "bright-cyan",
+];
+
+#[test]
+fn setting_the_accent_stores_every_choice_and_reads_it_back() {
+    let sandbox = Sandbox::new();
+    for accent in ACCENTS {
+        let set = sandbox.run(&["config", "accent", accent]);
+        assert_eq!(set.code, 0, "{accent}: {}", set.stderr);
+        assert_eq!(set.stdout, format!("accent = {accent}\n"));
+        assert!(
+            sandbox
+                .config_file()
+                .contains(&format!("accent = \"{accent}\"")),
+            "{}",
+            sandbox.config_file()
+        );
+        let read = sandbox.run(&["config", "accent", "--json"]);
+        assert_eq!(read.code, 0, "{}", read.stderr);
+        assert_eq!(json(&read.stdout)["accent"], accent);
+    }
+}
+
+#[test]
+fn an_unknown_accent_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&["config", "accent", "blue"]);
+    let before = sandbox.config_file();
+    // Black, white, and gray are not choices: the terminal theme never draws text in them.
+    for refused in ["white", "bright-black", "terracotta"] {
+        let run = sandbox.run(&["config", "accent", refused]);
+        assert_eq!(run.code, 2, "{refused}: {}", run.stderr);
+        assert!(
+            run.stderr.contains(refused) && run.stderr.contains(&ACCENTS.join(", ")),
+            "{}",
+            run.stderr
+        );
+        assert_eq!(sandbox.config_file(), before);
+    }
+}
+
+#[test]
+fn every_listing_includes_the_accent() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&["config", "accent", "magenta"]);
+    let listing = sandbox.run(&["config"]);
+    assert_eq!(listing.code, 0, "{}", listing.stderr);
+    assert!(
+        listing
+            .stdout
+            .lines()
+            .any(|line| line.trim_start().starts_with("accent") && line.ends_with("magenta")),
+        "{}",
+        listing.stdout
+    );
+    assert_eq!(
+        json(&sandbox.run(&["config", "--json"]).stdout)["accent"],
+        "magenta"
+    );
+}
+
+/// With no `accent` in `config.toml`, the hue follows the terminal background.
+#[test]
+fn the_default_accent_is_auto() {
+    let sandbox = Sandbox::new();
+    assert_eq!(sandbox.run(&["config", "accent"]).stdout, "auto\n");
+    assert_eq!(
+        json(&sandbox.run(&["config", "--json"]).stdout)["accent"],
+        "auto"
+    );
+    assert!(!sandbox.config_file().contains("accent"));
 }

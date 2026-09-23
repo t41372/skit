@@ -221,11 +221,21 @@ const SCREENS: &[Screen] = &[
             step(b"\r", "(user)"),
         ],
     ),
+    // Shift+Tab from the first control wraps to the last one, the accent.
+    screen(
+        "preferences-accent",
+        &[
+            OPEN_PREFERENCES,
+            step(b"\x1b[Z", ""),
+            step(b"\r", "Magenta"),
+        ],
+    ),
     screen(
         "preferences-language",
         &[
             OPEN_PREFERENCES,
-            step(b"\t\t\t\t\t\t\t\t\t\t\t\t\t", ""),
+            // Tab once per control goes all the way round, back to the language.
+            step(b"\t\t\t\t\t\t\t\t\t\t\t\t\t\t", ""),
             step(b"\r", "zh-TW"),
         ],
     ),
@@ -261,6 +271,8 @@ struct Environment {
     name: &'static str,
     variables: &'static [(&'static str, &'static str)],
     theme: &'static str,
+    /// The `accent` setting in `config.toml`; empty leaves the key out.
+    accent: &'static str,
     colors: TerminalColors,
 }
 
@@ -268,18 +280,21 @@ const TRUECOLOR: Environment = Environment {
     name: "truecolor",
     variables: &[("COLORTERM", "truecolor")],
     theme: "skit",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 const NO_COLORTERM: Environment = Environment {
     name: "no-colorterm",
     variables: &[],
     theme: "skit",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 const NO_COLOR: Environment = Environment {
     name: "no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "1")],
     theme: "skit",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 /// A terminal that names no color count: Rich 15.0.0 picks the 16-color system.
@@ -287,6 +302,7 @@ const BASIC_TERM: Environment = Environment {
     name: "basic-term",
     variables: &[("TERM", "xterm")],
     theme: "skit",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 /// The terminal theme on a dark terminal that answers OSC 10 and OSC 11.
@@ -294,6 +310,7 @@ const TERMINAL_DARK: Environment = Environment {
     name: "terminal-dark",
     variables: &[("COLORTERM", "truecolor")],
     theme: "terminal",
+    accent: "",
     colors: TerminalColors::Dark,
 };
 /// The terminal theme on a light terminal.
@@ -301,6 +318,7 @@ const TERMINAL_LIGHT: Environment = Environment {
     name: "terminal-light",
     variables: &[("COLORTERM", "truecolor")],
     theme: "terminal",
+    accent: "",
     colors: TerminalColors::Light,
 };
 /// The terminal theme on a terminal that answers only DA1, so the background stays unknown.
@@ -308,6 +326,7 @@ const TERMINAL_UNKNOWN: Environment = Environment {
     name: "terminal-unknown",
     variables: &[("COLORTERM", "truecolor")],
     theme: "terminal",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 /// The terminal theme with `NO_COLOR`.
@@ -315,12 +334,14 @@ const TERMINAL_NO_COLOR: Environment = Environment {
     name: "terminal-no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "1")],
     theme: "terminal",
+    accent: "",
     colors: TerminalColors::Dark,
 };
 const EMPTY_NO_COLOR: Environment = Environment {
     name: "empty-no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "")],
     theme: "skit",
+    accent: "",
     colors: TerminalColors::Unknown,
 };
 
@@ -341,6 +362,9 @@ impl Fixture {
         // An empty theme leaves `config.toml` without the key, as a fresh install has it.
         if !environment.theme.is_empty() {
             config.set("theme", environment.theme).unwrap();
+        }
+        if !environment.accent.is_empty() {
+            config.set("accent", environment.accent).unwrap();
         }
         let data = fixture.path("data");
         write_command_entry(
@@ -411,6 +435,16 @@ impl Fixture {
     }
 
     fn spawn(&self, environment: &Environment, screen: &Screen) -> PtyChild {
+        self.spawn_with_typeahead(environment, screen, &[])
+    }
+
+    /// Start a session with `keys` already typed on its terminal.
+    fn spawn_with_typeahead(
+        &self,
+        environment: &Environment,
+        screen: &Screen,
+        keys: &[u8],
+    ) -> PtyChild {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.env_clear();
         command.cwd(screen.cwd.map_or_else(|| self.path("home"), PathBuf::from));
@@ -434,7 +468,7 @@ impl Fixture {
                 command.env(key, value);
             }
         }
-        let mut child = PtyChild::spawn(
+        let mut child = PtyChild::spawn_with_typeahead(
             command,
             PtySize {
                 rows: screen.rows,
@@ -443,6 +477,7 @@ impl Fixture {
                 pixel_height: 0,
             },
             AnswerQueries::On,
+            keys,
         );
         child.set_terminal_colors(environment.colors);
         child
@@ -1329,8 +1364,9 @@ fn a_theme_saved_in_preferences_repaints_the_session() {
         "preferences-theme-switch",
         &[
             OPEN_PREFERENCES,
-            // Shift+Tab from the first control wraps to the last one, the palette.
-            step(b"\x1b[Z", ""),
+            // Shift+Tab from the first control wraps to the last one, the accent; one more
+            // reaches the palette.
+            step(b"\x1b[Z\x1b[Z", ""),
             step(b"\x1b[D", ""),
             step(CTRL_S, "saved"),
         ],
@@ -1437,6 +1473,7 @@ fn terminal_theme_footer_labels_stay_plain_in_a_wide_script() {
         name: "terminal-zh-tw",
         variables: &[("COLORTERM", "truecolor"), ("SKIT_LANG", "zh-TW")],
         theme: "terminal",
+        accent: "",
         colors: TerminalColors::Dark,
     };
     let label = "重新命名";
@@ -1520,8 +1557,9 @@ fn switching_to_the_skit_theme_repaints_the_session() {
         "preferences-theme-switch-back",
         &[
             OPEN_PREFERENCES,
-            // Shift+Tab from the first control wraps to the last one, the palette.
-            step(b"\x1b[Z", ""),
+            // Shift+Tab from the first control wraps to the last one, the accent; one more
+            // reaches the palette.
+            step(b"\x1b[Z\x1b[Z", ""),
             step(b"\x1b[C", ""),
             step(CTRL_S, "saved"),
         ],
@@ -1549,6 +1587,7 @@ fn an_unknown_theme_in_the_file_falls_back_to_the_terminal_theme() {
         name: "unknown-theme",
         variables: &[("COLORTERM", "truecolor")],
         theme: "",
+        accent: "",
         colors: TerminalColors::Dark,
     };
     let fixture = Fixture::new(&UNKNOWN);
@@ -1587,15 +1626,13 @@ fn an_unknown_theme_in_the_file_falls_back_to_the_terminal_theme() {
 
 /// Keys typed before skit asks for the colors stay for the interface, and skit does not ask.
 ///
-/// The census writes the keys at once after the start, before the child has read its
-/// configuration. A question would read them as a broken answer, and the library would keep its
-/// first row selected.
+/// The terminal holds the keys before the child starts. A question would read them as a broken
+/// answer, and the library would keep its first row selected.
 #[test]
 fn keys_typed_ahead_skip_the_color_question() {
     let fixture = Fixture::new(&TERMINAL_DARK);
     let library = &SCREENS[0];
-    let mut child = fixture.spawn(&TERMINAL_DARK, library);
-    child.write_raw(TO_BETA);
+    let mut child = fixture.spawn_with_typeahead(&TERMINAL_DARK, library, TO_BETA);
     child.wait_cursor_query_after(0);
     wait_for_screen(&mut child, library, "failed");
     let raw = child.raw_after(0);
@@ -1614,6 +1651,109 @@ fn keys_typed_ahead_skip_the_color_question() {
     );
 }
 
+/// Whether the child asked the terminal for its background color.
+fn asked_for_the_background(raw: &[u8]) -> bool {
+    raw.windows(b"\x1b]11;?".len())
+        .any(|window| window == b"\x1b]11;?")
+}
+
+/// A fixed accent colors the keycaps with that color of the terminal's own palette, whatever the
+/// background, and skit does not ask the terminal for its colors.
+#[test]
+fn every_fixed_accent_colors_the_keycaps_without_asking() {
+    const ACCENTS: [(&str, u8); 12] = [
+        ("red", 1),
+        ("green", 2),
+        ("yellow", 3),
+        ("blue", 4),
+        ("magenta", 5),
+        ("cyan", 6),
+        ("bright-red", 9),
+        ("bright-green", 10),
+        ("bright-yellow", 11),
+        ("bright-blue", 12),
+        ("bright-magenta", 13),
+        ("bright-cyan", 14),
+    ];
+    let library = &SCREENS[0];
+    for (accent, index) in ACCENTS {
+        let environment = Environment {
+            name: "fixed-accent",
+            variables: &[("COLORTERM", "truecolor")],
+            theme: "terminal",
+            accent,
+            colors: TerminalColors::Dark,
+        };
+        let fixture = Fixture::new(&environment);
+        let raw = fixture.capture(&environment, library);
+        assert!(!asked_for_the_background(&raw), "{accent}: skit asked");
+        let parser = replay(&raw, library.rows, library.columns);
+        let key = cells_of(&parser, " Enter ");
+        assert!(
+            all(&key, |cell| cell.inverse()
+                && cell.fgcolor() == vt100::Color::Idx(index)),
+            "{accent}: {}",
+            describe(&key)
+        );
+    }
+}
+
+/// `accent = none` draws the keycaps in the default colors, reversed, and skit does not ask the
+/// terminal for its colors.
+#[test]
+fn no_accent_leaves_the_keycaps_uncolored() {
+    const NONE: Environment = Environment {
+        name: "no-accent",
+        variables: &[("COLORTERM", "truecolor")],
+        theme: "terminal",
+        accent: "none",
+        colors: TerminalColors::Dark,
+    };
+    let library = &SCREENS[0];
+    let raw = Fixture::new(&NONE).capture(&NONE, library);
+    assert!(!asked_for_the_background(&raw), "skit asked");
+    let parser = replay(&raw, library.rows, library.columns);
+    let key = cells_of(&parser, " Enter ");
+    assert!(
+        all(&key, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Default),
+        "{}",
+        describe(&key)
+    );
+}
+
+/// An accent picked in Preferences repaints the running session: the next library frame draws the
+/// keycaps in the new color, and the save writes it to `config.toml`.
+#[test]
+fn an_accent_saved_in_preferences_repaints_the_session() {
+    const SWITCH: Screen = screen(
+        "preferences-accent-switch",
+        &[
+            OPEN_PREFERENCES,
+            // Shift+Tab from the first control wraps to the last one, the accent.
+            step(b"\x1b[Z", ""),
+            step(b"\r", "Magenta"),
+            // The list opens on the current choice, auto; magenta is six rows below it.
+            step(b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B", ""),
+            step(b"\r", ""),
+            step(CTRL_S, "saved"),
+        ],
+    );
+    let switch = &SWITCH;
+    let fixture = Fixture::new(&TERMINAL_DARK);
+    let raw = fixture.capture(&TERMINAL_DARK, switch);
+    let parser = replay(&raw, switch.rows, switch.columns);
+    let key = cells_of(&parser, " Enter ");
+    assert!(
+        all(&key, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Idx(5)),
+        "keycap after the switch: {}",
+        describe(&key)
+    );
+    let config = fs::read_to_string(fixture.path("config").join("config.toml")).unwrap();
+    assert!(config.contains("accent = \"magenta\""), "{config}");
+}
+
 /// A `config.toml` with no `theme` gets the terminal theme.
 #[test]
 fn the_terminal_theme_is_the_default() {
@@ -1621,6 +1761,7 @@ fn the_terminal_theme_is_the_default() {
         name: "default-theme",
         variables: &[("COLORTERM", "truecolor")],
         theme: "",
+        accent: "",
         colors: TerminalColors::Unknown,
     };
     let fixture = Fixture::new(&DEFAULT);
@@ -1647,6 +1788,7 @@ fn a_late_color_answer_never_becomes_keys() {
         name: "terminal-late",
         variables: &[("COLORTERM", "truecolor")],
         theme: "terminal",
+        accent: "",
         colors: TerminalColors::LateDark,
     };
     let fixture = Fixture::new(&LATE);
@@ -1696,6 +1838,7 @@ fn a_remote_login_skips_the_color_question() {
             ("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22"),
         ],
         theme: "terminal",
+        accent: "",
         colors: TerminalColors::Dark,
     };
     let fixture = Fixture::new(&REMOTE);

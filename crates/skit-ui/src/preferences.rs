@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use skit_application::AgentTarget;
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesChangeSet,
-    PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError, RunnerDraftRow,
-    ThemeChoice, github_preset_names, npm_preset_names, pypi_preset_names,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
+    PreferencesChangeSet, PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError,
+    RunnerDraftRow, ThemeChoice, github_preset_names, npm_preset_names, pypi_preset_names,
     runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::RunnerSaveRequest;
@@ -118,6 +118,8 @@ pub enum PreferencesControlId {
     Language,
     /// Interface palette choice.
     Theme,
+    /// Hue of the terminal theme.
+    Accent,
     /// Editor command input.
     Editor,
     /// Interactive form choice.
@@ -231,6 +233,8 @@ pub enum PreferencesAction {
     SetAfterRun(AfterRunChoice),
     /// Replace the interface palette.
     SetTheme(ThemeChoice),
+    /// Replace the hue of the terminal theme.
+    SetAccent(AccentChoice),
     /// Replace the JavaScript runtime.
     SetJavascript(JavascriptChoice),
     /// Replace the Windows bash path.
@@ -445,6 +449,7 @@ impl PreferencesView {
             )),
             PreferencesControlId::Language
             | PreferencesControlId::Theme
+            | PreferencesControlId::Accent
             | PreferencesControlId::Editor
             | PreferencesControlId::InteractiveForm
             | PreferencesControlId::AfterRun
@@ -672,6 +677,19 @@ impl PreferencesView {
                 ChoicePresentation::Radio,
             ),
         ));
+        controls.push(control(
+            PreferencesControlId::Accent,
+            "Accent color",
+            "The color of borders, markers, and keys in Terminal colors. Red, green, and yellow also show errors, success, and warnings.",
+            choice_control(
+                AccentChoice::ALL
+                    .into_iter()
+                    .map(|choice| option(choice.as_str(), accent_label(choice)))
+                    .collect(),
+                self.draft.accent.as_str().to_owned(),
+                ChoicePresentation::Picker,
+            ),
+        ));
         controls
     }
 
@@ -784,7 +802,10 @@ impl PreferencesView {
                 "Colors",
                 "",
                 Vec::new(),
-                controls_for(&controls, &[PreferencesControlId::Theme]),
+                controls_for(
+                    &controls,
+                    &[PreferencesControlId::Theme, PreferencesControlId::Accent],
+                ),
             ),
         ]);
         sections
@@ -824,6 +845,10 @@ impl PreferencesView {
             PreferencesAction::SetTheme(value) => {
                 self.focused = PreferencesControlId::Theme;
                 self.draft.theme = value;
+            }
+            PreferencesAction::SetAccent(value) => {
+                self.focused = PreferencesControlId::Accent;
+                self.draft.accent = value;
             }
             PreferencesAction::SetJavascript(value) => {
                 self.focused = PreferencesControlId::Javascript;
@@ -1168,6 +1193,26 @@ fn choice_control(
     })
 }
 
+/// The Preferences label of an accent choice.
+const fn accent_label(choice: AccentChoice) -> &'static str {
+    match choice {
+        AccentChoice::Auto => "Automatic — cyan on a dark background, magenta on a light one",
+        AccentChoice::None => "None — no color",
+        AccentChoice::Red => "Red",
+        AccentChoice::Green => "Green",
+        AccentChoice::Yellow => "Yellow",
+        AccentChoice::Blue => "Blue",
+        AccentChoice::Magenta => "Magenta",
+        AccentChoice::Cyan => "Cyan",
+        AccentChoice::BrightRed => "Bright red",
+        AccentChoice::BrightGreen => "Bright green",
+        AccentChoice::BrightYellow => "Bright yellow",
+        AccentChoice::BrightBlue => "Bright blue",
+        AccentChoice::BrightMagenta => "Bright magenta",
+        AccentChoice::BrightCyan => "Bright cyan",
+    }
+}
+
 fn option(value: impl Into<String>, label: impl Into<String>) -> PreferencesOption {
     PreferencesOption {
         value: value.into(),
@@ -1310,6 +1355,7 @@ mod tests {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: skit_application::preferences::AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: windows.then(String::new),
             runners,
@@ -1361,6 +1407,7 @@ mod tests {
                 PreferencesControlId::GithubChoice,
                 PreferencesControlId::NpmChoice,
                 PreferencesControlId::Theme,
+                PreferencesControlId::Accent,
             ]
         );
         assert_eq!(view.focused(), PreferencesControlId::Language);

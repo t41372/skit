@@ -13,8 +13,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_application::LibraryScan;
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesSnapshot, ThemeChoice,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+    PreferencesDraft, PreferencesSnapshot, ThemeChoice,
 };
 use skit_application::tokens::TokenContext;
 use skit_domain::{
@@ -322,6 +322,7 @@ fn preferences_state() -> LibraryState {
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
             theme: ThemeChoice::Terminal,
+            accent: AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![preferences_runner_row(0, "codex")],

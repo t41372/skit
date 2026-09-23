@@ -158,13 +158,33 @@ impl PtyChild {
     /// harness owns the terminal. The master is kept until teardown: it owns the console the
     /// child is attached to (invariant 4).
     pub(crate) fn spawn(command: CommandBuilder, size: PtySize, answer: AnswerQueries) -> Self {
+        Self::spawn_with_typeahead(command, size, answer, &[])
+    }
+
+    /// Start the child with `keys` already waiting on its terminal, as keys that a person typed
+    /// before the program started.
+    ///
+    /// The terminal holds the keys before the child exists, so no scheduling delay of the test
+    /// thread can let the child read its terminal first.
+    pub(crate) fn spawn_with_typeahead(
+        command: CommandBuilder,
+        size: PtySize,
+        answer: AnswerQueries,
+        keys: &[u8],
+    ) -> Self {
         let pair = native_pty_system().openpty(size).unwrap();
+        let early_writer = (!keys.is_empty()).then(|| {
+            let mut writer = pair.master.take_writer().unwrap();
+            writer.write_all(keys).unwrap();
+            writer.flush().unwrap();
+            writer
+        });
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
 
         let master = pair.master;
         let mut reader = master.try_clone_reader().unwrap();
-        let writer = master.take_writer().unwrap();
+        let writer = early_writer.unwrap_or_else(|| master.take_writer().unwrap());
         let (sender, chunks) = mpsc::channel();
         thread::spawn(move || {
             let mut buffer = [0_u8; 8192];

@@ -7,6 +7,7 @@ use ratatui_core::{
     layout::{Position, Size},
     style::Color,
 };
+use skit_application::preferences::AccentChoice;
 
 /// How many colors the terminal can show.
 ///
@@ -55,6 +56,7 @@ pub struct Appearance {
     depth: ColorDepth,
     theme: ThemeName,
     background: Background,
+    accent: AccentChoice,
 }
 
 impl Appearance {
@@ -86,18 +88,39 @@ impl Appearance {
         Self { background, ..self }
     }
 
+    /// Draw the terminal theme with the hue that the `accent` setting names.
+    #[must_use]
+    pub const fn with_accent(self, accent: AccentChoice) -> Self {
+        Self { accent, ..self }
+    }
+
     /// The theme that frames of this session draw with.
     ///
-    /// The terminal theme takes cyan on a dark background and magenta on a light one, the ANSI
-    /// hues that stay readable on every default profile of that kind
-    /// (`docs/design/terminal-palette.md`). An unknown background gets no hue.
+    /// With `accent = auto`, the terminal theme takes cyan on a dark background and magenta on a
+    /// light one, the ANSI hues that stay readable on every default profile of that kind
+    /// (`docs/design/terminal-palette.md`), and no hue on an unknown background. Any other accent
+    /// names its hue, or no hue, whatever the background.
     pub(crate) const fn theme(self) -> Theme {
         match self.theme {
             ThemeName::Skit => Theme::Skit(self.depth),
-            ThemeName::Terminal => Theme::Terminal(match self.background {
-                Background::Dark => Some(Color::Cyan),
-                Background::Light => Some(Color::Magenta),
-                Background::Unknown => None,
+            ThemeName::Terminal => Theme::Terminal(match (self.accent, self.background) {
+                (AccentChoice::Auto, Background::Dark) | (AccentChoice::Cyan, _) => {
+                    Some(Color::Cyan)
+                }
+                (AccentChoice::Auto, Background::Light) | (AccentChoice::Magenta, _) => {
+                    Some(Color::Magenta)
+                }
+                (AccentChoice::Auto, Background::Unknown) | (AccentChoice::None, _) => None,
+                (AccentChoice::Red, _) => Some(Color::Red),
+                (AccentChoice::Green, _) => Some(Color::Green),
+                (AccentChoice::Yellow, _) => Some(Color::Yellow),
+                (AccentChoice::Blue, _) => Some(Color::Blue),
+                (AccentChoice::BrightRed, _) => Some(Color::LightRed),
+                (AccentChoice::BrightGreen, _) => Some(Color::LightGreen),
+                (AccentChoice::BrightYellow, _) => Some(Color::LightYellow),
+                (AccentChoice::BrightBlue, _) => Some(Color::LightBlue),
+                (AccentChoice::BrightMagenta, _) => Some(Color::LightMagenta),
+                (AccentChoice::BrightCyan, _) => Some(Color::LightCyan),
             }),
         }
     }

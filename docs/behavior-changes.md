@@ -147,19 +147,27 @@ or a digit.
 A downgrade is safe. Version 0.4 reads `config.toml` as a whole and keeps a key it does not know
 (`src/skit/config.py:91-103`).
 
-## `skit config theme` is a new setting
+## `skit config theme` and `skit config accent` are new settings
 
-Version 0.4 refuses `skit config theme` with "Unknown setting" and exit code 2
-(`src/skit/cli.py:5511-5515`). Version 0.5 reads and writes the key with `--json`, deterministic
-exit codes, and shell completion, as product rule 4 asks. The `skit config` listing and its
-`--json` object have one more key. An unknown value exits with code 2 and does not change
+Version 0.4 refuses `skit config theme` and `skit config accent` with "Unknown setting" and exit
+code 2 (`src/skit/cli.py:5511-5515`). Version 0.5 reads and writes both keys with `--json`,
+deterministic exit codes, and shell completion, as product rule 4 asks. The `skit config` listing
+and its `--json` object have two more keys. An unknown value exits with code 2 and does not change
 `config.toml`. `crates/skit-cli/tests/theme_config.rs` pins this.
 
-The Preferences screen gets a "Colors" section with the same choice, as product rule 4 asks in the
-other direction. The section comes after every version 0.4 control, so Tab visits the version 0.4
-controls in the version 0.4 order. Shift+Tab from the first control now reaches the palette choice
-first, before the last mirror control. A save writes `theme` only when the value changed, so a save without a theme change
-keeps the version 0.4 `config.toml` bytes.
+- `theme` is `terminal` (default) or `skit`.
+- `accent` picks the one hue of the terminal theme: `auto` (default: cyan on a dark background,
+  magenta on a light one, none when the background is unknown), `none`, or one of `red`, `green`,
+  `yellow`, `blue`, `magenta`, `cyan`, and their `bright-` forms. A color name picks that color of
+  the terminal's own palette. Black, white, and gray are not choices, because the terminal theme
+  never draws a mark in them. The `skit` theme ignores the setting.
+
+The Preferences screen gets a "Colors" section with the same two choices, as product rule 4 asks
+in the other direction. The section comes after every version 0.4 control, so Tab visits the
+version 0.4 controls in the version 0.4 order. Shift+Tab from the first control now reaches the
+accent choice first, then the palette choice, before the last mirror control. A save writes
+`theme` or `accent` only when the value changed, so a save without a change keeps the version 0.4
+`config.toml` bytes.
 
 ## skit asks the terminal for its background color
 
@@ -171,7 +179,8 @@ Version 0.5 must know the background to pick the accent of the `terminal` theme.
 interface starts, skit sends the OSC 10, OSC 11, and device-attributes questions through
 `terminal-colorsaurus` and waits up to 1 second. It asks only when all of these are true:
 
-- The theme is `terminal`, and `NO_COLOR` is not set.
+- The theme is `terminal`, the accent is `auto`, and `NO_COLOR` is not set. Any other accent
+  names its hue, so skit has no question to ask.
 - Standard input and standard output are both a terminal.
 - `SSH_CONNECTION` and `SSH_TTY` are not set. A slow link can deliver the answer after any timeout,
   and a late answer arrives on the same input as the keys.

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
-    PreferencesChangeSet, PreferencesDraft, PreferencesError, PreferencesField,
-    PreferencesSnapshot, RunnerChange, RunnerDraftError, RunnerDraftMarker, RunnerDraftRow,
-    RunnerDraftState, ThemeChoice, github_preset_names, npm_preset_names, pypi_preset_names,
-    runner_row_taken_by_its_key,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
+    MirrorConfiguration, PreferencesChangeSet, PreferencesDraft, PreferencesError,
+    PreferencesField, PreferencesSnapshot, RunnerChange, RunnerDraftError, RunnerDraftMarker,
+    RunnerDraftRow, RunnerDraftState, ThemeChoice, github_preset_names, npm_preset_names,
+    pypi_preset_names, runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::{
     RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
@@ -22,6 +22,7 @@ fn snapshot(mirror: MirrorConfiguration) -> PreferencesSnapshot {
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
         theme: ThemeChoice::Terminal,
+        accent: AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: vec![runner_row(0, "claude", &["claude", "-p", "{{prompt}}"], 2)],

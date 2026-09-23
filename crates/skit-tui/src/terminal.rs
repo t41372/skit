@@ -1108,6 +1108,7 @@ mod tests {
                 locale: "zh-TW".to_owned(),
                 message: "Preferences saved".to_owned(),
                 theme: None,
+                accent: None,
             }),
             Some(Locale::ZhTw)
         );
@@ -1566,6 +1567,7 @@ mod tests {
                 locale: "zh-CN".to_owned(),
                 message: "saved".to_owned(),
                 theme: None,
+                accent: None,
             })
         };
         assert!(
@@ -1604,6 +1606,7 @@ mod tests {
                 locale: "zh-TW".to_owned(),
                 message: "saved".to_owned(),
                 theme: None,
+                accent: None,
             })
         };
         let _ = drain_collect_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale);

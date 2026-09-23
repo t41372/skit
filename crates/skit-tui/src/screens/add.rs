@@ -2216,6 +2216,9 @@ fn render_row(
                     .style(theme::review_select_style())
                     .render_stateful(frame, area);
                 theme::patch_idle_border(frame.buffer_mut(), region.area, select_state.focused);
+                // The widget draws its label in the border color, which is the accent when the
+                // select has the focus.
+                theme::patch_border_title(frame.buffer_mut(), region.area);
             } else {
                 let style = theme::review_select_style();
                 let display = &options[select_state.selected_index.unwrap()];

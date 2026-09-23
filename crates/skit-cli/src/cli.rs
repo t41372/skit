@@ -8464,11 +8464,17 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
 fn tui_appearance() -> skit_tui::Appearance {
     let no_color = env::var_os("NO_COLOR").is_some();
     let theme = tui_theme();
+    let accent = tui_accent();
     let appearance = skit_tui::Appearance::default()
         .with_no_color(no_color)
         .with_color_depth(tui_color_depth())
-        .with_theme(theme);
-    if theme == skit_tui::ThemeName::Terminal && !no_color {
+        .with_theme(theme)
+        .with_accent(accent);
+    // Only `accent = auto` reads the background, so only it asks the terminal.
+    if theme == skit_tui::ThemeName::Terminal
+        && !no_color
+        && accent == skit_application::preferences::AccentChoice::Auto
+    {
         appearance.with_background(terminal_background())
     } else {
         appearance
@@ -8583,6 +8589,15 @@ fn tui_theme() -> skit_tui::ThemeName {
         Some("skit") => skit_tui::ThemeName::Skit,
         _ => skit_tui::ThemeName::Terminal,
     }
+}
+
+/// The hue that the `accent` setting names. A setting that cannot be read keeps the default,
+/// `auto`.
+fn tui_accent() -> skit_application::preferences::AccentChoice {
+    let accent = resolve_config_dir()
+        .ok()
+        .and_then(|directory| FileConfigStore::new(directory).get("accent").ok());
+    skit_application::preferences::AccentChoice::from_config(accent.as_deref().unwrap_or_default())
 }
 
 /// The color depth of the terminal, decided as version 0.4 decides it.
@@ -9573,6 +9588,10 @@ fn tui_preferences_effect_at(
                 .settings
                 .get("theme")
                 .map(|value| skit_application::preferences::ThemeChoice::from_config(value));
+            let accent = change
+                .settings
+                .get("accent")
+                .map(|value| skit_application::preferences::AccentChoice::from_config(value));
             if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
                 return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
                     error,
@@ -9591,6 +9610,7 @@ fn tui_preferences_effect_at(
                 locale: locale.tag().to_owned(),
                 message: text(locale, "Preferences saved").into_owned(),
                 theme,
+                accent,
             })
         }
         PreferencesEffect::DiscoverAgentSkillTargets => Ok(UiAction::Preferences(
@@ -10156,6 +10176,7 @@ fn tui_preferences_view_with_context(
             _ => AfterRunChoice::Exit,
         },
         theme: skit_application::preferences::ThemeChoice::from_config(&setting("theme")),
+        accent: skit_application::preferences::AccentChoice::from_config(&setting("accent")),
         javascript: match setting("js.runner").as_str() {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,

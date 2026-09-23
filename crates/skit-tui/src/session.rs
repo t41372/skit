@@ -1859,17 +1859,18 @@ impl TuiSession {
 
     /// The palette of a frame of `state`.
     ///
-    /// A theme that a Preferences save picked during the session replaces the one the session
-    /// started with; the color depth, the background, and `NO_COLOR` stay.
+    /// A theme or an accent that a Preferences save picked during the session replaces the one the
+    /// session started with; the color depth, the background, and `NO_COLOR` stay.
     pub(crate) fn theme(&self, state: &LibraryState) -> Theme {
-        state
-            .theme()
-            .map_or(self.appearance, |choice| {
-                self.appearance.with_theme(match choice {
-                    skit_application::preferences::ThemeChoice::Terminal => ThemeName::Terminal,
-                    skit_application::preferences::ThemeChoice::Skit => ThemeName::Skit,
-                })
+        let appearance = state.theme().map_or(self.appearance, |choice| {
+            self.appearance.with_theme(match choice {
+                skit_application::preferences::ThemeChoice::Terminal => ThemeName::Terminal,
+                skit_application::preferences::ThemeChoice::Skit => ThemeName::Skit,
             })
+        });
+        state
+            .accent()
+            .map_or(appearance, |accent| appearance.with_accent(accent))
             .theme()
     }
 

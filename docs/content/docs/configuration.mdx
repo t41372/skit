@@ -21,6 +21,7 @@ for machines. Everything lands in `config.toml` in skit's config directory
 | `mirror.github` | `nju` / an `https://` base URL / `off` | Python builds + the uv binary — https required, since the downloaded binary is executed |
 | `mirror.npm` | `npmmirror` / a URL / `off` | JS/TS package registry |
 | `theme` | `terminal` / `skit` | interface colors: the terminal's own palette (default), or skit's fixed palette |
+| `accent` | `auto` / `none` / `red` `green` `yellow` `blue` `magenta` `cyan`, each also as `bright-…` | the one color of the `terminal` theme: follow the background (default), no color, or that color of your terminal's palette |
 
 Notes:
 
@@ -36,8 +37,14 @@ Notes:
   background, magenta on a light background. To find the background, skit
   asks the terminal once at start. It does not ask over SSH, and on Windows
   it asks only Windows Terminal. With no answer, it uses no hue.
-- `theme = skit` keeps the fixed skit palette of version 0.4. You can also
-  pick the theme in Preferences, under Colors.
+- `accent` picks the color of borders, markers, and keys in the `terminal`
+  theme. `auto` uses cyan on a dark background and magenta on a light one.
+  A color name uses that color of your terminal's own palette, and `none`
+  uses no color. Only `auto` asks the terminal for its background, so any
+  other value also skips that question at start.
+- `theme = skit` keeps the fixed skit palette of version 0.4, and ignores
+  `accent`. You can also pick the theme and the accent in Preferences, under
+  Colors.
 - `NO_COLOR` removes every color in both themes — see
   [Environment variables](/en/docs/environment).
 - Prompt runners also live in this file (`[[prompt.runners]]`), but you manage

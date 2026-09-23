@@ -876,6 +876,7 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!({"set_interactive_form": "tui"}),
         json!({"set_after_run": "stay"}),
         json!({"set_theme": "skit"}),
+        json!({"set_accent": "bright-magenta"}),
         json!({"set_javascript": "automatic"}),
         json!({"set_bash_path": "bash"}),
         json!({"set_mirror_master": true}),
@@ -902,7 +903,7 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!({"agent_skill_installed": {"message": "installed"}}),
         json!({"validation_failed": {"bash_path_missing": {"path": "missing"}}}),
     ];
-    assert_eq!(preferences.len(), 30);
+    assert_eq!(preferences.len(), 31);
     let runner_editor = vec![
         json!({"set_name": "name"}),
         json!({"set_command": "runner --flag"}),

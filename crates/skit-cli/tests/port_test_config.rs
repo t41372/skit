@@ -62,8 +62,8 @@ use tempfile::TempDir;
 use toml::Value;
 
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
-    PreferencesDraft, PreferencesSnapshot, ThemeChoice,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
+    MirrorConfiguration, PreferencesDraft, PreferencesSnapshot, ThemeChoice,
 };
 use skit_runtime::{NetworkProbe, REACHABILITY_HOSTS, network_looks_blocked};
 use skit_store::{FileConfigStore, MirrorSettings};
@@ -154,6 +154,7 @@ fn draft_for(mirror: MirrorConfiguration) -> PreferencesDraft {
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
         theme: ThemeChoice::Terminal,
+        accent: AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),
