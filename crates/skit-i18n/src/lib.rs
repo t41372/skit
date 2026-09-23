@@ -3023,6 +3023,11 @@ const CATALOG: &[Translation] = &[
         "未知的執行後行為：{}。可選：exit、stay",
     ),
     row!(
+        "Unknown theme: {}. Choose from: terminal, skit",
+        "未知的配色：{}。可选：terminal、skit",
+        "未知的配色：{}。可選：terminal、skit",
+    ),
+    row!(
         "Unknown JS runner: {}. Choose from: {}",
         "未知的 JS 运行时：{}。可选：{}",
         "未知的 JS 執行環境：{}。可選：{}",
@@ -3658,6 +3663,17 @@ const CATALOG: &[Translation] = &[
         "After a run (from this menu)",
         "从此菜单运行后",
         "從此選單執行後",
+    ),
+    row!("Colors", "配色", "配色"),
+    row!(
+        "Terminal colors — follow your terminal's palette",
+        "终端配色——跟随你终端的配色",
+        "終端機配色——跟著你終端機的配色",
+    ),
+    row!(
+        "skit classic — the fixed skit palette",
+        "skit 经典——skit 固定的配色",
+        "skit 經典——skit 固定的配色",
     ),
     row!(
         "Quit skit — leave the run's output in the terminal",

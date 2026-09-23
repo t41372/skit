@@ -114,7 +114,7 @@ mod tests {
         AgentScope, AgentTarget,
         preferences::{
             AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-            PreferencesDraft, PreferencesSnapshot,
+            PreferencesDraft, PreferencesSnapshot, ThemeChoice,
         },
     };
     use skit_i18n::Locale;
@@ -149,6 +149,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Stay,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: Vec::new(),

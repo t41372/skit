@@ -23,6 +23,28 @@ pub enum ColorDepth {
     Standard,
 }
 
+/// The palette that the user picked with the `theme` setting.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ThemeName {
+    /// The version 0.4 look: a fixed palette with a terracotta accent.
+    #[default]
+    Skit,
+    /// The terminal's own palette.
+    Terminal,
+}
+
+/// Whether the terminal background is dark or light, when the terminal says.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Background {
+    /// The terminal did not answer, or the question was not asked.
+    #[default]
+    Unknown,
+    /// A dark background.
+    Dark,
+    /// A light background.
+    Light,
+}
+
 /// The color choices of one terminal session.
 ///
 /// The composition root builds this value. The terminal adapter never reads the environment
@@ -31,6 +53,8 @@ pub enum ColorDepth {
 pub struct Appearance {
     no_color: bool,
     depth: ColorDepth,
+    theme: ThemeName,
+    background: Background,
 }
 
 impl Appearance {
@@ -50,9 +74,32 @@ impl Appearance {
         Self { depth, ..self }
     }
 
+    /// Draw with the palette that the `theme` setting names.
+    #[must_use]
+    pub const fn with_theme(self, theme: ThemeName) -> Self {
+        Self { theme, ..self }
+    }
+
+    /// Pick the accent of the terminal theme for this background.
+    #[must_use]
+    pub const fn with_background(self, background: Background) -> Self {
+        Self { background, ..self }
+    }
+
     /// The theme that frames of this session draw with.
+    ///
+    /// The terminal theme takes cyan on a dark background and magenta on a light one, the ANSI
+    /// hues that stay readable on every default profile of that kind
+    /// (`docs/design/terminal-palette.md`). An unknown background gets no hue.
     pub(crate) const fn theme(self) -> Theme {
-        Theme::Skit(self.depth)
+        match self.theme {
+            ThemeName::Skit => Theme::Skit(self.depth),
+            ThemeName::Terminal => Theme::Terminal(match self.background {
+                Background::Dark => Some(Color::Cyan),
+                Background::Light => Some(Color::Magenta),
+                Background::Unknown => None,
+            }),
+        }
     }
 
     /// Wrap the backend that a session draws on, so its output follows this appearance.

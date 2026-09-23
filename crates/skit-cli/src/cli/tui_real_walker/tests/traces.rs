@@ -668,6 +668,7 @@ fn real_frontend_switches_locale_only_when_it_consumes_preferences_saved() {
                 .reduce(Action::PreferencesSaved {
                     locale: tag.to_owned(),
                     message: "saved".to_owned(),
+                    theme: None,
                 })
                 .unwrap(),
             Effect::None

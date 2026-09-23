@@ -72,6 +72,38 @@ impl AfterRunChoice {
     }
 }
 
+/// The palette of the interactive interface.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    /// The terminal's own colors.
+    #[default]
+    Terminal,
+    /// The fixed skit palette of version 0.4.
+    Skit,
+}
+
+impl ThemeChoice {
+    /// The value that `config.toml` and `skit config theme` use.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Skit => "skit",
+        }
+    }
+
+    /// The choice that a stored value names, or `None` for any other value.
+    #[must_use]
+    pub fn from_config(value: &str) -> Option<Self> {
+        match value {
+            "terminal" => Some(Self::Terminal),
+            "skit" => Some(Self::Skit),
+            _ => None,
+        }
+    }
+}
+
 /// Preferred JavaScript and TypeScript runtime.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +159,8 @@ pub struct PreferencesSnapshot {
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,
+    /// Interface palette.
+    pub theme: ThemeChoice,
     /// JavaScript runtime preference.
     pub javascript: JavascriptChoice,
     /// Windows bash path. `None` hides the Windows-only section.
@@ -154,6 +188,8 @@ pub struct PreferencesDraft {
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,
+    /// Interface palette.
+    pub theme: ThemeChoice,
     /// JavaScript runtime preference.
     pub javascript: JavascriptChoice,
     /// Windows bash path. `None` hides the section.
@@ -182,6 +218,7 @@ struct PreferencesInitial {
     editor: String,
     form: InteractiveFormChoice,
     after_run: AfterRunChoice,
+    theme: ThemeChoice,
     javascript: JavascriptChoice,
     bash_path: Option<String>,
     mirror_master: bool,
@@ -631,6 +668,7 @@ impl PreferencesDraft {
             editor: snapshot.editor.clone(),
             form: snapshot.form,
             after_run: snapshot.after_run,
+            theme: snapshot.theme,
             javascript: snapshot.javascript,
             bash_path: snapshot.bash_path.clone(),
             mirror_master,
@@ -650,6 +688,7 @@ impl PreferencesDraft {
             editor_fallback: snapshot.editor_fallback,
             form: snapshot.form,
             after_run: snapshot.after_run,
+            theme: snapshot.theme,
             javascript: snapshot.javascript,
             bash_path: snapshot.bash_path,
             runners: snapshot
@@ -901,6 +940,7 @@ impl PreferencesDraft {
             || self.editor != self.initial.editor
             || self.form != self.initial.form
             || self.after_run != self.initial.after_run
+            || self.theme != self.initial.theme
             || self.javascript != self.initial.javascript
             || self.bash_path != self.initial.bash_path
             || self.mirror_master != self.initial.mirror_master
@@ -949,6 +989,11 @@ impl PreferencesDraft {
         ]);
         if let Some(path) = bash_path {
             settings.insert("shell.bash_path".to_owned(), path.to_owned());
+        }
+        // Version 0.4 has no theme setting. A save writes it only when it changed, so a clean
+        // save keeps the historical bytes of `config.toml`.
+        if self.theme != self.initial.theme {
+            settings.insert("theme".to_owned(), self.theme.as_str().to_owned());
         }
 
         let mirror_unchanged = self.mirror_master == self.initial.mirror_master

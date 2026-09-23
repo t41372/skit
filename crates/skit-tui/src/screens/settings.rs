@@ -853,6 +853,7 @@ impl SettingsScreenSession {
                 CheckBox::new(label, &state)
                     .style(theme::checkbox_style())
                     .render(area, frame.buffer_mut());
+                theme::patch_focus(frame.buffer_mut(), area, focused);
                 hits.push(SettingsHitRegion {
                     area,
                     target: SettingsControlId::Field(field.key.clone()),

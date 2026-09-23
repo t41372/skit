@@ -665,6 +665,7 @@ pub(super) fn corpus_preferences_control_value(target: PreferencesControlId) -> 
         PreferencesControlId::Editor => "editor",
         PreferencesControlId::InteractiveForm => "interactive_form",
         PreferencesControlId::AfterRun => "after_run",
+        PreferencesControlId::Theme => "theme",
         PreferencesControlId::Javascript => "javascript",
         PreferencesControlId::BashPath => "bash_path",
         PreferencesControlId::Runners => "runners",

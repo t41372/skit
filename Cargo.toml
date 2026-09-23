@@ -105,6 +105,7 @@ predicates = "3.1.4"
 portable-pty = "0.9.0"
 proptest = "1.11.0"
 tempfile = "3.27.0"
+terminal-colorsaurus = "1.0.3"
 tar = "0.4.46"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -196,6 +196,7 @@ impl<A: Clone + Eq> ActionFooterSession<A> {
                 .variant(ButtonVariant::SingleLine)
                 .style(style.button.clone())
                 .render_stateful(chip_area, frame.buffer_mut());
+            theme::patch_chip_key(frame.buffer_mut(), region.area, &key_hint);
             self.clicks.register(region.area, chip.item.action.clone());
             if region.area.width > 0 && region.area.height > 0 {
                 self.advertised
@@ -622,6 +623,7 @@ impl FooterSession {
                 .variant(ButtonVariant::SingleLine)
                 .style(theme::footer_chip_style())
                 .render_stateful(chip_area, frame.buffer_mut());
+            theme::patch_chip_key(frame.buffer_mut(), region.area, &chip.key);
             hits.push(HitRegion {
                 rect: region.area,
                 action: HitTarget::Command(chip.command),

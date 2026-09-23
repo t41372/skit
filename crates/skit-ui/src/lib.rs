@@ -44,7 +44,7 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 use serde::{Deserialize, Serialize};
-use skit_application::preferences::RunnerDraftError;
+use skit_application::preferences::{RunnerDraftError, ThemeChoice};
 use skit_application::{Diagnostic, LibraryScan};
 // The Library detail facts are stable frontend data, so they live in the application layer next to
 // `LibraryScan`. Re-exported here because every frontend reaches them through the view model.
@@ -1563,6 +1563,10 @@ pub enum Action {
         locale: String,
         /// Localized completion status.
         message: String,
+        /// The palette the save changed to, for immediate frontend switching. `None` when the
+        /// save left the palette unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<ThemeChoice>,
     },
     /// Close a discard guard without changing its owner workflow.
     KeepEditing,
@@ -1731,9 +1735,20 @@ pub struct LibraryState {
     workflow: WorkflowState,
     modal: Option<ModalState>,
     detail_pane: DetailPaneMode,
+    /// The palette that a Preferences save picked during this session, if one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<ThemeChoice>,
 }
 
 impl LibraryState {
+    /// The palette that a Preferences save picked during this session.
+    ///
+    /// `None` keeps the palette the frontend started with.
+    #[must_use]
+    pub const fn theme(&self) -> Option<ThemeChoice> {
+        self.theme
+    }
+
     /// Build state from one application-layer scan.
     #[must_use]
     pub fn from_scan(scan: LibraryScan) -> Self {
@@ -2269,7 +2284,14 @@ impl LibraryState {
                     }
                 }
             }
-            Action::PreferencesSaved { locale: _, message } => {
+            Action::PreferencesSaved {
+                locale: _,
+                message,
+                theme,
+            } => {
+                if theme.is_some() {
+                    self.theme = theme;
+                }
                 self.status = Some(message);
                 self.workflow.return_to_library();
                 self.modal = None;

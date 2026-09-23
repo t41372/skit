@@ -65,6 +65,38 @@ pub(crate) const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 /// The answer a real terminal gives: the cursor sits at the top-left corner.
 pub(crate) const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 
+/// The color questions a program asks to learn the terminal background: the default foreground
+/// (OSC 10), the default background (OSC 11), and the primary device attributes (DA1), which every
+/// terminal answers and which therefore marks the end of the other answers.
+const FOREGROUND_QUERY: &[u8] = b"\x1b]10;?";
+const BACKGROUND_QUERY: &[u8] = b"\x1b]11;?";
+const DEVICE_ATTRIBUTES_QUERY: &[u8] = b"\x1b[c";
+const DEVICE_ATTRIBUTES_REPLY: &[u8] = b"\x1b[?62;22c";
+
+/// The default colors a pseudo-terminal reports when a program asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalColors {
+    /// White text on black.
+    Dark,
+    /// Black text on white.
+    Light,
+    /// No answer to OSC 10 or OSC 11, only to DA1, like a terminal without color queries.
+    Unknown,
+}
+
+impl TerminalColors {
+    fn reply(self, query: &[u8]) -> Option<&'static [u8]> {
+        match (self, query) {
+            (_, DEVICE_ATTRIBUTES_QUERY) => Some(DEVICE_ATTRIBUTES_REPLY),
+            (Self::Dark, FOREGROUND_QUERY) => Some(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"),
+            (Self::Dark, BACKGROUND_QUERY) => Some(b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
+            (Self::Light, FOREGROUND_QUERY) => Some(b"\x1b]10;rgb:0000/0000/0000\x1b\\"),
+            (Self::Light, BACKGROUND_QUERY) => Some(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"),
+            _ => None,
+        }
+    }
+}
+
 /// How long a prompt or a cursor question may take to appear on a loaded CI host.
 const WAIT_BUDGET: Duration = Duration::from_secs(30);
 /// How long a finished exchange may take to end in the child's exit.
@@ -102,6 +134,10 @@ pub(crate) struct PtyChild {
     /// How far [`Self::expect`] has consumed the output.
     consumed: usize,
     answer: AnswerQueries,
+    /// The default colors this terminal reports, and how far the output is scanned for color
+    /// questions.
+    colors: TerminalColors,
+    color_queries_scanned: usize,
 }
 
 impl PtyChild {
@@ -142,7 +178,14 @@ impl PtyChild {
             last_sent: Vec::new(),
             consumed: 0,
             answer,
+            colors: TerminalColors::Unknown,
+            color_queries_scanned: 0,
         }
+    }
+
+    /// Report `colors` to every later color question. Call it before the first wait.
+    pub(crate) fn set_terminal_colors(&mut self, colors: TerminalColors) {
+        self.colors = colors;
     }
 
     /// Pull everything already buffered, answering any new cursor questions.
@@ -151,6 +194,31 @@ impl PtyChild {
             self.output.extend_from_slice(&chunk);
         }
         self.answer_new_cursor_queries();
+        self.answer_new_color_queries();
+    }
+
+    /// Answer each color question once, in the order the child asked (invariant 3).
+    fn answer_new_color_queries(&mut self) {
+        if self.answer == AnswerQueries::Off {
+            return;
+        }
+        let queries = [FOREGROUND_QUERY, BACKGROUND_QUERY, DEVICE_ATTRIBUTES_QUERY];
+        while let Some((at, query)) = queries
+            .iter()
+            .filter_map(|query| {
+                self.output[self.color_queries_scanned..]
+                    .windows(query.len())
+                    .position(|window| window == *query)
+                    .map(|offset| (self.color_queries_scanned + offset, *query))
+            })
+            .min_by_key(|(at, _)| *at)
+        {
+            if let Some(reply) = self.colors.reply(query) {
+                let _ = self.writer.write_all(reply);
+                let _ = self.writer.flush();
+            }
+            self.color_queries_scanned = at + query.len();
+        }
     }
 
     /// Answer every cursor question this terminal has not answered yet (invariant 3).
@@ -321,6 +389,7 @@ impl PtyChild {
                 Ok(chunk) => {
                     self.output.extend_from_slice(&chunk);
                     self.answer_new_cursor_queries();
+                    self.answer_new_color_queries();
                 }
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     return;

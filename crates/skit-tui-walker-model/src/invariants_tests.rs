@@ -4,7 +4,7 @@ use skit_application::{
     AgentScope, AgentTarget, LibraryScan, SourceIdentity, SourcePermissions,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, ThemeChoice,
     },
     tokens::TokenContext,
 };
@@ -113,6 +113,7 @@ fn preferences_snapshot() -> PreferencesSnapshot {
         editor_fallback: Some("vi".to_owned()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Stay,
+        theme: ThemeChoice::Terminal,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: vec![preferences_runner_row(0, "codex")],

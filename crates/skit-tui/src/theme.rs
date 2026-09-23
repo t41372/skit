@@ -10,7 +10,13 @@
 
 use std::cell::Cell;
 
-use ratatui_core::style::{Color, Modifier, Style};
+use ratatui_core::text::{Line, Span};
+use ratatui_core::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+};
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::appearance::ColorDepth;
 use ratatui_interact::components::{ButtonStyle, ButtonVariant, CheckBoxStyle, ListPickerStyle};
@@ -37,6 +43,9 @@ pub(crate) enum Theme {
     /// The version 0.4 look: a fixed btop-style palette with a terracotta accent, in the forms
     /// that the terminal's color depth can show.
     Skit(ColorDepth),
+    /// The terminal's own palette. Attributes carry every state, and the accent hue, when the
+    /// background is known, colors only borders, glyphs, and markers.
+    Terminal(Option<Color>),
 }
 
 impl Default for Theme {
@@ -81,7 +90,9 @@ impl Drop for ThemeScope {
 /// version 0.4 applied to the same colors. The census checks that no 24-bit color reaches a
 /// terminal of lower depth.
 fn fixed(color: Color) -> Color {
-    let Theme::Skit(depth) = current();
+    let Theme::Skit(depth) = current() else {
+        return color;
+    };
     match depth {
         ColorDepth::TrueColor => color,
         ColorDepth::EightBit => match color {
@@ -134,12 +145,23 @@ pub(crate) fn panel_color(panel: Panel) -> Color {
             Panel::Run | Panel::Form | Panel::Add => fixed(BOX_MAROON),
             Panel::Dialog => fixed(ACCENT),
         },
+        Theme::Terminal(accent) => match panel {
+            Panel::Dialog => accent.unwrap_or(Color::Reset),
+            _ => Color::Reset,
+        },
     }
 }
 
 /// The border style of `panel`.
+///
+/// The terminal theme dims every panel border except a dialog's, which holds the focus.
 pub(crate) fn panel_border(panel: Panel) -> Style {
-    Style::default().fg(panel_color(panel))
+    match (current(), panel) {
+        (Theme::Terminal(_), Panel::Dialog) | (Theme::Skit(_), _) => {
+            Style::default().fg(panel_color(panel))
+        }
+        (Theme::Terminal(_), _) => dim_text(),
+    }
 }
 
 pub(crate) fn panel_block(label: String, panel: Panel) -> Block<'static> {
@@ -162,6 +184,7 @@ pub(crate) fn padded_panel(label: String, panel: Panel) -> Block<'static> {
 pub(crate) fn text() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(Color::Reset),
+        Theme::Terminal(_) => Style::default().fg(Color::Reset),
     }
 }
 
@@ -171,6 +194,7 @@ pub(crate) fn title() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
+        Theme::Terminal(_) => bold_text(),
     }
 }
 
@@ -180,6 +204,16 @@ pub(crate) fn table_header() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
+        Theme::Terminal(_) => bold_text(),
+    }
+}
+
+/// A title drawn on a border. Ratatui draws a title over border cells, so a title without a
+/// color of its own shows the border color; the terminal theme keeps it in the default foreground.
+pub(crate) fn border_title() -> Style {
+    match current() {
+        Theme::Skit(_) => Style::default(),
+        Theme::Terminal(_) => Style::default().fg(Color::Reset),
     }
 }
 
@@ -189,6 +223,7 @@ pub(crate) fn heading() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(fixed(ACCENT))
             .add_modifier(Modifier::BOLD),
+        Theme::Terminal(_) => bold_text(),
     }
 }
 
@@ -198,6 +233,7 @@ pub(crate) fn required() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(fixed(ACCENT))
             .add_modifier(Modifier::BOLD),
+        Theme::Terminal(_) => bold_text(),
     }
 }
 
@@ -207,6 +243,7 @@ pub(crate) fn emphasis() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(fixed(ACCENT))
             .add_modifier(Modifier::BOLD),
+        Theme::Terminal(_) => bold_text(),
     }
 }
 
@@ -217,6 +254,7 @@ pub(crate) fn hint() -> Style {
         Theme::Skit(_) => Style::default()
             .fg(Color::Reset)
             .add_modifier(Modifier::DIM),
+        Theme::Terminal(_) => dim_text(),
     }
 }
 
@@ -224,6 +262,7 @@ pub(crate) fn hint() -> Style {
 pub(crate) fn muted() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().add_modifier(Modifier::DIM),
+        Theme::Terminal(_) => Style::default().add_modifier(Modifier::DIM),
     }
 }
 
@@ -231,6 +270,7 @@ pub(crate) fn muted() -> Style {
 pub(crate) fn suggestion() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(Color::DarkGray),
+        Theme::Terminal(_) => dim_text(),
     }
 }
 
@@ -238,6 +278,7 @@ pub(crate) fn suggestion() -> Style {
 pub(crate) fn scrollbar() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(SCROLLBAR)),
+        Theme::Terminal(_) => dim_text(),
     }
 }
 
@@ -245,6 +286,7 @@ pub(crate) fn scrollbar() -> Style {
 pub(crate) fn key_hint() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
+        Theme::Terminal(_) => bold_text(),
     }
 }
 
@@ -252,6 +294,9 @@ pub(crate) fn key_hint() -> Style {
 pub(crate) fn marker() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
+        Theme::Terminal(accent) => {
+            accent.map_or_else(bold_text, |accent| Style::default().fg(accent))
+        }
     }
 }
 
@@ -259,6 +304,7 @@ pub(crate) fn marker() -> Style {
 pub(crate) fn notice() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
+        Theme::Terminal(_) => Style::default().fg(Color::Reset),
     }
 }
 
@@ -278,11 +324,54 @@ pub(crate) fn status_color(status: Status) -> Color {
             Status::Warning => Color::Yellow,
             Status::Danger => Color::Red,
         },
+        Theme::Terminal(_) => match status {
+            Status::Success => Color::Green,
+            Status::Warning => Color::Yellow,
+            Status::Danger => Color::Red,
+        },
     }
 }
 
+/// Status text. The terminal theme keeps the text in the default foreground, because green and
+/// yellow are unreadable on light backgrounds; a danger line is bold instead.
 pub(crate) fn status(status: Status) -> Style {
+    match current() {
+        Theme::Skit(_) => Style::default().fg(status_color(status)),
+        Theme::Terminal(_) => match status {
+            Status::Danger => bold_text(),
+            Status::Success | Status::Warning => Style::default().fg(Color::Reset),
+        },
+    }
+}
+
+/// A status glyph: ✓, ✗, ⚠, or →.
+pub(crate) fn status_glyph(status: Status) -> Style {
     Style::default().fg(status_color(status))
+}
+
+/// The spans of a status line. The terminal theme colors only a leading glyph and keeps the
+/// text in the status text style.
+pub(crate) fn status_spans(line: String, status: Status) -> Vec<Span<'static>> {
+    if matches!(current(), Theme::Terminal(_))
+        && let Some(rest) = ["✓ ", "✗ ", "⚠ ", "→ "]
+            .iter()
+            .find_map(|glyph| line.strip_prefix(glyph).map(|rest| (*glyph, rest)))
+    {
+        let (glyph, rest) = rest;
+        return vec![
+            Span::styled(glyph, status_glyph(status)),
+            Span::styled(rest.to_owned(), self::status(status)),
+        ];
+    }
+    vec![Span::styled(line, self::status(status))]
+}
+
+/// A status line with the line style of `Line::styled`, split as [`status_spans`] splits it.
+pub(crate) fn status_line(line: String, status: Status) -> Line<'static> {
+    match current() {
+        Theme::Skit(_) => Line::styled(line, self::status(status)),
+        Theme::Terminal(_) => Line::from(status_spans(line, status)),
+    }
 }
 
 /// The border color of an input, a text area, or a select.
@@ -295,17 +384,28 @@ pub(crate) fn border_color(focused: bool) -> Color {
                 fixed(BOX_DIM)
             }
         }
+        Theme::Terminal(accent) => {
+            if focused {
+                accent.unwrap_or(Color::Reset)
+            } else {
+                Color::Reset
+            }
+        }
     }
 }
 
 pub(crate) fn border(focused: bool) -> Style {
-    Style::default().fg(border_color(focused))
+    match current() {
+        Theme::Terminal(_) if !focused => dim_text(),
+        Theme::Skit(_) | Theme::Terminal(_) => Style::default().fg(border_color(focused)),
+    }
 }
 
 /// The selected row of a list, a table, or an option set.
 pub(crate) fn selection() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(SELECT_FG)).bg(fixed(SELECT_BG)),
+        Theme::Terminal(_) => Style::default().add_modifier(Modifier::REVERSED),
     }
 }
 
@@ -315,6 +415,13 @@ pub(crate) fn caret(focused: bool) -> Style {
         Theme::Skit(_) => {
             if focused {
                 Style::default().fg(Color::Black).bg(fixed(ACCENT))
+            } else {
+                text()
+            }
+        }
+        Theme::Terminal(_) => {
+            if focused {
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 text()
             }
@@ -337,6 +444,15 @@ pub(crate) fn list_picker_style() -> ListPickerStyle {
             indicator_empty: "  ",
             bordered: false,
         },
+        Theme::Terminal(_) => ListPickerStyle {
+            selected_style: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            normal_style: text(),
+            indicator_style: marker(),
+            border_style: Style::default(),
+            indicator: "▶ ",
+            indicator_empty: "  ",
+            bordered: false,
+        },
     }
 }
 
@@ -346,6 +462,13 @@ pub(crate) fn checkbox_style() -> CheckBoxStyle {
             .focused_fg(fixed(ACCENT))
             .unfocused_fg(Color::Reset)
             .checked_fg(Color::Green),
+        Theme::Terminal(_) => CheckBoxStyle {
+            disabled_fg: Color::Reset,
+            ..CheckBoxStyle::unicode()
+                .focused_fg(Color::Reset)
+                .unfocused_fg(Color::Reset)
+                .checked_fg(Color::Reset)
+        },
     }
 }
 
@@ -360,6 +483,41 @@ pub(crate) fn select_style() -> ratatui_interact::components::SelectStyle {
             option_style: text(),
             ..ratatui_interact::components::SelectStyle::default()
         },
+        Theme::Terminal(accent) => ratatui_interact::components::SelectStyle {
+            focused_border: accent.unwrap_or(Color::Reset),
+            unfocused_border: Color::Reset,
+            disabled_border: Color::Reset,
+            dropdown_border: accent.unwrap_or(Color::Reset),
+            highlight_style: selection(),
+            text_fg: Color::Reset,
+            placeholder_fg: Color::Reset,
+            option_style: text(),
+            ..ratatui_interact::components::SelectStyle::default()
+        },
+    }
+}
+
+/// The storage and runner selects of the add review. The `skit` theme keeps the default colors
+/// of `ratatui-interact` there, as the port drew them.
+pub(crate) fn review_select_style() -> ratatui_interact::components::SelectStyle {
+    match current() {
+        Theme::Skit(_) => ratatui_interact::components::SelectStyle::default(),
+        Theme::Terminal(_) => select_style(),
+    }
+}
+
+/// The candidate check boxes of the add review. The `skit` theme keeps the default colors of
+/// `ratatui-interact` there, as the port drew them.
+pub(crate) fn review_checkbox_style() -> CheckBoxStyle {
+    match current() {
+        Theme::Skit(_) => CheckBoxStyle::default(),
+        Theme::Terminal(_) => CheckBoxStyle {
+            focused_fg: Color::Reset,
+            unfocused_fg: Color::Reset,
+            disabled_fg: Color::Reset,
+            checked_fg: Color::Reset,
+            ..CheckBoxStyle::default()
+        },
     }
 }
 
@@ -369,6 +527,7 @@ pub(crate) fn radio_style() -> ButtonStyle {
             .focused(fixed(SELECT_FG), fixed(SELECT_BG))
             .unfocused(Color::Reset, Color::Reset)
             .toggled(fixed(SELECT_FG), fixed(SELECT_BG)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::Toggle),
     }
 }
 
@@ -380,6 +539,7 @@ pub(crate) fn radio_style() -> ButtonStyle {
 pub(crate) fn focused_radio_style() -> ButtonStyle {
     match current() {
         Theme::Skit(_) => radio_style().toggled(fixed(SELECT_FG), fixed(ACCENT)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::Toggle),
     }
 }
 
@@ -389,6 +549,7 @@ pub(crate) fn dialog_button_style() -> ButtonStyle {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(Color::Black, fixed(ACCENT))
             .unfocused(Color::White, fixed(BOX_DIM)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
     }
 }
 
@@ -398,6 +559,7 @@ pub(crate) fn action_button_style() -> ButtonStyle {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(Color::White, fixed(ACCENT))
             .unfocused(Color::White, fixed(BOX_DIM)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
     }
 }
 
@@ -407,6 +569,7 @@ pub(crate) fn run_chip_style() -> ButtonStyle {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(Color::White, fixed(ACCENT))
             .unfocused(fixed(ACCENT), fixed(SELECT_BG)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
     }
 }
 
@@ -416,6 +579,7 @@ pub(crate) fn footer_chip_style() -> ButtonStyle {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(fixed(ACCENT), fixed(PILL_BACKGROUND))
             .unfocused(fixed(ACCENT), fixed(PILL_BACKGROUND)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
     }
 }
 
@@ -423,6 +587,7 @@ pub(crate) fn footer_chip_style() -> ButtonStyle {
 pub(crate) fn footer_indicator() -> Style {
     match current() {
         Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
+        Theme::Terminal(accent) => Style::default().fg(accent.unwrap_or(Color::Reset)),
     }
 }
 
@@ -432,5 +597,98 @@ pub(crate) fn dialog_footer_chip_style() -> ButtonStyle {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(Color::White, fixed(BOX_DIM))
             .unfocused(Color::White, fixed(BOX_DIM)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
+    }
+}
+
+fn bold_text() -> Style {
+    Style::default()
+        .fg(Color::Reset)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn dim_text() -> Style {
+    Style::default()
+        .fg(Color::Reset)
+        .add_modifier(Modifier::DIM)
+}
+
+/// A button with the terminal's own colors. A post-pass shows its state with attributes.
+fn plain_button(variant: ButtonVariant) -> ButtonStyle {
+    ButtonStyle {
+        disabled_fg: Color::Reset,
+        pressed_fg: Color::Reset,
+        pressed_bg: Color::Reset,
+        ..ButtonStyle::new(variant)
+            .focused(Color::Reset, Color::Reset)
+            .unfocused(Color::Reset, Color::Reset)
+            .toggled(Color::Reset, Color::Reset)
+    }
+}
+
+/// Show focus on a widget that can only take colors: reverse its area in the terminal theme.
+pub(crate) fn patch_focus(buffer: &mut Buffer, area: Rect, focused: bool) {
+    if focused && matches!(current(), Theme::Terminal(_)) {
+        buffer.set_style(area, Style::default().add_modifier(Modifier::REVERSED));
+    }
+}
+
+/// Remove the colors that a third-party widget chose for itself, in the terminal theme.
+pub(crate) fn patch_plain(buffer: &mut Buffer, area: Rect) {
+    if matches!(current(), Theme::Terminal(_)) {
+        buffer.set_style(area, Style::default().fg(Color::Reset).bg(Color::Reset));
+    }
+}
+
+/// Draw the key of a footer chip as a keycap in the terminal theme.
+///
+/// A chip shows ` key label `. The keycap covers ` key ` and takes the accent, or the default
+/// foreground when the background is unknown, reversed. The label stays plain.
+pub(crate) fn patch_chip_key(buffer: &mut Buffer, area: Rect, key: &str) {
+    if let Theme::Terminal(accent) = current() {
+        buffer.set_style(area, Style::default().remove_modifier(Modifier::BOLD));
+        let width = u16::try_from(key.width().saturating_add(2))
+            .unwrap_or(u16::MAX)
+            .min(area.width);
+        buffer.set_style(
+            Rect::new(area.x, area.y, width, area.height),
+            Style::default()
+                .fg(accent.unwrap_or(Color::Reset))
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        );
+    }
+}
+
+/// Dim the border of an idle bordered widget that can only take a border color, in the terminal
+/// theme.
+pub(crate) fn patch_idle_border(buffer: &mut Buffer, area: Rect, focused: bool) {
+    if focused || !matches!(current(), Theme::Terminal(_)) || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let right = area.right().saturating_sub(1);
+    let bottom = area.bottom().saturating_sub(1);
+    for x in area.left()..area.right() {
+        buffer.set_style(Rect::new(x, area.y, 1, 1), dim);
+        buffer.set_style(Rect::new(x, bottom, 1, 1), dim);
+    }
+    for y in area.top()..area.bottom() {
+        buffer.set_style(Rect::new(area.x, y, 1, 1), dim);
+        buffer.set_style(Rect::new(right, y, 1, 1), dim);
+    }
+}
+
+/// Keep the title on the top border of `area` in the default foreground, in the terminal theme.
+///
+/// This serves a third-party dialog that draws its own title over a colored border.
+pub(crate) fn patch_border_title(buffer: &mut Buffer, area: Rect) {
+    if !matches!(current(), Theme::Terminal(_)) || area.width == 0 || area.height == 0 {
+        return;
+    }
+    for x in area.left()..area.right() {
+        let cell = &mut buffer[(x, area.y)];
+        if cell.symbol().chars().any(char::is_alphanumeric) {
+            cell.fg = Color::Reset;
+        }
     }
 }

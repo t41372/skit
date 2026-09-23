@@ -194,20 +194,20 @@ impl HealthScreenSession {
         let snapshot = view.snapshot();
         let mut lines = Vec::new();
         match &snapshot.uv {
-            UvHealth::Found(path) => lines.push(Line::styled(
+            UvHealth::Found(path) => lines.push(theme::status_line(
                 format!("✓ {}", format_text(locale, "uv: {}", &[path])),
-                theme::status(Status::Success),
+                Status::Success,
             )),
-            UvHealth::NotRequired => lines.push(Line::styled(
+            UvHealth::NotRequired => lines.push(theme::status_line(
                 format!("✓ {}", text(locale, "uv: not required")),
-                theme::status(Status::Success),
+                Status::Success,
             )),
-            UvHealth::Missing => lines.push(Line::styled(
+            UvHealth::Missing => lines.push(theme::status_line(
                 format!(
                     "✗ {}",
                     text(locale, "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/")
                 ),
-                theme::status(Status::Danger),
+                Status::Danger,
             )),
         }
         let count_message = if snapshot.entry_count == 1 {
@@ -215,15 +215,15 @@ impl HealthScreenSession {
         } else {
             "{} entries registered"
         };
-        lines.push(Line::styled(
+        lines.push(theme::status_line(
             format!(
                 "✓ {}",
                 format_text(locale, count_message, &[&snapshot.entry_count])
             ),
-            theme::status(Status::Success),
+            Status::Success,
         ));
         if !snapshot.invalid_runner_rows.is_empty() {
-            lines.push(Line::styled(
+            lines.push(theme::status_line(
                 format!(
                     "⚠ {}",
                     format_text(
@@ -232,7 +232,7 @@ impl HealthScreenSession {
                         &[&snapshot.invalid_runner_rows.join(", ")],
                     )
                 ),
-                theme::status(Status::Warning),
+                Status::Warning,
             ));
         }
         let mirror = match &snapshot.mirror {
@@ -242,10 +242,7 @@ impl HealthScreenSession {
                 format_text(locale, "Mirrors: off (saved: {})", &[axes])
             }
         };
-        lines.push(Line::styled(
-            format!("✓ {mirror}"),
-            theme::status(Status::Success),
-        ));
+        lines.push(theme::status_line(format!("✓ {mirror}"), Status::Success));
         lines.push(Line::styled(
             format_text(
                 locale,

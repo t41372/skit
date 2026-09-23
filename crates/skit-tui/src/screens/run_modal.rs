@@ -960,6 +960,7 @@ fn modal_block(title: &str) -> Block<'_> {
         .border_type(BorderType::Rounded)
         .border_style(theme::panel_border(Panel::Dialog))
         .title(title)
+        .title_style(theme::border_title())
 }
 
 fn token_label(option: &RunTokenOption, locale: Locale) -> String {

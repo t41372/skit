@@ -23,7 +23,7 @@ use ratatui_interact::{
 use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesField,
-    RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, runner_row_taken_by_its_key,
+    RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, ThemeChoice, runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::{EditableArgvDialect, join_editable_argv};
 use skit_application::{AgentScope, AgentTarget};
@@ -1211,6 +1211,7 @@ impl PreferencesWidgetSession {
                 .variant(ButtonVariant::SingleLine)
                 .style(theme::action_button_style())
                 .render_stateful(button_area, frame.buffer_mut());
+            theme::patch_focus(frame.buffer_mut(), region.area, self.agent_cancel.focused);
             self.agent_cancel_area = Some(region.area);
             self.agent_clicks
                 .register(region.area, AgentSkillHit::Cancel);
@@ -1404,6 +1405,7 @@ impl PreferencesWidgetSession {
                         .placeholder(&placeholder)
                         .style(theme::select_style())
                         .render_stateful(frame, area);
+                    theme::patch_idle_border(frame.buffer_mut(), region.area, state.focused);
                     *select_area = Some(region.area);
                 } else {
                     let style = theme::select_style();
@@ -1494,6 +1496,7 @@ impl PreferencesWidgetSession {
                     .alignment(Alignment::Left)
                     .style(theme::action_button_style())
                     .render_stateful(painted, frame.buffer_mut());
+                theme::patch_focus(frame.buffer_mut(), painted, state.focused);
                 self.clicks
                     .register(painted, PreferencesHit::Control(control.id));
                 self.control_areas
@@ -2823,6 +2826,7 @@ fn input_action(id: PreferencesControlId, value: String) -> PreferencesEventHand
             value,
         },
         PreferencesControlId::Language
+        | PreferencesControlId::Theme
         | PreferencesControlId::InteractiveForm
         | PreferencesControlId::AfterRun
         | PreferencesControlId::Javascript
@@ -2852,6 +2856,9 @@ fn choice_action(id: PreferencesControlId, value: &str) -> PreferencesEventHandl
         } else {
             AfterRunChoice::Exit
         }),
+        PreferencesControlId::Theme => {
+            PreferencesAction::SetTheme(ThemeChoice::from_config(value).unwrap_or_default())
+        }
         PreferencesControlId::Javascript => PreferencesAction::SetJavascript(match value {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,
@@ -2900,6 +2907,7 @@ fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
             PreferencesEventHandling::Action(PreferencesAction::InstallAgentSkill)
         }
         PreferencesControlId::Language
+        | PreferencesControlId::Theme
         | PreferencesControlId::Editor
         | PreferencesControlId::InteractiveForm
         | PreferencesControlId::AfterRun
@@ -2928,7 +2936,7 @@ mod tests {
     };
     use skit_application::preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesField, PreferencesSnapshot,
+        PreferencesDraft, PreferencesField, PreferencesSnapshot, ThemeChoice,
     };
     use skit_application::{AgentScope, AgentTarget};
     use skit_i18n::Locale;
@@ -2991,6 +2999,7 @@ mod tests {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![
@@ -3010,6 +3019,7 @@ mod tests {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: Some(String::new()),
             runners: vec![
@@ -3541,6 +3551,7 @@ mod tests {
                     editor_fallback: None,
                     form: InteractiveFormChoice::Tui,
                     after_run: AfterRunChoice::Exit,
+                    theme: ThemeChoice::Terminal,
                     javascript: JavascriptChoice::Automatic,
                     bash_path: None,
                     runners: vec![pinned_row],
@@ -3570,6 +3581,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![pinned_row],
@@ -3634,6 +3646,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![preferences_runner_row(0, "claude"), duplicate],
@@ -3782,6 +3795,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![skit_ui::RunnerRow {
@@ -3859,6 +3873,7 @@ mod tests {
                         editor_fallback: None,
                         form: InteractiveFormChoice::Tui,
                         after_run: AfterRunChoice::Exit,
+                        theme: ThemeChoice::Terminal,
                         javascript: JavascriptChoice::Automatic,
                         bash_path: None,
                         runners: vec![malformed],
@@ -3911,6 +3926,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![repairable, shapeless],
@@ -3975,6 +3991,7 @@ mod tests {
             editor_fallback: None,
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![
@@ -4399,6 +4416,7 @@ mod tests {
                     editor_fallback: Some("vim".to_owned()),
                     form: InteractiveFormChoice::Tui,
                     after_run: AfterRunChoice::Exit,
+                    theme: ThemeChoice::Terminal,
                     javascript: JavascriptChoice::Automatic,
                     bash_path: None,
                     runners: Vec::new(),

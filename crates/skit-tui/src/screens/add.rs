@@ -2197,7 +2197,11 @@ fn render_row(
         }
         RenderRow::Check(id, label) => {
             if let Some(check) = session.checks.get(id) {
-                frame.render_widget(CheckBox::new(label, check), area);
+                frame.render_widget(
+                    CheckBox::new(label, check).style(theme::review_checkbox_style()),
+                    area,
+                );
+                theme::patch_focus(frame.buffer_mut(), area, check.focused);
             }
         }
         RenderRow::Select(select, label) => {
@@ -2207,10 +2211,12 @@ fn render_row(
                 AddSelectControl::Runner => &session.runner,
             };
             if clip.is_full() {
-                let select = Select::new(&options, select_state).label(label);
+                let select = Select::new(&options, select_state)
+                    .label(label)
+                    .style(theme::review_select_style());
                 select.render_stateful(frame, area);
             } else {
-                let style = SelectStyle::default();
+                let style = theme::review_select_style();
                 let display = &options[select_state.selected_index.unwrap()];
                 let border = if select_state.focused {
                     style.focused_border

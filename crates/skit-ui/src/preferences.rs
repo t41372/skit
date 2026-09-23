@@ -7,7 +7,8 @@ use skit_application::AgentTarget;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesChangeSet,
     PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError, RunnerDraftRow,
-    github_preset_names, npm_preset_names, pypi_preset_names, runner_row_taken_by_its_key,
+    ThemeChoice, github_preset_names, npm_preset_names, pypi_preset_names,
+    runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::RunnerSaveRequest;
 
@@ -59,6 +60,8 @@ impl PreferencesDisplayText {
 pub enum PreferencesSectionId {
     /// Language choice and effective language.
     Language,
+    /// Interface palette.
+    Theme,
     /// Editor command and environment fallback.
     Editor,
     /// Terminal form presentation.
@@ -113,6 +116,8 @@ pub struct PreferencesSection {
 pub enum PreferencesControlId {
     /// Language picker.
     Language,
+    /// Interface palette choice.
+    Theme,
     /// Editor command input.
     Editor,
     /// Interactive form choice.
@@ -224,6 +229,8 @@ pub enum PreferencesAction {
     SetInteractiveForm(InteractiveFormChoice),
     /// Replace the post-run choice.
     SetAfterRun(AfterRunChoice),
+    /// Replace the interface palette.
+    SetTheme(ThemeChoice),
     /// Replace the JavaScript runtime.
     SetJavascript(JavascriptChoice),
     /// Replace the Windows bash path.
@@ -437,6 +444,7 @@ impl PreferencesView {
                 PreferencesAction::InstallAgentSkill,
             )),
             PreferencesControlId::Language
+            | PreferencesControlId::Theme
             | PreferencesControlId::Editor
             | PreferencesControlId::InteractiveForm
             | PreferencesControlId::AfterRun
@@ -646,6 +654,24 @@ impl PreferencesView {
                 text_control(&self.draft.npm_url, FormInputKind::Text, "npm registry URL"),
             ));
         }
+        // Version 0.5 adds the palette after every version 0.4 control, so the version 0.4
+        // focus order stays unchanged.
+        controls.push(control(
+            PreferencesControlId::Theme,
+            "",
+            "",
+            choice_control(
+                vec![
+                    option(
+                        "terminal",
+                        "Terminal colors — follow your terminal's palette",
+                    ),
+                    option("skit", "skit classic — the fixed skit palette"),
+                ],
+                self.draft.theme.as_str().to_owned(),
+                ChoicePresentation::Radio,
+            ),
+        ));
         controls
     }
 
@@ -753,6 +779,13 @@ impl PreferencesView {
                     ],
                 ),
             ),
+            section(
+                PreferencesSectionId::Theme,
+                "Colors",
+                "",
+                Vec::new(),
+                controls_for(&controls, &[PreferencesControlId::Theme]),
+            ),
         ]);
         sections
     }
@@ -787,6 +820,10 @@ impl PreferencesView {
             PreferencesAction::SetAfterRun(value) => {
                 self.focused = PreferencesControlId::AfterRun;
                 self.draft.after_run = value;
+            }
+            PreferencesAction::SetTheme(value) => {
+                self.focused = PreferencesControlId::Theme;
+                self.draft.theme = value;
             }
             PreferencesAction::SetJavascript(value) => {
                 self.focused = PreferencesControlId::Javascript;
@@ -1202,7 +1239,7 @@ mod tests {
     use skit_application::preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
         PreferencesDraft, PreferencesError, PreferencesField, PreferencesSnapshot,
-        RunnerDraftError, RunnerDraftMarker,
+        RunnerDraftError, RunnerDraftMarker, ThemeChoice,
     };
     use skit_application::runner_management::{
         EditableArgvDialect, RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
@@ -1272,6 +1309,7 @@ mod tests {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: windows.then(String::new),
             runners,
@@ -1322,6 +1360,7 @@ mod tests {
                 PreferencesControlId::PypiChoice,
                 PreferencesControlId::GithubChoice,
                 PreferencesControlId::NpmChoice,
+                PreferencesControlId::Theme,
             ]
         );
         assert_eq!(view.focused(), PreferencesControlId::Language);
@@ -1421,6 +1460,7 @@ mod tests {
                 PreferencesSectionId::Agents,
                 PreferencesSectionId::AgentSkill,
                 PreferencesSectionId::Mirrors,
+                PreferencesSectionId::Theme,
             ]
         );
         assert_eq!(sections[0].title.key, "Interface language");

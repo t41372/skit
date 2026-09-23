@@ -578,13 +578,13 @@ fn append_state_lines(lines: &mut Vec<Line<'static>>, facts: &LibraryEntryDetail
         )));
     }
     if let Some(path) = &facts.missing_target {
-        lines.push(Line::from(Span::styled(
+        lines.push(Line::from(theme::status_spans(
             format_text(locale, "⚠ missing: {}", &[path]),
-            theme::status(Status::Warning),
+            Status::Warning,
         )));
     } else if facts.drifted {
         lines.push(Line::from(vec![
-            Span::styled("⚠ ", theme::status(Status::Warning)),
+            Span::styled("⚠ ", theme::status_glyph(Status::Warning)),
             Span::styled(
                 text(
                     locale,
@@ -623,11 +623,10 @@ fn last_run_line(last_run: &LibraryLastRun, locale: Locale) -> Line<'static> {
         .rfind(&styled_outcome)
         .expect("the formatted last-run line must retain its outcome argument");
     let outcome_end = outcome_at.saturating_add(styled_outcome.len());
-    Line::from(vec![
-        Span::raw(rendered[..outcome_at].to_owned()),
-        Span::styled(styled_outcome, theme::status(status)),
-        Span::raw(rendered[outcome_end..].to_owned()),
-    ])
+    let mut spans = vec![Span::raw(rendered[..outcome_at].to_owned())];
+    spans.extend(theme::status_spans(styled_outcome, status));
+    spans.push(Span::raw(rendered[outcome_end..].to_owned()));
+    Line::from(spans)
 }
 
 fn kind_glyph(kind: &str) -> &'static str {

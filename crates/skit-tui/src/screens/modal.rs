@@ -262,6 +262,7 @@ impl ConfirmRemoveSession {
                     .variant(ButtonVariant::SingleLine)
                     .style(style.clone())
                     .render_stateful(button_area, frame.buffer_mut());
+                theme::patch_focus(frame.buffer_mut(), button_area, state.focused);
                 self.dialog
                     .click_regions
                     .register(button_area, DialogFocusTarget::Button(index));
@@ -282,6 +283,19 @@ impl ConfirmRemoveSession {
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
             });
             popup.render(frame);
+            theme::patch_border_title(frame.buffer_mut(), popup_area);
+            // The dialog paints its buttons in fixed colors. The terminal theme keeps the
+            // terminal's colors and reverses the focused button.
+            for region in self.dialog.click_regions.regions() {
+                if let DialogFocusTarget::Button(index) = region.data {
+                    theme::patch_plain(frame.buffer_mut(), region.area);
+                    theme::patch_focus(
+                        frame.buffer_mut(),
+                        region.area,
+                        self.dialog.is_button_focused(index),
+                    );
+                }
+            }
         }
         self.config = Some(config);
         ViewGeometry::default()

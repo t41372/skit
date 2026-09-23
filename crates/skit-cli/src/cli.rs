@@ -6,7 +6,7 @@ use std::{
     io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{
@@ -462,6 +462,7 @@ enum Command {
     /// Read or set skit's settings (language, editor, mirror, form style, after-run).
     Config {
         /// Configuration key.
+        #[arg(add = ArgValueCandidates::new(config_key_candidates))]
         key: Option<String>,
         /// Replacement value.
         value: Option<String>,
@@ -714,6 +715,14 @@ pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
         |_| Vec::new(),
         |directory| entry_candidates_from(&FileStore::new(directory)),
     )
+}
+
+/// Every setting name that `skit config` reads and writes.
+pub(crate) fn config_key_candidates() -> Vec<CompletionCandidate> {
+    CONFIG_KEYS
+        .into_iter()
+        .map(CompletionCandidate::new)
+        .collect()
 }
 
 pub(crate) fn add_kind_candidates() -> Vec<CompletionCandidate> {
@@ -8452,9 +8461,48 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
 /// empty (Textual 8.2.8 `app.py:614`). The line output keeps Rich's non-empty test in
 /// [`colour_is_welcome`]; both are version 0.4 behavior.
 fn tui_appearance() -> skit_tui::Appearance {
-    skit_tui::Appearance::default()
-        .with_no_color(env::var_os("NO_COLOR").is_some())
+    let no_color = env::var_os("NO_COLOR").is_some();
+    let theme = tui_theme();
+    let appearance = skit_tui::Appearance::default()
+        .with_no_color(no_color)
         .with_color_depth(tui_color_depth())
+        .with_theme(theme);
+    if theme == skit_tui::ThemeName::Terminal && !no_color {
+        appearance.with_background(terminal_background())
+    } else {
+        appearance
+    }
+}
+
+/// Ask the terminal whether its background is dark or light (OSC 10 and OSC 11).
+///
+/// Only the terminal theme uses the answer, to pick its accent. The question goes out only when
+/// both standard streams are a terminal, before the interface claims the terminal. A terminal that
+/// does not answer within the timeout, or answers only the device-attributes question that follows,
+/// leaves the background unknown, and the theme then uses no hue.
+fn terminal_background() -> skit_tui::Background {
+    use std::io::IsTerminal as _;
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return skit_tui::Background::Unknown;
+    }
+    let mut options = terminal_colorsaurus::QueryOptions::default();
+    options.timeout = Duration::from_millis(500);
+    match terminal_colorsaurus::theme_mode(options) {
+        Ok(terminal_colorsaurus::ThemeMode::Dark) => skit_tui::Background::Dark,
+        Ok(terminal_colorsaurus::ThemeMode::Light) => skit_tui::Background::Light,
+        Err(_) => skit_tui::Background::Unknown,
+    }
+}
+
+/// The palette that the `theme` setting names. A setting that cannot be read keeps the default.
+fn tui_theme() -> skit_tui::ThemeName {
+    let theme = resolve_config_dir()
+        .ok()
+        .and_then(|directory| FileConfigStore::new(directory).get("theme").ok());
+    match theme.as_deref() {
+        Some("terminal") => skit_tui::ThemeName::Terminal,
+        _ => skit_tui::ThemeName::Skit,
+    }
 }
 
 /// The color depth of the terminal, decided as version 0.4 decides it.
@@ -9440,6 +9488,11 @@ fn tui_preferences_effect_at(
         | PreferencesEffect::RunnerStaged { .. } => Ok(UiAction::ClearStatus),
         PreferencesEffect::Save(change) => {
             let requested_language = change.settings.get("lang").cloned();
+            // The change set names the theme only when the save changed it.
+            let theme = change
+                .settings
+                .get("theme")
+                .and_then(|value| skit_application::preferences::ThemeChoice::from_config(value));
             if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
                 return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
                     error,
@@ -9457,6 +9510,7 @@ fn tui_preferences_effect_at(
             Ok(UiAction::PreferencesSaved {
                 locale: locale.tag().to_owned(),
                 message: text(locale, "Preferences saved").into_owned(),
+                theme,
             })
         }
         PreferencesEffect::DiscoverAgentSkillTargets => Ok(UiAction::Preferences(
@@ -10021,6 +10075,8 @@ fn tui_preferences_view_with_context(
             "stay" => AfterRunChoice::Stay,
             _ => AfterRunChoice::Exit,
         },
+        theme: skit_application::preferences::ThemeChoice::from_config(&setting("theme"))
+            .unwrap_or_default(),
         javascript: match setting("js.runner").as_str() {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,

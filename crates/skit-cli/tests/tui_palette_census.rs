@@ -29,7 +29,7 @@ use tempfile::TempDir;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild};
+use pty::{AnswerQueries, PtyChild, TerminalColors};
 
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 100;
@@ -188,7 +188,7 @@ const SCREENS: &[Screen] = &[
         "preferences-language",
         &[
             OPEN_PREFERENCES,
-            step(b"\t\t\t\t\t\t\t\t\t\t\t\t", ""),
+            step(b"\t\t\t\t\t\t\t\t\t\t\t\t\t", ""),
             step(b"\r", "zh-TW"),
         ],
     ),
@@ -218,32 +218,73 @@ const SCREENS: &[Screen] = &[
     ),
 ];
 
-/// Terminal variables for one census environment, added to the fixed base environment.
+/// One census environment: the terminal variables added to the fixed base environment, the
+/// `theme` setting in `config.toml`, and the default colors the terminal reports when asked.
 struct Environment {
     name: &'static str,
     variables: &'static [(&'static str, &'static str)],
+    theme: &'static str,
+    colors: TerminalColors,
 }
 
 const TRUECOLOR: Environment = Environment {
     name: "truecolor",
     variables: &[("COLORTERM", "truecolor")],
+    theme: "skit",
+    colors: TerminalColors::Unknown,
 };
 const NO_COLORTERM: Environment = Environment {
     name: "no-colorterm",
     variables: &[],
+    theme: "skit",
+    colors: TerminalColors::Unknown,
 };
 const NO_COLOR: Environment = Environment {
     name: "no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "1")],
+    theme: "skit",
+    colors: TerminalColors::Unknown,
 };
 /// A terminal that names no color count: Rich 15.0.0 picks the 16-color system.
 const BASIC_TERM: Environment = Environment {
     name: "basic-term",
     variables: &[("TERM", "xterm")],
+    theme: "skit",
+    colors: TerminalColors::Unknown,
+};
+/// The terminal theme on a dark terminal that answers OSC 10 and OSC 11.
+const TERMINAL_DARK: Environment = Environment {
+    name: "terminal-dark",
+    variables: &[("COLORTERM", "truecolor")],
+    theme: "terminal",
+    colors: TerminalColors::Dark,
+};
+/// The terminal theme on a light terminal.
+const TERMINAL_LIGHT: Environment = Environment {
+    name: "terminal-light",
+    variables: &[("COLORTERM", "truecolor")],
+    theme: "terminal",
+    colors: TerminalColors::Light,
+};
+/// The terminal theme on a terminal that answers only DA1, so the background stays unknown.
+const TERMINAL_UNKNOWN: Environment = Environment {
+    name: "terminal-unknown",
+    variables: &[("COLORTERM", "truecolor")],
+    theme: "terminal",
+    colors: TerminalColors::Unknown,
+};
+/// The terminal theme with `NO_COLOR`.
+const TERMINAL_NO_COLOR: Environment = Environment {
+    name: "terminal-no-color",
+    variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "1")],
+    theme: "terminal",
+    colors: TerminalColors::Dark,
 };
 const EMPTY_NO_COLOR: Environment = Environment {
     name: "empty-no-color",
     variables: &[("COLORTERM", "truecolor"), ("NO_COLOR", "")],
+    theme: "skit",
+    colors: TerminalColors::Unknown,
 };
 
 struct Fixture {
@@ -251,16 +292,16 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new(environment: &Environment) -> Self {
         let fixture = Self {
             root: TempDir::new_in("/tmp").unwrap(),
         };
         for directory in ["data", "state", "config", "home"] {
             fs::create_dir(fixture.root.path().join(directory)).unwrap();
         }
-        FileConfigStore::new(fixture.path("config"))
-            .mark_mirror_configured()
-            .unwrap();
+        let config = FileConfigStore::new(fixture.path("config"));
+        config.mark_mirror_configured().unwrap();
+        config.set("theme", environment.theme).unwrap();
         let data = fixture.path("data");
         write_command_entry(
             &data,
@@ -353,7 +394,7 @@ impl Fixture {
                 command.env(key, value);
             }
         }
-        PtyChild::spawn(
+        let mut child = PtyChild::spawn(
             command,
             PtySize {
                 rows: screen.rows,
@@ -362,7 +403,9 @@ impl Fixture {
                 pixel_height: 0,
             },
             AnswerQueries::On,
-        )
+        );
+        child.set_terminal_colors(environment.colors);
+        child
     }
 
     /// Open `screen` in a new session and return every byte the session wrote.
@@ -758,14 +801,23 @@ fn check_census(file: &str, actual: &str) -> Option<String> {
 }
 
 fn run_census(environment: &Environment) {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new(environment);
     let roots = fixture.root_spellings();
     let failures = SCREENS
         .iter()
-        .filter_map(|screen| {
+        .flat_map(|screen| {
             let raw = fixture.capture(environment, screen);
             let file = format!("{}.{}.json", screen.name, environment.name);
-            check_census(&file, &census(&raw, screen, environment.name, &roots))
+            let mut failures = Vec::new();
+            if environment.theme == "terminal" {
+                let parser = replay(&raw, screen.rows, screen.columns);
+                failures.extend(terminal_rule_breaks(parser.screen(), screen.name));
+            }
+            failures.extend(check_census(
+                &file,
+                &census(&raw, screen, environment.name, &roots),
+            ));
+            failures
         })
         .collect::<Vec<_>>();
     assert!(
@@ -795,9 +847,74 @@ fn census_on_a_basic_terminal() {
     run_census(&BASIC_TERM);
 }
 
+#[test]
+fn census_terminal_theme_on_a_dark_terminal() {
+    run_census(&TERMINAL_DARK);
+}
+
+#[test]
+fn census_terminal_theme_on_a_light_terminal() {
+    run_census(&TERMINAL_LIGHT);
+}
+
+#[test]
+fn census_terminal_theme_with_an_unknown_background() {
+    run_census(&TERMINAL_UNKNOWN);
+}
+
+#[test]
+fn census_terminal_theme_with_no_color() {
+    run_census(&TERMINAL_NO_COLOR);
+}
+
+/// The rules of the terminal theme (`docs/design/terminal-palette.md`), checked on every cell.
+///
+/// A site that bypasses the theme shows up here: the terminal theme uses only the default
+/// colors, the 16 ANSI colors as hues, and reverse video for any background.
+fn terminal_rule_breaks(screen: &vt100::Screen, name: &str) -> Vec<String> {
+    let (rows, columns) = screen.size();
+    let mut breaks = std::collections::BTreeSet::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            let cell = screen.cell(row, column).unwrap();
+            let text = cell.contents();
+            let foreground = cell.fgcolor();
+            let background = cell.bgcolor();
+            let at = format!("{name} r{row}c{column} {text:?}");
+            for color in [foreground, background] {
+                match color {
+                    vt100::Color::Rgb(..) => {
+                        breaks.insert(format!("{at}: 24-bit color {}", color_name(color)));
+                    }
+                    vt100::Color::Idx(index) if index >= 16 => {
+                        breaks.insert(format!("{at}: 256-color index {index}"));
+                    }
+                    _ => {}
+                }
+            }
+            if matches!(foreground, vt100::Color::Idx(0 | 7 | 8 | 15)) {
+                breaks.insert(format!(
+                    "{at}: black, white, or gray text {}",
+                    color_name(foreground)
+                ));
+            }
+            if background != vt100::Color::Default && !cell.inverse() {
+                breaks.insert(format!("{at}: background without reverse"));
+            }
+            if foreground != vt100::Color::Default
+                && !cell.inverse()
+                && text.chars().any(char::is_alphanumeric)
+            {
+                breaks.insert(format!("{at}: a hue on readable text"));
+            }
+        }
+    }
+    breaks.into_iter().take(12).collect()
+}
+
 /// Every cell of the selected library row that shows `Alpha`, and every cell on the screen.
 fn library_cells(environment: &Environment) -> (Vec<vt100::Cell>, Vec<vt100::Cell>) {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new(environment);
     let library = &SCREENS[0];
     let raw = fixture.capture(environment, library);
     let parser = replay(&raw, library.rows, library.columns);
@@ -852,7 +969,7 @@ fn empty_no_color_also_drops_every_color() {
 
 /// The screen that `screen` leaves in `environment`.
 fn shown(environment: &Environment, name: &str) -> vt100::Parser {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new(environment);
     let screen = SCREENS
         .iter()
         .find(|screen| screen.name == name)
@@ -1043,4 +1160,150 @@ fn skit_theme_256_color_forms_match_rich() {
         "required mark: {}",
         describe(&required)
     );
+}
+
+fn all(cells: &[vt100::Cell], check: impl Fn(&vt100::Cell) -> bool) -> bool {
+    !cells.is_empty() && cells.iter().all(check)
+}
+
+/// The terminal theme shows the selected row with reverse video and the default colors, with or
+/// without `NO_COLOR`.
+#[test]
+fn terminal_theme_reverses_the_selected_row() {
+    for environment in [&TERMINAL_UNKNOWN, &TERMINAL_NO_COLOR] {
+        let library = shown(environment, "library");
+        let row = cells_of(&library, "│Alpha")[1..].to_vec();
+        assert!(
+            all(&row, |cell| cell.inverse()
+                && cell.fgcolor() == vt100::Color::Default),
+            "{}: {}",
+            environment.name,
+            describe(&row)
+        );
+    }
+}
+
+/// A footer key is a reversed keycap in the accent: cyan on a dark background, magenta on a
+/// light one, and the default foreground when the background is unknown. The label stays plain.
+#[test]
+fn terminal_theme_draws_footer_keys_as_keycaps() {
+    for (environment, accent) in [
+        (&TERMINAL_DARK, vt100::Color::Idx(6)),
+        (&TERMINAL_LIGHT, vt100::Color::Idx(5)),
+        (&TERMINAL_UNKNOWN, vt100::Color::Default),
+    ] {
+        let library = shown(environment, "library");
+        let key = cells_of(&library, " Enter ");
+        assert!(
+            all(&key, |cell| cell.inverse()
+                && cell.bold()
+                && cell.fgcolor() == accent),
+            "{} key: {}",
+            environment.name,
+            describe(&key)
+        );
+        let label = cells_of(&library, "Run    r")[..3].to_vec();
+        assert!(
+            all(&label, |cell| !cell.inverse()
+                && !cell.bold()
+                && cell.fgcolor() == vt100::Color::Default),
+            "{} label: {}",
+            environment.name,
+            describe(&label)
+        );
+    }
+}
+
+/// The focused dialog button is reversed; the other button is plain.
+#[test]
+fn terminal_theme_reverses_the_focused_dialog_button() {
+    let remove = shown(&TERMINAL_UNKNOWN, "remove");
+    let keep = cells_of(&remove, "Keep");
+    let delete = cells_of(&remove, "Remove ")[..6].to_vec();
+    assert!(
+        all(&keep, vt100::Cell::inverse),
+        "Keep: {}",
+        describe(&keep)
+    );
+    assert!(
+        all(&delete, |cell| !cell.inverse()),
+        "Remove: {}",
+        describe(&delete)
+    );
+}
+
+/// A status line colors only its glyph.
+#[test]
+fn terminal_theme_colors_only_the_status_glyph() {
+    let health = shown(&TERMINAL_DARK, "health");
+    let line = cells_of(&health, "✓ 5 entries");
+    assert_eq!(
+        line[0].fgcolor(),
+        vt100::Color::Idx(2),
+        "glyph: {}",
+        describe(&line)
+    );
+    assert!(
+        all(&line[2..], |cell| cell.fgcolor() == vt100::Color::Default),
+        "text: {}",
+        describe(&line)
+    );
+}
+
+/// The selected option of an unfocused radio group is bold, not reversed.
+#[test]
+fn terminal_theme_marks_the_selected_radio_option_bold() {
+    let run = shown(&TERMINAL_UNKNOWN, "run-typed");
+    let fast = cells_of(&run, "fast");
+    let slow = cells_of(&run, "slow");
+    assert!(
+        all(&fast, |cell| cell.bold() && !cell.inverse()),
+        "fast: {}",
+        describe(&fast)
+    );
+    assert!(all(&slow, |cell| !cell.bold()), "slow: {}", describe(&slow));
+}
+
+/// Idle borders are dim; the terminal theme gives them no color.
+#[test]
+fn terminal_theme_dims_idle_borders() {
+    let library = shown(&TERMINAL_UNKNOWN, "library");
+    let border = cells_of(&library, "╰──");
+    assert!(
+        all(&border, |cell| cell.dim()
+            && cell.fgcolor() == vt100::Color::Default),
+        "{}",
+        describe(&border)
+    );
+}
+
+/// Switching the theme in Preferences repaints the running session.
+///
+/// The session starts in the `skit` theme. Preferences picks `terminal`, the save writes it to
+/// `config.toml`, and the next library frame already reverses the selected row.
+#[test]
+fn a_theme_saved_in_preferences_repaints_the_session() {
+    const SWITCH: Screen = screen(
+        "preferences-theme-switch",
+        &[
+            OPEN_PREFERENCES,
+            // Shift+Tab from the first control wraps to the last one, the palette.
+            step(b"\x1b[Z", ""),
+            step(b"\x1b[D", ""),
+            step(CTRL_S, "saved"),
+        ],
+    );
+    let switch = &SWITCH;
+    let fixture = Fixture::new(&TRUECOLOR);
+    let raw = fixture.capture(&TRUECOLOR, switch);
+    let parser = replay(&raw, switch.rows, switch.columns);
+    let row = cells_of(&parser, "│Alpha")[1..].to_vec();
+    assert!(
+        all(&row, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Default),
+        "selected row after the switch: {}",
+        describe(&row)
+    );
+    let config = fs::read_to_string(fixture.path("config").join("config.toml")).unwrap();
+    assert!(config.contains("theme = \"terminal\""), "{config}");
 }

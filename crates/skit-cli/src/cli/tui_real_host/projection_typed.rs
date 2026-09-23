@@ -602,6 +602,7 @@ impl PathMap {
                 NestedProjection::Payload("set_interactive_form")
             }
             PreferencesAction::SetAfterRun(_) => NestedProjection::Payload("set_after_run"),
+            PreferencesAction::SetTheme(_) => NestedProjection::Payload("set_theme"),
             PreferencesAction::SetJavascript(_) => NestedProjection::Payload("set_javascript"),
             PreferencesAction::SetBashPath(_) => NestedProjection::Payload("set_bash_path"),
             PreferencesAction::SetMirrorMaster(_) => NestedProjection::Payload("set_mirror_master"),
@@ -663,6 +664,7 @@ impl PathMap {
             | PreferencesAction::SetEditor(_)
             | PreferencesAction::SetInteractiveForm(_)
             | PreferencesAction::SetAfterRun(_)
+            | PreferencesAction::SetTheme(_)
             | PreferencesAction::SetJavascript(_)
             | PreferencesAction::SetBashPath(_)
             | PreferencesAction::SetMirrorMaster(_)

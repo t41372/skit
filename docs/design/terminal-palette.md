@@ -1,6 +1,6 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0 to 4 are done; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0 to 4 are done, and phase 5 is in progress; see "Phases".
 
 ## Decision
 
@@ -369,10 +369,38 @@ first, because the output filter does not depend on the role refactor.
    24-bit, because Textual turns off the legacy console and Rich then asks the console, which
    supports virtual terminal processing wherever skit's interface runs. `TEXTUAL_COLOR_SYSTEM`,
    a Textual override, is not ported.
-5. `terminal` theme with the OSC 11 accent, the footer chip, the config key, the Preferences
-   control, the CLI, and i18n. Then the default switches. The reverse selection under `NO_COLOR`
-   is tested here, as an addition. When `Appearance` gains a field, `with_no_color` must build
-   `Self { no_color, ..self }`, or it drops the theme.
+5. `terminal` theme. Done on 2026-09-23 so far:
+   - `skit config theme terminal|skit` (commit `a2a863bf`). The `config` help line keeps its
+     version 0.4 wording, which a contract test pins, so the new key shows in `skit config`, in
+     `--json`, and in shell completion instead.
+   - Every census environment names its theme in `config.toml`. Four terminal-theme environments
+     (dark, light, unknown background, `NO_COLOR`) bring the census to 312 files, and each
+     terminal-theme frame passes the rule check: no 24-bit color, no index above 15, no black,
+     white, or gray text, no background without reverse, and no hue on a cell that shows a letter
+     or a digit.
+   - `Theme::Terminal(accent)` in `theme.rs`. Widgets that take only colors get a post-pass:
+     `patch_focus` reverses a focused button, check box, or radio option; `patch_idle_border`
+     dims an idle select; `patch_plain` removes the colors that `Toast` and the removal dialog's
+     buttons choose for themselves; `patch_chip_key` draws a footer key as a keycap without
+     changing the chip width; `patch_border_title` and `border_title` keep a title on a colored
+     border in the default foreground. `status_spans` and `status_line` color only a leading
+     ✓ ✗ ⚠ → glyph; every locale keeps the glyph first. The add review's select and check boxes
+     get their own roles, because the `skit` theme drew them in `ratatui-interact` defaults.
+   - Background: skit-cli asks with `terminal-colorsaurus` 1.0.3 (500 ms timeout) only when the
+     theme is `terminal`, `NO_COLOR` is absent, and both standard streams are a terminal, before
+     the interface claims the terminal. The PTY harness answers OSC 10, OSC 11, and DA1.
+   - Preferences: a "Colors" section with a radio choice. It comes after every version 0.4
+     control, because ported version 0.4 tests pin the focus order (Language and Editor are
+     adjacent stops). A save writes `theme` only when it changed, so a clean save keeps the
+     historical `config.toml` bytes. `PreferencesSaved` carries the new theme, `LibraryState`
+     keeps it, and `render_with_session` applies it to the next frame with the session's color
+     depth, background, and `NO_COLOR`. A session that started in the `skit` theme did not ask
+     for the background, so a switch to `terminal` during the session has no accent hue until
+     the next start.
+   Still to do: the default switch, which is pinned by one end-to-end test and changes only
+   skit-cli's config default. The reverse
+   selection under `NO_COLOR` is tested here, as an addition. When `Appearance` gains a field,
+   `with_no_color` must build `Self { no_color, ..self }`, or it drops the theme.
 6. Documentation, records, and demo assets.
 
 At the end of each wave, the Linux prompt reruns the census on Linux and diffs it against the

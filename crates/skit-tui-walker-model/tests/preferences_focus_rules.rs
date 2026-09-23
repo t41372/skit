@@ -8,7 +8,7 @@ use ratatui_core::{buffer::Buffer, layout::Size};
 use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesSnapshot,
+    PreferencesSnapshot, ThemeChoice,
 };
 use skit_i18n::Locale;
 use skit_tui::{HitTarget, TuiSession};
@@ -88,6 +88,7 @@ fn preferences_state() -> LibraryState {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![preferences_runner_row(0, "codex")],

@@ -389,7 +389,7 @@ where
         .map_or_else(TuiSession::default, |provider| {
             TuiSession::with_path_completion(provider)
         });
-    session.set_theme(options.appearance.theme());
+    session.set_appearance(options.appearance);
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
@@ -693,7 +693,7 @@ where
         .map_or_else(TuiSession::default, |provider| {
             TuiSession::with_path_completion(provider)
         });
-    session.set_theme(options.appearance.theme());
+    session.set_appearance(options.appearance);
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
@@ -1107,6 +1107,7 @@ mod tests {
             action_locale(&Action::PreferencesSaved {
                 locale: "zh-TW".to_owned(),
                 message: "Preferences saved".to_owned(),
+                theme: None,
             }),
             Some(Locale::ZhTw)
         );
@@ -1564,6 +1565,7 @@ mod tests {
             Ok(Action::PreferencesSaved {
                 locale: "zh-CN".to_owned(),
                 message: "saved".to_owned(),
+                theme: None,
             })
         };
         assert!(
@@ -1601,6 +1603,7 @@ mod tests {
             Ok(Action::PreferencesSaved {
                 locale: "zh-TW".to_owned(),
                 message: "saved".to_owned(),
+                theme: None,
             })
         };
         let _ = drain_collect_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale);

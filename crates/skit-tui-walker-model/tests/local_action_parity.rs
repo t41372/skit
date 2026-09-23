@@ -14,7 +14,7 @@ use ratatui_crossterm::crossterm::event::{
 use skit_application::LibraryScan;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesSnapshot,
+    PreferencesSnapshot, ThemeChoice,
 };
 use skit_application::tokens::TokenContext;
 use skit_domain::{
@@ -321,6 +321,7 @@ fn preferences_state() -> LibraryState {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![preferences_runner_row(0, "codex")],

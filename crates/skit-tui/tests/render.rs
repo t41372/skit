@@ -11,7 +11,7 @@ use skit_application::{
     Diagnostic, DiagnosticCode, LibraryScan,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, ThemeChoice,
     },
     tokens::TokenContext,
 };
@@ -74,6 +74,7 @@ fn preferences_view() -> PreferencesView {
         editor_fallback: Some("vi".into()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
+        theme: ThemeChoice::Terminal,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: vec![preferences_runner_row(0, "codex")],

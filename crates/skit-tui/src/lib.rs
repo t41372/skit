@@ -30,7 +30,7 @@ pub use agent_review::{
     AGENT_REVIEW_SNAPSHOT_VERSION, AgentReviewSnapshot, AgentReviewSnapshotError,
     RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION,
 };
-pub use appearance::{Appearance, ColorDepth};
+pub use appearance::{Appearance, Background, ColorDepth, ThemeName};
 use layout::{RootLayoutPlan, ViewportProfile};
 pub use local_action::{
     LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
@@ -142,7 +142,7 @@ pub fn render_with_session(
     locale: Locale,
     session: &mut TuiSession,
 ) -> ViewGeometry {
-    let _theme = theme::ThemeScope::enter(session.theme());
+    let _theme = theme::ThemeScope::enter(session.theme(state));
     session.begin_screen_target_render();
     session.begin_render(state, locale);
     let profile = ViewportProfile::new(frame.area());
@@ -527,7 +527,7 @@ mod tests {
     fn minimum_body_height_preserves_screen_and_modal_content() {
         use skit_application::preferences::{
             AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-            PreferencesDraft, PreferencesSnapshot,
+            PreferencesDraft, PreferencesSnapshot, ThemeChoice,
         };
         use skit_ui::{FormPurpose, PreferencesView};
 
@@ -547,6 +547,7 @@ mod tests {
                 editor_fallback: Some("vi".into()),
                 form: InteractiveFormChoice::Tui,
                 after_run: AfterRunChoice::Exit,
+                theme: ThemeChoice::Terminal,
                 javascript: JavascriptChoice::Automatic,
                 bash_path: None,
                 runners: Vec::new(),

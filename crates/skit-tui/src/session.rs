@@ -43,7 +43,8 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, RunFieldCommand, ScreenTargetError, ScreenTargetInventory, ViewGeometry,
+    Appearance, HitRegion, HitTarget, RunFieldCommand, ScreenTargetError, ScreenTargetInventory,
+    ThemeName, ViewGeometry,
     agent_review::{
         AgentReviewNode, AgentReviewSnapshot, AgentReviewSnapshotError, button as snapshot_button,
         checkbox as snapshot_checkbox, focus as snapshot_focus, node as snapshot_node,
@@ -962,8 +963,8 @@ pub struct TuiSession {
     clicks: HitMap<TopLevelClickTarget>,
     top_level_click: ClickTracker<TopLevelClickTarget>,
     local_actions: LocalActionInventory,
-    /// The palette of every frame this session draws.
-    theme: Theme,
+    /// The color choices of every frame this session draws.
+    appearance: Appearance,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1601,7 +1602,7 @@ impl TuiSession {
             clicks,
             top_level_click,
             local_actions,
-            theme: _,
+            appearance: _,
         } = self;
         if quit_armed_at.is_some() || quit_toast.occupied() {
             return Err(AgentReviewSnapshotError::ClockActive);
@@ -1687,7 +1688,7 @@ impl TuiSession {
             clicks: self.clicks.clone(),
             top_level_click: self.top_level_click.clone(),
             local_actions: self.local_actions.clone(),
-            theme: self.theme,
+            appearance: self.appearance,
         })
     }
 
@@ -1856,14 +1857,25 @@ impl TuiSession {
         }
     }
 
-    /// The palette of every frame this session draws.
-    pub(crate) const fn theme(&self) -> Theme {
-        self.theme
+    /// The palette of a frame of `state`.
+    ///
+    /// A theme that a Preferences save picked during the session replaces the one the session
+    /// started with; the color depth, the background, and `NO_COLOR` stay.
+    pub(crate) fn theme(&self, state: &LibraryState) -> Theme {
+        state
+            .theme()
+            .map_or(self.appearance, |choice| {
+                self.appearance.with_theme(match choice {
+                    skit_application::preferences::ThemeChoice::Terminal => ThemeName::Terminal,
+                    skit_application::preferences::ThemeChoice::Skit => ThemeName::Skit,
+                })
+            })
+            .theme()
     }
 
-    /// Draw every later frame with `theme`.
-    pub(crate) const fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
+    /// Draw every later frame with `appearance`.
+    pub(crate) const fn set_appearance(&mut self, appearance: Appearance) {
+        self.appearance = appearance;
     }
 
     /// Apply completed background work before the next draw.
@@ -2465,10 +2477,13 @@ impl TuiSession {
             return;
         };
         let message = text(locale, source);
-        Toast::new(&message)
+        let toast = Toast::new(&message)
             .style(ToastStyle::Info)
-            .max_width(frame.area().width.saturating_sub(2))
-            .render_with_clear(frame.area(), frame.buffer_mut());
+            .max_width(frame.area().width.saturating_sub(2));
+        let area = toast.calculate_area(frame.area());
+        toast.render_with_clear(frame.area(), frame.buffer_mut());
+        // The toast paints its own black box; the terminal theme keeps the terminal's colors.
+        theme::patch_plain(frame.buffer_mut(), area);
     }
 
     fn handle_ctrl_c(&mut self) -> EventHandling {
@@ -2936,6 +2951,7 @@ impl TuiSession {
                 let region = CheckBox::new(&shown, state)
                     .style(theme::checkbox_style())
                     .render_stateful(area, frame.buffer_mut());
+                theme::patch_focus(frame.buffer_mut(), region.area, state.focused);
                 self.run
                     .hits
                     .register(region.area, RunClickTarget::Checkbox(index));
@@ -2956,6 +2972,7 @@ impl TuiSession {
                     .placeholder(&placeholder)
                     .style(select_style)
                     .render_stateful(frame, area);
+                theme::patch_idle_border(frame.buffer_mut(), region.area, state.focused);
                 self.run.select_areas[index] = Some(region.area);
                 self.run
                     .hits
@@ -5117,10 +5134,9 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
                 &[name, token],
             ),
         };
-        notes.push(run_copy(
-            format!("→ {message}"),
-            theme::status(Status::Warning),
-        ));
+        notes.push(RunCopy {
+            line: Line::from(theme::status_spans(format!("→ {message}"), Status::Warning)),
+        });
     }
     if let Some(count) = field.feedback.glob_count {
         let (message, status) = if count == 0 {
@@ -5134,7 +5150,9 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
                 Status::Success,
             )
         };
-        notes.push(run_copy(message, theme::status(status)));
+        notes.push(RunCopy {
+            line: Line::from(theme::status_spans(message, status)),
+        });
     }
     if let Some(error) = field.validation_error {
         notes.push(run_copy(
@@ -5373,7 +5391,7 @@ pub(crate) fn render_line_input_band(
     label: &str,
     suggestion: Option<&str>,
 ) -> Option<EditableGeometry> {
-    let border = theme::border_color(focused);
+    let border = theme::border(focused);
     let width = usize::from(clip.area().width.saturating_sub(2).max(1));
     let scroll = display_scroll(state.value(), state.cursor(), width, secret);
     let display = if secret {
@@ -5389,7 +5407,7 @@ pub(crate) fn render_line_input_band(
         frame.buffer_mut(),
         Paragraph::new(display),
         Line::from(label),
-        Style::default().fg(border),
+        border,
         u16::try_from(scroll).unwrap_or(u16::MAX),
     );
     if focused
@@ -5477,7 +5495,8 @@ pub(crate) fn render_textarea_band(
         Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border(focused))
-            .title(label.to_owned()),
+            .title(label.to_owned())
+            .title_style(theme::border_title()),
     );
     state.set_style(theme::text());
     state.set_cursor_line_style(Style::default());
@@ -5575,6 +5594,9 @@ pub(crate) fn render_radio_option(
         .alignment(Alignment::Left)
         .style(style)
         .render_stateful(chip, buffer);
+    // The skit theme shows both states with a colored bar; the terminal theme reverses the option
+    // that the keyboard is on, and the selected option of a focused group.
+    theme::patch_focus(buffer, chip, button.focused || (focused && selected));
     Rect::new(area.x, area.y, area.width, 1)
 }
 

@@ -8,7 +8,7 @@ use skit_application::{
     LibraryScan,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, ThemeChoice,
     },
     tokens::TokenContext,
 };
@@ -192,6 +192,7 @@ fn preferences_state() -> LibraryState {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
             javascript: JavascriptChoice::Automatic,
             bash_path: None,
             runners: vec![runner_row(0, "codex")],

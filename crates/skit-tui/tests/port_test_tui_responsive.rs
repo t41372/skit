@@ -13,7 +13,7 @@ use skit_application::{
     LibraryScan,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, ThemeChoice,
     },
     tokens::TokenContext,
 };
@@ -275,6 +275,7 @@ fn preferences() -> PreferencesView {
         editor_fallback: Some("vim".into()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
+        theme: ThemeChoice::Terminal,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),
