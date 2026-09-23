@@ -1135,7 +1135,7 @@ impl PreferencesWidgetSession {
         frame.render_widget(Clear, panel);
         let block = padded_panel(
             text(locale, "Teach an AI agent to use skit").into_owned(),
-            Panel::Picker,
+            Panel::Overlay,
         );
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
@@ -1211,7 +1211,7 @@ impl PreferencesWidgetSession {
                 .variant(ButtonVariant::SingleLine)
                 .style(theme::action_button_style())
                 .render_stateful(button_area, frame.buffer_mut());
-            theme::patch_focus(frame.buffer_mut(), region.area, self.agent_cancel.focused);
+            theme::patch_button(frame.buffer_mut(), button_area, self.agent_cancel.focused);
             self.agent_cancel_area = Some(region.area);
             self.agent_clicks
                 .register(region.area, AgentSkillHit::Cancel);
@@ -1418,22 +1418,22 @@ impl PreferencesWidgetSession {
                     } else {
                         Style::default().fg(style.placeholder_fg)
                     };
-                    let border = if state.focused {
-                        style.focused_border
-                    } else {
-                        style.unfocused_border
-                    };
+                    let border = theme::select_border(
+                        if state.focused {
+                            style.focused_border
+                        } else {
+                            style.unfocused_border
+                        },
+                        state.focused,
+                    );
                     clip.paint_bordered_paragraph(
                         frame.buffer_mut(),
                         Paragraph::new(Line::from(vec![
                             Span::styled(display, display_style),
-                            Span::styled(
-                                format!(" {}", style.dropdown_indicator),
-                                Style::default().fg(border),
-                            ),
+                            Span::styled(format!(" {}", style.dropdown_indicator), border),
                         ])),
                         Line::from(format!(" {label} ")),
-                        Style::default().fg(border),
+                        border,
                         0,
                     );
                     *select_area = Some(area);
@@ -1496,7 +1496,7 @@ impl PreferencesWidgetSession {
                     .alignment(Alignment::Left)
                     .style(theme::action_button_style())
                     .render_stateful(painted, frame.buffer_mut());
-                theme::patch_focus(frame.buffer_mut(), painted, state.focused);
+                theme::patch_button(frame.buffer_mut(), painted, state.focused);
                 self.clicks
                     .register(painted, PreferencesHit::Control(control.id));
                 self.control_areas
@@ -2260,11 +2260,13 @@ fn paint_runner_chips(
     for chip in chips {
         let width = runner_chip_width(chip, locale);
         let label = text(locale, chip.label);
+        let painted = Rect::new(x, band.y, width, 1);
         let region = Button::new(label.as_ref(), &ButtonState::enabled())
             .icon(chip.key)
             .variant(ButtonVariant::SingleLine)
             .style(style.clone())
-            .render_stateful(Rect::new(x, band.y, width, 1), frame.buffer_mut());
+            .render_stateful(painted, frame.buffer_mut());
+        theme::patch_chip_key(frame.buffer_mut(), painted, chip.key);
         targets.clicks.register(
             region.area,
             PreferencesHit::RunnerChip {
@@ -2856,9 +2858,7 @@ fn choice_action(id: PreferencesControlId, value: &str) -> PreferencesEventHandl
         } else {
             AfterRunChoice::Exit
         }),
-        PreferencesControlId::Theme => {
-            PreferencesAction::SetTheme(ThemeChoice::from_config(value).unwrap_or_default())
-        }
+        PreferencesControlId::Theme => PreferencesAction::SetTheme(ThemeChoice::from_config(value)),
         PreferencesControlId::Javascript => PreferencesAction::SetJavascript(match value {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,

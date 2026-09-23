@@ -8500,12 +8500,13 @@ fn terminal_background() -> skit_tui::Background {
     {
         return skit_tui::Background::Unknown;
     }
-    let Some(_raw) = RawModeGuard::enter() else {
+    // Raw mode comes first: in line mode the terminal holds typed keys back until Enter, so the
+    // check could not see them.
+    let Some(_raw) =
+        RawModeGuard::enter().filter(|_| !crossterm_event::poll(Duration::ZERO).unwrap_or(true))
+    else {
         return skit_tui::Background::Unknown;
     };
-    if crossterm_event::poll(Duration::ZERO).unwrap_or(true) {
-        return skit_tui::Background::Unknown;
-    }
     let mut options = terminal_colorsaurus::QueryOptions::default();
     options.timeout = COLOR_QUESTION_TIMEOUT;
     match terminal_colorsaurus::theme_mode(options) {
@@ -9571,7 +9572,7 @@ fn tui_preferences_effect_at(
             let theme = change
                 .settings
                 .get("theme")
-                .and_then(|value| skit_application::preferences::ThemeChoice::from_config(value));
+                .map(|value| skit_application::preferences::ThemeChoice::from_config(value));
             if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
                 return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
                     error,
@@ -10154,8 +10155,7 @@ fn tui_preferences_view_with_context(
             "stay" => AfterRunChoice::Stay,
             _ => AfterRunChoice::Exit,
         },
-        theme: skit_application::preferences::ThemeChoice::from_config(&setting("theme"))
-            .unwrap_or_default(),
+        theme: skit_application::preferences::ThemeChoice::from_config(&setting("theme")),
         javascript: match setting("js.runner").as_str() {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,

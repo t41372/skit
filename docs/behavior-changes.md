@@ -134,7 +134,7 @@ Version 0.5 adds the `theme` setting with two values. The owner picked `terminal
   dim, and reverse video show the state. One accent hue marks focused borders, selection markers,
   and footer keys: cyan on a dark background, magenta on a light background, and no hue when the
   background is unknown. A status line colors only its ✓ ✗ ⚠ → glyph. A footer key is a reversed
-  keycap.
+  keycap. An idle button shows brackets, as in `[Discard]`, and a focused button is reversed.
 - `skit` keeps the version 0.4 palette, with the parity restorations of the design, so nothing is
   removed. `skit config theme skit` or the Preferences "Colors" section gives it back.
 
@@ -156,8 +156,9 @@ exit codes, and shell completion, as product rule 4 asks. The `skit config` list
 `config.toml`. `crates/skit-cli/tests/theme_config.rs` pins this.
 
 The Preferences screen gets a "Colors" section with the same choice, as product rule 4 asks in the
-other direction. The section comes after every version 0.4 control, so the version 0.4 focus order
-does not change. A save writes `theme` only when the value changed, so a save without a theme change
+other direction. The section comes after every version 0.4 control, so Tab visits the version 0.4
+controls in the version 0.4 order. Shift+Tab from the first control now reaches the palette choice
+first, before the last mirror control. A save writes `theme` only when the value changed, so a save without a theme change
 keeps the version 0.4 `config.toml` bytes.
 
 ## skit asks the terminal for its background color

@@ -2211,29 +2211,30 @@ fn render_row(
                 AddSelectControl::Runner => &session.runner,
             };
             if clip.is_full() {
-                let select = Select::new(&options, select_state)
+                let region = Select::new(&options, select_state)
                     .label(label)
-                    .style(theme::review_select_style());
-                select.render_stateful(frame, area);
+                    .style(theme::review_select_style())
+                    .render_stateful(frame, area);
+                theme::patch_idle_border(frame.buffer_mut(), region.area, select_state.focused);
             } else {
                 let style = theme::review_select_style();
                 let display = &options[select_state.selected_index.unwrap()];
-                let border = if select_state.focused {
-                    style.focused_border
-                } else {
-                    style.unfocused_border
-                };
+                let border = theme::select_border(
+                    if select_state.focused {
+                        style.focused_border
+                    } else {
+                        style.unfocused_border
+                    },
+                    select_state.focused,
+                );
                 clip.paint_bordered_paragraph(
                     frame.buffer_mut(),
                     Paragraph::new(Line::from(vec![
                         Span::styled(display, Style::default().fg(style.text_fg)),
-                        Span::styled(
-                            format!(" {}", style.dropdown_indicator),
-                            Style::default().fg(border),
-                        ),
+                        Span::styled(format!(" {}", style.dropdown_indicator), border),
                     ])),
                     Line::from(format!(" {label} ")),
-                    Style::default().fg(border),
+                    border,
                     0,
                 );
             }

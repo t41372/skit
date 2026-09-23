@@ -93,13 +93,14 @@ impl ThemeChoice {
         }
     }
 
-    /// The choice that a stored value names, or `None` for any other value.
+    /// The choice that a stored value names. Every value except `skit` names the default, as
+    /// the store reads a stored value that it does not know.
     #[must_use]
-    pub fn from_config(value: &str) -> Option<Self> {
-        match value {
-            "terminal" => Some(Self::Terminal),
-            "skit" => Some(Self::Skit),
-            _ => None,
+    pub fn from_config(value: &str) -> Self {
+        if value == "skit" {
+            Self::Skit
+        } else {
+            Self::Terminal
         }
     }
 }

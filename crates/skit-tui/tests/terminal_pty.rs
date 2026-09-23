@@ -89,6 +89,20 @@ fn public_terminal_wrapper_child() {
             Arc::new(EmptyPathProvider),
         )
         .unwrap(),
+        "run-with-path-host" => {
+            let marker = std::env::var("SKIT_TUI_PREFLIGHT_MARKER").unwrap();
+            run_with_path_completion(
+                LibraryState::default(),
+                move |_effect| -> Result<Action, HostError> {
+                    std::fs::write(&marker, "host").unwrap();
+                    Ok(Action::ClearStatus)
+                },
+                Locale::En,
+                Appearance::default(),
+                Arc::new(EmptyPathProvider),
+            )
+            .unwrap();
+        }
         "preflight-refuse" => {
             let marker = std::env::var("SKIT_TUI_PREFLIGHT_MARKER").unwrap();
             let preflight_marker = marker.clone();
@@ -200,6 +214,30 @@ fn every_public_terminal_wrapper_owns_a_real_terminal_lifecycle() {
         }],
     );
     assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "preflight");
+    // The path-completion wrapper has no check of its own: the effect reaches the host. The host
+    // effect suspends and resumes the terminal, and only a Unix resume asks for the cursor
+    // position, which the wait for the resumed frame answers. ConPTY re-renders its own screen,
+    // so this case is a Unix case, as the suspend contract below is.
+    #[cfg(unix)]
+    {
+        let marker = tempfile::NamedTempFile::new().unwrap();
+        run_child_in_pty(
+            "public_terminal_wrapper_child",
+            Some("run-with-path-host"),
+            "Library",
+            &[
+                Exchange {
+                    input: b"\x12",
+                    wait: Wait::File(marker.path()),
+                },
+                Exchange {
+                    input: b"",
+                    wait: Wait::Output(b"Library"),
+                },
+            ],
+        );
+        assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "host");
+    }
 }
 
 /// A host effect must leave and re-enter every screen mode.

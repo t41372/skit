@@ -55,6 +55,7 @@ const CTRL_T: &[u8] = b"\x14";
 const DELETE: &[u8] = b"\x1b[3~";
 const ESCAPE: &[u8] = b"\x1b";
 const F2: &[u8] = b"\x1bOQ";
+const PAGE_DOWN: &[u8] = b"\x1b[6~";
 
 /// One key press or typed text, and a word that the screen shows only after it. An empty needle
 /// waits for the terminal to go quiet instead.
@@ -141,6 +142,20 @@ const SCREENS: &[Screen] = &[
             &[OPEN_ALPHA_RUN, step(CTRL_T, "run-time")],
         )
     },
+    // A filter that matches no environment variable leaves the list empty, as version 0.4 does.
+    Screen {
+        cwd: Some("/"),
+        ..screen(
+            "run-environment-empty",
+            &[
+                OPEN_ALPHA_RUN,
+                step(CTRL_T, "run-time"),
+                step(b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B", ""),
+                step(b"\r", "filter"),
+                step(b"zzqq", "zzqq"),
+            ],
+        )
+    },
     screen("run-preset-name", &[OPEN_ALPHA_RUN, step(CTRL_S, "preset")]),
     screen(
         "run-preset-name-empty",
@@ -162,12 +177,34 @@ const SCREENS: &[Screen] = &[
         "entry-settings-prompt",
         &[step(TO_ZETA, "prompt."), OPEN_SETTINGS],
     ),
+    // Page Down scrolls to the key hint that opens a new agent, below the runner choice.
+    screen(
+        "entry-settings-prompt-runner",
+        &[
+            step(TO_ZETA, "prompt."),
+            OPEN_SETTINGS,
+            step(PAGE_DOWN, "New agent…"),
+        ],
+    ),
     screen(
         "entry-settings-discard",
         &[OPEN_SETTINGS, step(b"x", ""), step(ESCAPE, "Discard")],
     ),
     screen("presets", &[step(b"s", "None")]),
     screen("preferences", &[OPEN_PREFERENCES]),
+    // On a short terminal the Editor box scrolls the language select half out of view, so the
+    // select is drawn clipped.
+    Screen {
+        name: "preferences-clipped-select",
+        rows: 10,
+        columns: COLUMNS,
+        steps: &[OPEN_PREFERENCES, step(b"\t", "")],
+        cwd: None,
+    },
+    screen(
+        "preferences-agents",
+        &[OPEN_PREFERENCES, step(b"\t\t\t\t\t", "claude")],
+    ),
     screen(
         "preferences-new-agent",
         &[
@@ -1006,11 +1043,13 @@ fn describe(cells: &[vt100::Cell]) -> String {
         .iter()
         .map(|cell| {
             format!(
-                "{}:{}/{}{}",
+                "{}:{}/{}{}{}{}",
                 cell.contents(),
                 color_name(cell.fgcolor()),
                 color_name(cell.bgcolor()),
-                if cell.dim() { "/dim" } else { "" }
+                if cell.bold() { "/bold" } else { "" },
+                if cell.dim() { "/dim" } else { "" },
+                if cell.inverse() { "/inverse" } else { "" }
             )
         })
         .collect::<Vec<_>>()
@@ -1309,6 +1348,270 @@ fn a_theme_saved_in_preferences_repaints_the_session() {
     );
     let config = fs::read_to_string(fixture.path("config").join("config.toml")).unwrap();
     assert!(config.contains("theme = \"terminal\""), "{config}");
+}
+
+/// A title keeps only bold. The panel border under it is dim, and a title that also carried the
+/// dim would be faint on a terminal that draws both.
+///
+/// `vt100` keeps only the last of bold and dim, so a title cell that the terminal received with
+/// both shows here as dim.
+#[test]
+fn terminal_theme_titles_are_bold_and_never_dim() {
+    for (name, title) in [
+        ("library", "Library"),
+        ("add-file-picker", "Source path"),
+        ("add-review", "Add hello.sh"),
+    ] {
+        let parser = shown(&TERMINAL_UNKNOWN, name);
+        let cells = cells_of(&parser, title);
+        assert!(
+            all(&cells, |cell| cell.bold() && !cell.dim()),
+            "{name}: {}",
+            describe(&cells)
+        );
+    }
+}
+
+/// An idle button shows brackets in its padding cells, so it reads as a button without a color.
+/// The focused button is reversed instead, and the `skit` theme keeps its pills.
+#[test]
+fn terminal_theme_marks_idle_buttons_with_brackets() {
+    for (name, labels) in [
+        (
+            "entry-settings-discard",
+            &["[Discard]", "[Keep editing]"][..],
+        ),
+        (
+            "run-path-suggestion",
+            &["[▾ insert]", "[↺ default]", "[📁 browse]"],
+        ),
+        ("remove", &["[Remove]"]),
+        ("preferences-agent-skill", &["[Cancel]"]),
+    ] {
+        let parser = shown(&TERMINAL_UNKNOWN, name);
+        let text = parser.screen().contents();
+        for label in labels {
+            assert!(text.contains(label), "{name} lacks {label}:\n{text}");
+        }
+    }
+    let skit = shown(&TRUECOLOR, "entry-settings-discard");
+    assert!(!skit.screen().contents().contains("[Discard]"));
+}
+
+/// The focused dialog button reverses its label and its padding, and no cell after them.
+#[test]
+fn terminal_theme_reverses_only_the_focused_button() {
+    let parser = shown(&TERMINAL_UNKNOWN, "remove");
+    let cells = cells_of(&parser, " Keep   ");
+    assert!(
+        all(&cells[..6], vt100::Cell::inverse),
+        "{}",
+        describe(&cells)
+    );
+    assert!(
+        all(&cells[6..], |cell| !cell.inverse()),
+        "{}",
+        describe(&cells)
+    );
+}
+
+/// The keys of the agent rows in Preferences are keycaps, as the footer keys are.
+#[test]
+fn terminal_theme_draws_agent_row_keys_as_keycaps() {
+    let parser = shown(&TERMINAL_UNKNOWN, "preferences-agents");
+    for key in [" Enter ", " Del "] {
+        let cells = cells_of(&parser, key);
+        assert!(
+            all(&cells, |cell| cell.inverse()),
+            "{key}: {}",
+            describe(&cells)
+        );
+    }
+}
+
+/// A footer label in a wide script keeps no bold. The keycap sizes its label in display cells,
+/// not in characters.
+#[test]
+fn terminal_theme_footer_labels_stay_plain_in_a_wide_script() {
+    const WIDE: Environment = Environment {
+        name: "terminal-zh-tw",
+        variables: &[("COLORTERM", "truecolor"), ("SKIT_LANG", "zh-TW")],
+        theme: "terminal",
+        colors: TerminalColors::Dark,
+    };
+    let label = "重新命名";
+    let fixture = Fixture::new(&WIDE);
+    let library = &SCREENS[0];
+    let mut child = fixture.spawn(&WIDE, library);
+    child.wait_cursor_query_after(0);
+    wait_for_screen(&mut child, library, label);
+    let raw = child.raw_after(0);
+    quit(&mut child);
+    let parser = replay(&raw, library.rows, library.columns);
+    let screen = parser.screen();
+    let (rows, columns) = screen.size();
+    let row = (0..rows)
+        .rev()
+        .find(|row| {
+            screen
+                .contents_between(*row, 0, *row, columns)
+                .contains(label)
+        })
+        .expect("the footer shows the label");
+    // A wide character fills two columns; the second one has no contents.
+    let shown = (0..columns)
+        .filter_map(|column| screen.cell(row, column))
+        .filter(|cell| !cell.contents().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    let characters = label.chars().map(String::from).collect::<Vec<_>>();
+    let start = shown
+        .windows(characters.len())
+        .position(|window| {
+            window
+                .iter()
+                .zip(&characters)
+                .all(|(cell, character)| cell.contents() == character)
+        })
+        .expect("the footer row shows the label in one piece");
+    let cells = shown[start..start + characters.len()].to_vec();
+    let bold = cells.iter().map(vt100::Cell::bold).collect::<Vec<_>>();
+    assert_eq!(bold, [false; 4], "{}", describe(&cells));
+}
+
+/// An idle select is dim, as an idle input is. An overlay picker holds the focus, so its border
+/// takes the accent, as a dialog border does.
+#[test]
+fn terminal_theme_dims_idle_selects_and_colors_overlay_borders() {
+    let review = shown(&TERMINAL_UNKNOWN, "add-review");
+    let corner = cells_of(&review, "┌ Storage mode");
+    assert!(corner[0].dim(), "{}", describe(&corner));
+    // A select that scrolled half out of view is drawn by hand, and it is dim too.
+    let clipped = shown(&TERMINAL_UNKNOWN, "preferences-clipped-select");
+    let edge = cells_of(&clipped, "└──");
+    assert!(all(&edge, vt100::Cell::dim), "{}", describe(&edge));
+    let skill = shown(&TERMINAL_DARK, "preferences-agent-skill");
+    let edge = cells_of(&skill, "╭ Teach");
+    assert!(
+        edge[0].fgcolor() == vt100::Color::Idx(6) && !edge[0].dim(),
+        "{}",
+        describe(&edge)
+    );
+}
+
+/// An environment filter that matches nothing shows an empty list, as version 0.4 does. The
+/// list widget would otherwise draw an English "No items" in gray.
+#[test]
+fn an_empty_environment_filter_shows_an_empty_list() {
+    for environment in [&TRUECOLOR, &TERMINAL_UNKNOWN] {
+        let parser = shown(environment, "run-environment-empty");
+        let text = parser.screen().contents();
+        assert!(!text.contains("No items"), "{}:\n{text}", environment.name);
+    }
+}
+
+/// Switching back to the `skit` theme repaints the session with the fixed palette.
+///
+/// The session starts in the terminal theme. Preferences picks `skit`, the save writes it, and
+/// the next library frame draws the selected row on the fixed selection color, not reversed.
+#[test]
+fn switching_to_the_skit_theme_repaints_the_session() {
+    const SWITCH: Screen = screen(
+        "preferences-theme-switch-back",
+        &[
+            OPEN_PREFERENCES,
+            // Shift+Tab from the first control wraps to the last one, the palette.
+            step(b"\x1b[Z", ""),
+            step(b"\x1b[C", ""),
+            step(CTRL_S, "saved"),
+        ],
+    );
+    let switch = &SWITCH;
+    let fixture = Fixture::new(&TERMINAL_DARK);
+    let raw = fixture.capture(&TERMINAL_DARK, switch);
+    let parser = replay(&raw, switch.rows, switch.columns);
+    let row = cells_of(&parser, "│Alpha")[1..].to_vec();
+    assert!(
+        all(&row, |cell| !cell.inverse()
+            && matches!(cell.bgcolor(), vt100::Color::Rgb(..))),
+        "selected row after the switch: {}",
+        describe(&row)
+    );
+    let config = fs::read_to_string(fixture.path("config").join("config.toml")).unwrap();
+    assert!(config.contains("theme = \"skit\""), "{config}");
+}
+
+/// A `theme` that a person typed into `config.toml` by hand, and that skit does not know, gets
+/// the default: the interface and the Preferences choice both show the terminal theme.
+#[test]
+fn an_unknown_theme_in_the_file_falls_back_to_the_terminal_theme() {
+    const UNKNOWN: Environment = Environment {
+        name: "unknown-theme",
+        variables: &[("COLORTERM", "truecolor")],
+        theme: "",
+        colors: TerminalColors::Dark,
+    };
+    let fixture = Fixture::new(&UNKNOWN);
+    let file = fixture.path("config").join("config.toml");
+    let written = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("theme = \"neon\"\n{written}")).unwrap();
+
+    // Shift+Tab from the first control wraps to the last one, the palette.
+    const PALETTE: Screen = screen(
+        "preferences-palette",
+        &[OPEN_PREFERENCES, step(b"\x1b[Z", "Colors")],
+    );
+    let raw = fixture.capture(&UNKNOWN, &PALETTE);
+    let parser = replay(&raw, PALETTE.rows, PALETTE.columns);
+    let shown = parser.screen().contents();
+    assert!(
+        shown.contains("◉  Terminal colors"),
+        "the palette choice:\n{shown}"
+    );
+    let library = &SCREENS[0];
+    let raw = fixture.capture(&UNKNOWN, library);
+    let parser = replay(&raw, library.rows, library.columns);
+    let row = cells_of(&parser, "│Alpha")[1..].to_vec();
+    assert!(
+        all(&row, |cell| cell.inverse()
+            && cell.fgcolor() == vt100::Color::Default),
+        "selected row with an unknown theme: {}",
+        describe(&row)
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        format!("theme = \"neon\"\n{written}"),
+        "opening the interface changed config.toml"
+    );
+}
+
+/// Keys typed before skit asks for the colors stay for the interface, and skit does not ask.
+///
+/// The census writes the keys at once after the start, before the child has read its
+/// configuration. A question would read them as a broken answer, and the library would keep its
+/// first row selected.
+#[test]
+fn keys_typed_ahead_skip_the_color_question() {
+    let fixture = Fixture::new(&TERMINAL_DARK);
+    let library = &SCREENS[0];
+    let mut child = fixture.spawn(&TERMINAL_DARK, library);
+    child.write_raw(TO_BETA);
+    child.wait_cursor_query_after(0);
+    wait_for_screen(&mut child, library, "failed");
+    let raw = child.raw_after(0);
+    quit(&mut child);
+    assert!(
+        !raw.windows(b"\x1b]11;?".len())
+            .any(|window| window == b"\x1b]11;?"),
+        "skit asked for the colors with keys waiting"
+    );
+    let parser = replay(&raw, library.rows, library.columns);
+    let row = cells_of(&parser, "│Beta")[1..].to_vec();
+    assert!(
+        all(&row, |cell| cell.inverse()),
+        "the typed-ahead key did not select Beta: {}",
+        describe(&row)
+    );
 }
 
 /// A `config.toml` with no `theme` gets the terminal theme.

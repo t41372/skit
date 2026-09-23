@@ -48,12 +48,6 @@ pub(crate) enum Theme {
     Terminal(Option<Color>),
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self::Skit(ColorDepth::TrueColor)
-    }
-}
-
 thread_local! {
     static CURRENT: Cell<Theme> = const { Cell::new(Theme::Skit(ColorDepth::TrueColor)) };
 }
@@ -90,32 +84,27 @@ impl Drop for ThemeScope {
 /// version 0.4 applied to the same colors. The census checks that no 24-bit color reaches a
 /// terminal of lower depth.
 fn fixed(color: Color) -> Color {
-    let Theme::Skit(depth) = current() else {
-        return color;
-    };
-    match depth {
-        ColorDepth::TrueColor => color,
-        ColorDepth::EightBit => match color {
-            ACCENT => Color::Indexed(173),
-            SELECT_BG => Color::Indexed(52),
-            SELECT_FG => Color::Indexed(254),
-            BOX_GREEN => Color::Indexed(65),
-            BOX_INDIGO => Color::Indexed(61),
-            BOX_MAROON => Color::Indexed(95),
-            BOX_DIM => Color::Indexed(237),
-            PILL_BACKGROUND => Color::Indexed(16),
-            SCROLLBAR => Color::Indexed(238),
-            other => other,
-        },
-        ColorDepth::Standard => match color {
-            ACCENT => Color::LightRed,
-            SELECT_BG | BOX_GREEN | BOX_DIM | SCROLLBAR => Color::DarkGray,
-            SELECT_FG => Color::White,
-            BOX_INDIGO => Color::LightBlue,
-            BOX_MAROON => Color::Yellow,
-            PILL_BACKGROUND => Color::Black,
-            other => other,
-        },
+    match (current(), color) {
+        (Theme::Skit(ColorDepth::EightBit), ACCENT) => Color::Indexed(173),
+        (Theme::Skit(ColorDepth::EightBit), SELECT_BG) => Color::Indexed(52),
+        (Theme::Skit(ColorDepth::EightBit), SELECT_FG) => Color::Indexed(254),
+        (Theme::Skit(ColorDepth::EightBit), BOX_GREEN) => Color::Indexed(65),
+        (Theme::Skit(ColorDepth::EightBit), BOX_INDIGO) => Color::Indexed(61),
+        (Theme::Skit(ColorDepth::EightBit), BOX_MAROON) => Color::Indexed(95),
+        (Theme::Skit(ColorDepth::EightBit), BOX_DIM) => Color::Indexed(237),
+        (Theme::Skit(ColorDepth::EightBit), PILL_BACKGROUND) => Color::Indexed(16),
+        (Theme::Skit(ColorDepth::EightBit), SCROLLBAR) => Color::Indexed(238),
+        (Theme::Skit(ColorDepth::Standard), ACCENT) => Color::LightRed,
+        (Theme::Skit(ColorDepth::Standard), SELECT_BG | BOX_GREEN | BOX_DIM | SCROLLBAR) => {
+            Color::DarkGray
+        }
+        (Theme::Skit(ColorDepth::Standard), SELECT_FG) => Color::White,
+        (Theme::Skit(ColorDepth::Standard), BOX_INDIGO) => Color::LightBlue,
+        (Theme::Skit(ColorDepth::Standard), BOX_MAROON) => Color::Yellow,
+        (Theme::Skit(ColorDepth::Standard), PILL_BACKGROUND) => Color::Black,
+        // 24-bit color. Every caller passes a color of the table above, and only from the
+        // `skit` theme.
+        (_, color) => color,
     }
 }
 
@@ -128,36 +117,46 @@ pub(crate) enum Panel {
     Settings,
     Preferences,
     Picker,
+    /// A picker drawn over another screen. It holds the focus, as a dialog does.
+    Overlay,
     Run,
     Form,
     Add,
     Dialog,
 }
 
-/// The border color of `panel`.
-pub(crate) fn panel_color(panel: Panel) -> Color {
+/// The accent of the frame's theme: terracotta in the `skit` theme, and in the terminal theme the
+/// hue of the background, or the default foreground when the background is unknown.
+fn accent() -> Color {
     match current() {
-        Theme::Skit(_) => match panel {
-            Panel::Library | Panel::Health => fixed(BOX_GREEN),
-            Panel::Detail | Panel::Settings | Panel::Preferences | Panel::Picker => {
-                fixed(BOX_INDIGO)
-            }
-            Panel::Run | Panel::Form | Panel::Add => fixed(BOX_MAROON),
-            Panel::Dialog => fixed(ACCENT),
-        },
-        Theme::Terminal(accent) => match panel {
-            Panel::Dialog => accent.unwrap_or(Color::Reset),
-            _ => Color::Reset,
-        },
+        Theme::Skit(_) => fixed(ACCENT),
+        Theme::Terminal(accent) => accent.unwrap_or(Color::Reset),
+    }
+}
+
+/// The border color of `panel`.
+///
+/// In the terminal theme, a panel border takes a color only when it holds the focus, as a dialog
+/// does, so the color is the accent. [`panel_border`] dims every other panel border.
+pub(crate) fn panel_color(panel: Panel) -> Color {
+    match (current(), panel) {
+        (Theme::Skit(_), Panel::Library | Panel::Health) => fixed(BOX_GREEN),
+        (
+            Theme::Skit(_),
+            Panel::Detail | Panel::Settings | Panel::Preferences | Panel::Picker | Panel::Overlay,
+        ) => fixed(BOX_INDIGO),
+        (Theme::Skit(_), Panel::Run | Panel::Form | Panel::Add) => fixed(BOX_MAROON),
+        (Theme::Skit(_), Panel::Dialog) | (Theme::Terminal(_), _) => accent(),
     }
 }
 
 /// The border style of `panel`.
 ///
-/// The terminal theme dims every panel border except a dialog's, which holds the focus.
+/// The terminal theme dims every panel border except the border of a dialog or an overlay, which
+/// holds the focus.
 pub(crate) fn panel_border(panel: Panel) -> Style {
     match (current(), panel) {
-        (Theme::Terminal(_), Panel::Dialog) | (Theme::Skit(_), _) => {
+        (Theme::Terminal(_), Panel::Dialog | Panel::Overlay) | (Theme::Skit(_), _) => {
             Style::default().fg(panel_color(panel))
         }
         (Theme::Terminal(_), _) => dim_text(),
@@ -375,22 +374,22 @@ pub(crate) fn status_line(line: String, status: Status) -> Line<'static> {
 }
 
 /// The border color of an input, a text area, or a select.
+///
+/// In the terminal theme, a border takes a color only when it has the focus, so the color is the
+/// accent. [`border`] dims an idle border, and [`patch_idle_border`] dims an idle select.
 pub(crate) fn border_color(focused: bool) -> Color {
+    match (current(), focused) {
+        (Theme::Skit(_), false) => fixed(BOX_DIM),
+        (Theme::Skit(_), true) | (Theme::Terminal(_), _) => accent(),
+    }
+}
+
+/// The border style of a select that a clipped row paints by hand, from the `color` of its
+/// `SelectStyle`. The terminal theme dims an idle one, as [`patch_idle_border`] does.
+pub(crate) fn select_border(color: Color, focused: bool) -> Style {
     match current() {
-        Theme::Skit(_) => {
-            if focused {
-                fixed(ACCENT)
-            } else {
-                fixed(BOX_DIM)
-            }
-        }
-        Theme::Terminal(accent) => {
-            if focused {
-                accent.unwrap_or(Color::Reset)
-            } else {
-                Color::Reset
-            }
-        }
+        Theme::Terminal(_) if !focused => dim_text(),
+        Theme::Skit(_) | Theme::Terminal(_) => Style::default().fg(color),
     }
 }
 
@@ -585,10 +584,7 @@ pub(crate) fn footer_chip_style() -> ButtonStyle {
 
 /// The arrow that shows more footer rows above or below.
 pub(crate) fn footer_indicator() -> Style {
-    match current() {
-        Theme::Skit(_) => Style::default().fg(fixed(ACCENT)),
-        Theme::Terminal(accent) => Style::default().fg(accent.unwrap_or(Color::Reset)),
-    }
+    Style::default().fg(accent())
 }
 
 /// A command chip in the action row at the bottom of a health or runner dialog.
@@ -601,10 +597,13 @@ pub(crate) fn dialog_footer_chip_style() -> ButtonStyle {
     }
 }
 
+/// Bold text in the default foreground. It removes the dim of a region below it, such as a dim
+/// panel border under a title: a terminal that draws both would show the text faint.
 fn bold_text() -> Style {
     Style::default()
         .fg(Color::Reset)
         .add_modifier(Modifier::BOLD)
+        .remove_modifier(Modifier::DIM)
 }
 
 fn dim_text() -> Style {
@@ -623,6 +622,29 @@ fn plain_button(variant: ButtonVariant) -> ButtonStyle {
             .focused(Color::Reset, Color::Reset)
             .unfocused(Color::Reset, Color::Reset)
             .toggled(Color::Reset, Color::Reset)
+    }
+}
+
+/// Show the state of a button that can only take colors, in the terminal theme.
+///
+/// `area` covers exactly the painted ` label `, with its padding. A focused button is reversed.
+/// An idle button shows `[` and `]` in its padding cells, the button mark of `dialog` and
+/// `whiptail`, so it still reads as a button without a color and under `NO_COLOR`.
+pub(crate) fn patch_button(buffer: &mut Buffer, area: Rect, focused: bool) {
+    if !matches!(current(), Theme::Terminal(_)) || area.width < 2 {
+        return;
+    }
+    if focused {
+        buffer.set_style(area, Style::default().add_modifier(Modifier::REVERSED));
+        return;
+    }
+    for (x, mark) in [(area.left(), "["), (area.right().saturating_sub(1), "]")] {
+        if let Some(cell) = buffer
+            .cell_mut((x, area.y))
+            .filter(|cell| cell.symbol() == " ")
+        {
+            cell.set_symbol(mark);
+        }
     }
 }
 

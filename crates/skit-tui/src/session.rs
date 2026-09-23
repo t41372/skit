@@ -3049,6 +3049,8 @@ impl TuiSession {
                 .variant(ButtonVariant::SingleLine)
                 .style(theme::run_chip_style())
                 .render_stateful(chip_area, frame.buffer_mut());
+            // A chip is as wide as its painted ` label `, and it never takes the focus.
+            theme::patch_button(frame.buffer_mut(), chip_area, false);
             hits.push(HitRegion {
                 rect: chip_area,
                 action: chip.target,

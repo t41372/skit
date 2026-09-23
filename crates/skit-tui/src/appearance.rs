@@ -184,3 +184,40 @@ impl<B: Backend> Backend for AppearanceBackend<B> {
         self.inner.flush()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui_core::{
+        backend::{Backend, TestBackend},
+        layout::{Position, Size},
+    };
+
+    use super::Appearance;
+
+    /// The forwarders that no full-screen session calls reach the inner backend unchanged.
+    ///
+    /// `docs/design/terminal-palette.md` (phase 1) lists the ways a forwarder can fail; the
+    /// comments name the case each check stops.
+    #[test]
+    fn forwarders_reach_the_inner_backend() {
+        for no_color in [false, true] {
+            let mut backend = Appearance::default()
+                .with_no_color(no_color)
+                .backend(TestBackend::with_lines(["ab", "cd", "ef"]));
+
+            // Case 3: the inner backend's size, not a value of the wrapper's own.
+            let size = backend.window_size().unwrap();
+            assert_eq!(size.columns_rows, Size::new(2, 3));
+            assert_eq!(size.pixels, backend.inner.window_size().unwrap().pixels);
+
+            // Cases 2 and 4: two lines appended on the last row scroll two rows away.
+            backend.set_cursor_position(Position::new(0, 2)).unwrap();
+            backend.append_lines(2).unwrap();
+            backend.inner.assert_scrollback_lines(["ab", "cd"]);
+
+            // Case 1: the whole screen is empty, also the row that the scroll kept.
+            backend.clear().unwrap();
+            backend.inner.assert_buffer_lines(["  ", "  ", "  "]);
+        }
+    }
+}

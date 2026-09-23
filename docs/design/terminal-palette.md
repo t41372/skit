@@ -199,8 +199,6 @@ ratatui-interact `Button` renders `" {icon} {label} "` with one `Style`, so a sp
 style cannot go through `Button`. skit draws its own two-span chip and registers the same click
 region.
 
-Decision: pending owner review of the mockup.
-
 ## Widgets that need a post-pass
 
 `REVERSED` cannot reach these widgets through their style APIs. The `NO_COLOR` filter removes
@@ -213,6 +211,30 @@ their colors, but it cannot add an attribute:
 
 These widgets render with `Reset` colors. Then the screen applies the role's `patch` to the area
 that the widget returns. `Toast` gets the same post-pass, or skit draws its own toast.
+
+Buttons (added 2026-09-23, after the branch review). In the `skit` theme a pill background is the
+only sign that a word is a button. Without it, an idle `▾ insert` chip, a dialog button, or a
+Preferences action reads as plain text, which is the "reachable is not discoverable" failure of the
+first path picker. `patch_button` therefore marks both states:
+
+- A focused button is reversed.
+- An idle button shows `[` and `]` in its two padding cells: `[Discard]`, `[▾ insert]`. This is the
+  button mark of `dialog`, `whiptail`, and Midnight Commander. It needs no color, it survives
+  `NO_COLOR`, and it does not change a width.
+- A button with a key, such as an agent row's `Enter Edit`, is a keycap, as a footer chip is.
+
+`patch_button` takes the painted cells, not the click region. ratatui-interact sizes a `Button`
+region by characters and a `PopupDialog` region by bytes plus four, so both regions miss the
+painted cells of a wide or non-ASCII label.
+
+Other roles that the review added:
+
+- `bold_text` removes `DIM`. A title sits on a dim panel border, and a cell with both is faint on
+  most terminals.
+- `Panel::Overlay` is a picker drawn over another screen. It holds the focus, so its border takes
+  the accent, as a dialog border does. In the `skit` theme it keeps the picker color.
+- `select_border` dims an idle select that a clipped row draws by hand, as `patch_idle_border`
+  dims a whole one.
 
 ## Theme selection
 
@@ -309,8 +331,10 @@ Owner ruling, 2026-09-23:
 The artifact:
 
 - A PTY run of the real binary, parsed with `vt100` 0.16.2 (`crates/skit-cli/tests/support/pty.rs`).
-  `vt100::Cell` reports foreground, background, bold, dim, and inverse, so the census sees every
-  attribute this design uses.
+  `vt100::Cell` reports foreground, background, bold, dim, and inverse. It keeps only the last of
+  bold and dim (`attrs.rs:44-52`), so a cell that the terminal received with both shows as one of
+  them. `terminal_theme_titles_are_bold_and_never_dim` depends on that: a title that also carried
+  dim shows as dim.
 - For each screen, theme, and environment, the final frame as a sorted JSON census of cells: text,
   foreground, background, and attributes. The environments:
   - color: default, `NO_COLOR=1`, no `COLORTERM`
@@ -333,9 +357,18 @@ first, because the output filter does not depend on the role refactor.
    `force_color_output`. Only the 8 `no-color` census files changed, and a cell-by-cell check
    showed that only attributes changed (bold and dim returned; no text, foreground, or background
    moved). The phase 0 tests pass. Known coverage gap: three forwarding methods of
-   `AppearanceBackend` (`append_lines`, `get_cursor_position`, `window_size`, 9 lines) are never
-   called by a full-screen session, so no end-to-end test reaches them. By the owner's ruling, an
-   isolated test waits until the coverage gate asks for it.
+   `AppearanceBackend` are never called by a full-screen session, so no end-to-end test reaches
+   them. Ratatui's `Terminal::clear` calls `clear_region`, not `Backend::clear`; only an inline
+   viewport calls `append_lines`; and Ratatui never calls `window_size`. By the owner's ruling,
+   an isolated test waited until the coverage gate asked for it. The Linux gate asked on
+   2026-09-23 (`append_lines`, `clear`, `window_size`). The ways a forwarder can fail, written
+   before the test:
+   1. It calls a different method of the inner backend, such as `clear_region` for `clear`.
+   2. It changes its argument, such as `append_lines(n)` that appends a different count.
+   3. It returns its own value instead of the inner backend's, such as a fixed window size.
+   4. It does nothing and returns `Ok`, which the trait's default `append_lines` does.
+   `forwarders_reach_the_inner_backend` in `appearance.rs` checks each case against a Ratatui
+   `TestBackend`, with and without `NO_COLOR`.
 2. Role refactor (done 2026-09-23). Every production color in skit-tui now comes from a role
    function in `crates/skit-tui/src/theme.rs`. All 117 census files stayed byte-identical, and the
    old unit assertions pass unchanged. The census was extended first, to 39 screens; it reaches

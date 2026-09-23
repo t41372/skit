@@ -262,7 +262,7 @@ impl ConfirmRemoveSession {
                     .variant(ButtonVariant::SingleLine)
                     .style(style.clone())
                     .render_stateful(button_area, frame.buffer_mut());
-                theme::patch_focus(frame.buffer_mut(), button_area, state.focused);
+                theme::patch_button(frame.buffer_mut(), button_area, state.focused);
                 self.dialog
                     .click_regions
                     .register(button_area, DialogFocusTarget::Button(index));
@@ -285,13 +285,18 @@ impl ConfirmRemoveSession {
             popup.render(frame);
             theme::patch_border_title(frame.buffer_mut(), popup_area);
             // The dialog paints its buttons in fixed colors. The terminal theme keeps the
-            // terminal's colors and reverses the focused button.
+            // terminal's colors and marks the state with attributes. The dialog sizes a click
+            // region as the label's bytes plus four cells but paints ` label ` from its left
+            // edge, so the mark covers the painted cells only.
             for region in self.dialog.click_regions.regions() {
                 if let DialogFocusTarget::Button(index) = region.data {
                     theme::patch_plain(frame.buffer_mut(), region.area);
-                    theme::patch_focus(
+                    let painted = u16::try_from(config.buttons[index].0.width().saturating_add(2))
+                        .unwrap_or(u16::MAX)
+                        .min(region.area.width);
+                    theme::patch_button(
                         frame.buffer_mut(),
-                        region.area,
+                        Rect::new(region.area.x, region.area.y, painted, 1),
                         self.dialog.is_button_focused(index),
                     );
                 }
@@ -601,6 +606,21 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
         .variant(ButtonVariant::SingleLine)
         .style(style)
         .render_stateful(keep_area, frame.buffer_mut());
+    // Each button paints ` label ` in the middle of an area two cells wider.
+    for (area, label) in [(discard_area, &discard), (keep_area, &keep)] {
+        let painted = u16::try_from(label.as_ref().width().saturating_add(2)).unwrap_or(u16::MAX);
+        let offset = area.width.saturating_sub(painted) / 2;
+        theme::patch_button(
+            frame.buffer_mut(),
+            Rect::new(
+                area.x.saturating_add(offset),
+                area.y,
+                painted.min(area.width),
+                1,
+            ),
+            false,
+        );
+    }
 
     ViewGeometry {
         rows: inner,

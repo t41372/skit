@@ -496,10 +496,14 @@ impl RunModalSession {
         self.environment_area = list;
         self.environment_list
             .ensure_visible(self.environment_view_height);
-        frame.render_widget(
-            ListPicker::new(visible, &self.environment_list).style(theme::list_picker_style()),
-            list,
-        );
+        // With no match the list stays empty, as version 0.4's option list does. The list widget
+        // would draw an English "No items" in gray.
+        if !visible.is_empty() {
+            frame.render_widget(
+                ListPicker::new(visible, &self.environment_list).style(theme::list_picker_style()),
+                list,
+            );
+        }
         for row in 0..self.environment_view_height {
             let index = usize::from(self.environment_list.scroll).saturating_add(row);
             if index >= visible.len() {
