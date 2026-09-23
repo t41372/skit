@@ -2,7 +2,7 @@
 
 use ratatui_core::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
 };
@@ -32,7 +32,7 @@ use crate::{
     },
     pointer::contains,
     session::alignment_snapshot,
-    theme::{ACCENT, BOX_GREEN, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel, panel_block},
+    theme::{self, Panel, Status, padded_panel, panel_block},
     viewport::{AlignmentSignature, Viewport},
 };
 
@@ -174,7 +174,7 @@ impl LibraryScreenSession {
             self.focus.set(LibraryPane::List);
         }
 
-        let list_block = panel_block(text(locale, "Library").into_owned(), BOX_GREEN);
+        let list_block = panel_block(text(locale, "Library").into_owned(), Panel::Library);
         let table_inner = list_block.inner(panes[0]);
         let rows = Rect::new(
             table_inner.x,
@@ -212,12 +212,7 @@ impl LibraryScreenSession {
                     Cell::from(health),
                 ]);
                 if selected == Some(index) {
-                    row.style(
-                        Style::default()
-                            .fg(SELECT_FG)
-                            .bg(SELECT_BG)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                    row.style(theme::selection().add_modifier(Modifier::BOLD))
                 } else {
                     row
                 }
@@ -228,11 +223,7 @@ impl LibraryScreenSession {
             Cell::from(text(locale, "Kind")),
             Cell::from(" "),
         ])
-        .style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+        .style(theme::table_header());
         let table = Table::new(
             table_rows,
             [
@@ -384,7 +375,7 @@ impl LibraryScreenSession {
             self.detail_scroll.scroll_to_top();
             self.detail_signature = Some(signature);
         }
-        let base_block = padded_panel(text(locale, "Detail pane").into_owned(), BOX_INDIGO);
+        let base_block = padded_panel(text(locale, "Detail pane").into_owned(), Panel::Detail);
         let inner = base_block.inner(area);
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         let line_count = paragraph.line_count(inner.width);
@@ -407,7 +398,7 @@ impl LibraryScreenSession {
         };
         let block = padded_panel(
             format!("{}{}", text(locale, "Detail pane"), indicator),
-            BOX_INDIGO,
+            Panel::Detail,
         );
         frame.render_widget(block, area);
         frame.render_widget(
@@ -471,10 +462,7 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
     };
     let facts = state.entry_detail(&entry.slug);
     let mut lines = vec![
-        Line::from(Span::styled(
-            entry.name.clone(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled(entry.name.clone(), theme::emphasis())),
         Line::from(format!(
             "{} {}",
             kind_glyph(entry.kind.as_str()),
@@ -485,7 +473,7 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
     if let Some(template) = facts.and_then(|facts| facts.template.as_deref()) {
         lines.push(Line::from(Span::styled(
             template.to_owned(),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         )));
     }
     if let Some(runner) = facts.and_then(|facts| facts.prompt_runner.as_ref()) {
@@ -500,14 +488,14 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
         };
         lines.push(Line::from(Span::styled(
             format!("🤖{runner}"),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         )));
     }
     lines.push(Line::default());
     lines.push(if entry.description.is_empty() {
         Line::from(Span::styled(
             text(locale, "(no description — add one in Entry settings)"),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ))
     } else {
         Line::from(entry.description.clone())
@@ -540,10 +528,7 @@ fn append_storage_mode(lines: &mut Vec<Line<'static>>, entry: &EntrySummary, loc
             )
         ),
     };
-    lines.push(Line::from(Span::styled(
-        mode,
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    lines.push(Line::from(Span::styled(mode, theme::muted())));
 }
 
 fn append_state_lines(lines: &mut Vec<Line<'static>>, facts: &LibraryEntryDetail, locale: Locale) {
@@ -589,23 +574,23 @@ fn append_state_lines(lines: &mut Vec<Line<'static>>, facts: &LibraryEntryDetail
     } else {
         lines.push(Line::from(Span::styled(
             text(locale, "Not run yet"),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         )));
     }
     if let Some(path) = &facts.missing_target {
         lines.push(Line::from(Span::styled(
             format_text(locale, "⚠ missing: {}", &[path]),
-            Style::default().fg(Color::Yellow),
+            theme::status(Status::Warning),
         )));
     } else if facts.drifted {
         lines.push(Line::from(vec![
-            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
+            Span::styled("⚠ ", theme::status(Status::Warning)),
             Span::styled(
                 text(
                     locale,
                     "The script changed — skit checks the form against it before every run.",
                 ),
-                Style::default().fg(Color::Yellow),
+                theme::status(Status::Warning),
             ),
         ]));
     }
@@ -619,17 +604,17 @@ fn last_run_line(last_run: &LibraryLastRun, locale: Locale) -> Line<'static> {
         LibraryRunAge::Days(days) => format_text(locale, "{} d ago", &[days]),
         LibraryRunAge::Raw(raw) => raw.clone(),
     };
-    let (glyph, outcome, color) = match last_run.exit {
-        Some(0) => ('✓', text(locale, "finished").into_owned(), Color::Green),
+    let (glyph, outcome, status) = match last_run.exit {
+        Some(0) => ('✓', text(locale, "finished").into_owned(), Status::Success),
         Some(code) => (
             '✗',
             format_text(locale, "failed (code {})", &[&code]),
-            Color::Yellow,
+            Status::Warning,
         ),
         None => (
             '✗',
             format_text(locale, "failed (code {})", &[&"None"]),
-            Color::Yellow,
+            Status::Warning,
         ),
     };
     let styled_outcome = format!("{glyph} {outcome}");
@@ -640,7 +625,7 @@ fn last_run_line(last_run: &LibraryLastRun, locale: Locale) -> Line<'static> {
     let outcome_end = outcome_at.saturating_add(styled_outcome.len());
     Line::from(vec![
         Span::raw(rendered[..outcome_at].to_owned()),
-        Span::styled(styled_outcome, Style::default().fg(color)),
+        Span::styled(styled_outcome, theme::status(status)),
         Span::raw(rendered[outcome_end..].to_owned()),
     ])
 }

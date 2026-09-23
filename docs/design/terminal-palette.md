@@ -1,6 +1,6 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0 and 1 are done; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0, 1, and 2 are done; see "Phases".
 
 ## Decision
 
@@ -125,6 +125,31 @@ ratatui-interact widgets accept only a `Color` pair and add only `BOLD` on their
 | status glyph | ANSI green / yellow / red | glyph only | ANSI green / yellow / red |
 | status text | default fg | default fg | as today |
 | panel tint | none; titles name the panel | none | per-panel truecolor as today |
+
+
+## Role counterparts
+
+The `skit` column is the value today. Phase 3 changes a role only where version 0.4 differs.
+
+| Role | `skit` today | Version 0.4 | Phase 3 |
+| --- | --- | --- | --- |
+| `text` | `White` (SGR 97) | `foreground="ansi_default"` (`theme.py`) | default foreground |
+| `title` | `White`, bold | border title `ansi_bright_white` (`tui.py:276`) | keep |
+| `table_header` | `White`, bold | `ansi_bright_white`, bold (`theme.py:118`) | keep |
+| `heading` | accent, bold | `.section { color: $accent }` (`tui_prefs.py:139`) | keep |
+| `required` | accent, bold | `[$accent]required` (`tui_form.py:195`) | check bold |
+| `emphasis` | accent, bold | `[bold $accent]` entry name (`tui.py:534`) | keep |
+| `hint` | `DarkGray` (SGR 90) | `[dim]` (`tui.py:538-552`) | dim |
+| `muted` | dim | `[dim]` | keep |
+| `suggestion` | `DarkGray` | not checked | check |
+| `scrollbar` | run form `DarkGray`, settings indigo | `scrollbar: #4A413C` (`theme.py:100`) | `#4A413C` |
+| `key_hint`, `marker`, `notice` | accent | `$accent` | keep |
+| `status` | ANSI green, yellow, red | `success`, `warning`, `error` ANSI (`theme.py`) | keep |
+| `border` | accent or `#3A3A3A` | `$accent` or `border-blurred #3A3A3A` | keep |
+| `panel_color` | per-panel tints | `BOX_*` tints (`theme.py`) | keep |
+| `selection` | `#EEEEEE` on `#5A2D1E` | `block-cursor` colors (`theme.py`) | keep |
+| `caret` | black on accent | `input-cursor` bright white on black (`theme.py`, one-line inputs) | keep: the Rust text area draws its own cursor cell, and one-line inputs use the terminal cursor |
+| picker, select, checkbox, radio, button, chip styles | accent and selection colors | Textual widgets with the theme above | keep |
 
 ## Accent hue
 
@@ -311,12 +336,19 @@ first, because the output filter does not depend on the role refactor.
    `AppearanceBackend` (`append_lines`, `get_cursor_position`, `window_size`, 9 lines) are never
    called by a full-screen session, so no end-to-end test reaches them. By the owner's ruling, an
    isolated test waits until the coverage gate asks for it.
-2. Role refactor. The census stays identical. Before it starts, the census must reach every
-   production color site, or each unreached site is written down as unreachable. On 2026-09-23
-   the 8-screen census reached 49 of 192 sites. Screens with an absolute temporary path stay out,
-   because macOS and Linux temporary paths have different lengths. The `skit` roles resolve to
-   today's constants (`ACCENT`, `SELECT_BG`, and the others), so the old assertions keep passing.
-   The palette travels with `locale`, not through a global.
+2. Role refactor (done 2026-09-23). Every production color in skit-tui now comes from a role
+   function in `crates/skit-tui/src/theme.rs`. All 117 census files stayed byte-identical, and the
+   old unit assertions pass unchanged. The census was extended first, to 39 screens; it reaches
+   122 of 182 color sites (appendix B lists the rest).
+   - The theme travels in a thread-local that `render_with_session` sets for one frame from
+     `TuiSession`, with a guard that restores the previous value. Explicit passing would have
+     changed about 67 functions and every unit test that renders directly. With the thread-local,
+     a frame drawn without a session uses the `skit` theme, so the old assertions keep testing the
+     `skit` look (owner option C, 2026-09-23). Phase 5 must add the census check that catches a
+     site that bypasses the theme: no `#rrggbb`, no `idx:` of 16 or more, no foreground `idx:0`,
+     `idx:7`, or `idx:15`, and no background without inverse, in every terminal-theme file.
+   - Roles are split by their version 0.4 counterpart (see "Role counterparts"), so phase 3
+     changes one role at a time.
 3. Parity restorations, after the site mapping: body text to the default foreground, secondary
    text to dim, scrollbars to `#4A413C`. The census changes only those cells.
 4. `skit` theme color depth. Only the `no-colorterm` census changes, and no cell in it keeps a
@@ -330,3 +362,80 @@ first, because the output filter does not depend on the role refactor.
 
 At the end of each wave, the Linux prompt reruns the census on Linux and diffs it against the
 committed files, and runs the walker corpus.
+
+## Appendix A: role sites
+
+Generated from the source on 2026-09-23 (phase 2). Each row lists the functions that call the
+role.
+
+| Role | Calls | Functions |
+| --- | --- | --- |
+| `action_button_style` | 2 | screens/preferences.rs `render_agent_skill_picker`, screens/preferences.rs `render_control` |
+| `border` | 3 | session.rs `render_header`, session.rs `render_textarea_band` ×2 |
+| `border_color` | 1 | session.rs `render_line_input_band` |
+| `caret` | 1 | session.rs `render_textarea_band` |
+| `checkbox_style` | 2 | screens/settings.rs `draw_control`, session.rs `render_run_control` |
+| `dialog_button_style` | 2 | screens/modal.rs `discard_changes`, screens/modal.rs `render` |
+| `dialog_footer_chip_style` | 1 | footer.rs `dialog` |
+| `emphasis` | 1 | screens/library.rs `detail_lines` |
+| `focused_radio_style` | 1 | session.rs `render_radio_option` |
+| `footer_chip_style` | 2 | footer.rs `default`, footer.rs `render_with_decoration` |
+| `footer_indicator` | 1 | footer.rs `render` |
+| `heading` | 2 | screens/preferences.rs `render`, screens/settings.rs `render_settings` |
+| `hint` | 20 | screens/management.rs `render_summary`, screens/management.rs `render`, screens/preferences.rs `render_agent_skill_picker` ×2, screens/preferences.rs `render_control`, screens/preferences.rs `render`, screens/preferences.rs `runner_row_spans` ×2, screens/settings.rs `draw_control`, screens/settings.rs `render_read_only` ×2, screens/settings.rs `render_settings`, session.rs `run_field_label` ×2, session.rs `run_field_notes` ×5, session.rs `run_layout` |
+| `key_hint` | 2 | screens/settings.rs `render_settings` ×2 |
+| `list_picker_style` | 4 | screens/management.rs `render_issues`, screens/preferences.rs `render_agent_skill_picker`, screens/run_modal.rs `render_environment`, screens/run_modal.rs `render_token_menu` |
+| `marker` | 5 | screens/add.rs `render_row`, screens/preferences.rs `paint_focus_marker`, screens/settings.rs `render_options` ×2, session.rs `render_radio_option` |
+| `muted` | 26 | screens/add.rs `hint`, screens/add.rs `render_footer` ×2, screens/add.rs `review_rows` ×9, screens/add.rs `source_rows` ×2, screens/library.rs `append_state_lines`, screens/library.rs `append_storage_mode`, screens/library.rs `detail_lines` ×3, screens/modal.rs `render`, screens/picker.rs `render_file_picker` ×3, screens/picker.rs `render_picker_footer_items` ×2, screens/picker.rs `render_prompt_candidate_picker` |
+| `notice` | 2 | screens/add.rs `build_rows`, screens/add.rs `kind_rows` |
+| `panel Add` | 1 | screens/add.rs `render_add` |
+| `panel Detail` | 2 | screens/library.rs `render_detail` ×2 |
+| `panel Dialog` | 6 | screens/management.rs `render`, screens/modal.rs `discard_changes`, screens/modal.rs `render` ×3, screens/run_modal.rs `modal_block` |
+| `panel Form` | 1 | session.rs `render_form` |
+| `panel Health` | 1 | screens/management.rs `render` |
+| `panel Library` | 1 | screens/library.rs `render` |
+| `panel Picker` | 3 | screens/picker.rs `render_file_picker`, screens/picker.rs `render_prompt_candidate_picker`, screens/preferences.rs `render_agent_skill_picker` |
+| `panel Preferences` | 1 | screens/preferences.rs `render` |
+| `panel Run` | 2 | session.rs `render_run`, session.rs `run_scrollbar_style` |
+| `panel Settings` | 2 | screens/settings.rs `render_settings`, screens/settings.rs `settings_scrollbar_style` |
+| `panel_border` | 2 | screens/modal.rs `render`, screens/run_modal.rs `modal_block` |
+| `panel_color` | 2 | screens/modal.rs `render` ×2 |
+| `radio_style` | 1 | session.rs `render_radio_option` |
+| `required` | 1 | session.rs `run_field_label` |
+| `run_chip_style` | 1 | session.rs `render_run_chips` |
+| `scrollbar` | 2 | screens/settings.rs `settings_scrollbar_style`, session.rs `run_scrollbar_style` |
+| `select_style` | 5 | screens/preferences.rs `render_control` ×2, screens/preferences.rs `render_open_dropdowns`, session.rs `render_open_dropdowns`, session.rs `render_run_control` |
+| `selection` | 7 | screens/add.rs `render_row`, screens/library.rs `render`, screens/picker.rs `render_file_picker` ×2, screens/settings.rs `render_options`, session.rs `render_textarea_band` ×2 |
+| `status` | 29 | screens/add.rs `build_rows`, screens/add.rs `confirm_draft_delete_rows`, screens/add.rs `review_rows` ×3, screens/library.rs `append_state_lines` ×3, screens/library.rs `last_run_line`, screens/management.rs `render_summary` ×9, screens/management.rs `render` ×2, screens/picker.rs `render_file_picker`, screens/preferences.rs `runner_row_spans`, screens/run_modal.rs `render_file`, screens/run_modal.rs `render_preset`, session.rs `run_field_notes` ×3, session.rs `run_layout` ×2 |
+| `suggestion` | 1 | session.rs `render_line_input_band` |
+| `table_header` | 1 | screens/library.rs `render` |
+| `text` | 13 | screens/preferences.rs `render_radio_band`, screens/preferences.rs `runner_row_spans`, screens/settings.rs `render_options` ×2, screens/settings.rs `render_read_only`, screens/settings.rs `render_settings` ×2, session.rs `render_flat_search_input`, session.rs `render_line_input_band` ×2, session.rs `render_textarea_band`, session.rs `run_field_label`, session.rs `run_layout` |
+
+## Appendix B: color sites the census does not reach
+
+Measured with `cargo llvm-cov` over the census on 2026-09-23, before the role refactor. Each group
+needs a state the census fixture does not create.
+
+- `add.rs` `review_rows` (11): detected-parameter kinds other than a shell constant (argparse,
+  environment reads, unsupported shapes).
+- `add.rs` `build_rows`, `source_rows`, `kind_rows`, `hint`, `confirm_draft_delete_rows`,
+  `render_footer`: an add notice, an ambiguous kind, a draft to delete, and a scrolled footer.
+- `library.rs` `append_state_lines` (3), `detail_lines`: a missing target, a drifted script, and
+  a reference-mode entry (its path is a host path).
+- `management.rs` `render_summary` (3), `render`: uv found (depends on the host), invalid runner
+  rows, and a runner editor error.
+- `modal.rs` `render` (4): the compact removal dialog of a very small terminal.
+- `picker.rs` `render_file_picker` (5), `render_picker_footer_items`,
+  `render_prompt_candidate_picker` (2): a multi-select picker, an I/O error, and the prompt
+  variable picker.
+- `preferences.rs` `render_agent_skill_picker`, `runner_row_spans`: an install hint and an
+  invalid runner row.
+- `run_modal.rs` `render_file`, `render_preset`: a file error and a preset name error.
+- `settings.rs` `render_options` (2), `render_read_only` (3), `render_settings` (4): an open
+  option list, read-only fields, and the `Ctrl+N` and `Ctrl+O` rows.
+- `session.rs` `run_field_notes` (6), `run_layout` (2), `render_header`: expansion, token, and
+  glob notes; drift and degradation notices; and the compact header.
+- `footer.rs` `render`: the scroll arrow of a dialog action row.
+
+The role refactor kept these sites on the same values, and the old unit assertions still cover
+many of them.

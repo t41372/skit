@@ -142,6 +142,7 @@ pub fn render_with_session(
     locale: Locale,
     session: &mut TuiSession,
 ) -> ViewGeometry {
+    let _theme = theme::ThemeScope::enter(session.theme());
     session.begin_screen_target_render();
     session.begin_render(state, locale);
     let profile = ViewportProfile::new(frame.area());

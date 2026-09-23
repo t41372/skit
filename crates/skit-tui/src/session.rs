@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use ratatui_core::{
     buffer::Buffer,
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     terminal::Frame,
     text::{Line, Span},
 };
@@ -16,9 +16,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use ratatui_interact::{
     components::{
-        Button, ButtonState, ButtonStyle, ButtonVariant, CheckBox, CheckBoxState, CheckBoxStyle,
-        Select, SelectAction, SelectState, SelectStyle, Toast, ToastState, ToastStyle,
-        handle_select_key,
+        Button, ButtonState, ButtonVariant, CheckBox, CheckBoxState, Select, SelectAction,
+        SelectState, Toast, ToastState, ToastStyle, handle_select_key,
     },
     state::FocusManager,
     traits::ClickRegion,
@@ -82,7 +81,7 @@ use crate::{
     screens::settings::{
         SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, render_settings,
     },
-    theme::{ACCENT, BOX_DIM, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
+    theme::{self, Panel, Status, Theme, panel_block},
     viewport::{AlignmentSignature, VirtualScrollState},
 };
 
@@ -963,6 +962,8 @@ pub struct TuiSession {
     clicks: HitMap<TopLevelClickTarget>,
     top_level_click: ClickTracker<TopLevelClickTarget>,
     local_actions: LocalActionInventory,
+    /// The palette of every frame this session draws.
+    theme: Theme,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1600,6 +1601,7 @@ impl TuiSession {
             clicks,
             top_level_click,
             local_actions,
+            theme: _,
         } = self;
         if quit_armed_at.is_some() || quit_toast.occupied() {
             return Err(AgentReviewSnapshotError::ClockActive);
@@ -1685,6 +1687,7 @@ impl TuiSession {
             clicks: self.clicks.clone(),
             top_level_click: self.top_level_click.clone(),
             local_actions: self.local_actions.clone(),
+            theme: self.theme,
         })
     }
 
@@ -1851,6 +1854,11 @@ impl TuiSession {
             path_suggestions: PathSuggestionSession::new(provider),
             ..Self::default()
         }
+    }
+
+    /// The palette of every frame this session draws.
+    pub(crate) const fn theme(&self) -> Theme {
+        self.theme
     }
 
     /// Apply completed background work before the next draw.
@@ -2500,7 +2508,7 @@ impl TuiSession {
             Paragraph::new(title).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(BOX_DIM))
+                    .border_style(theme::border(false))
                     .title(" skit "),
             ),
             area,
@@ -2516,7 +2524,7 @@ impl TuiSession {
     ) -> ViewGeometry {
         self.form.sync(form);
         self.form.clicks.clear();
-        let block = panel_block(crate::form_title(locale, form), BOX_MAROON);
+        let block = panel_block(crate::form_title(locale, form), Panel::Form);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.form.prepare_layout(form, inner);
@@ -2605,7 +2613,7 @@ impl TuiSession {
         self.run.hits.clear();
         let block = panel_block(
             format!("{} {}", text(locale, "Run"), form.name()),
-            BOX_MAROON,
+            Panel::Run,
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -2880,7 +2888,7 @@ impl TuiSession {
         ) else {
             return;
         };
-        let select_style = select_style();
+        let select_style = theme::select_style();
         match &mut self.run.controls[index] {
             WidgetControl::Input {
                 state,
@@ -2921,7 +2929,7 @@ impl TuiSession {
             WidgetControl::Checkbox(state) => {
                 let shown = text(locale, if state.checked { "on" } else { "off" });
                 let region = CheckBox::new(&shown, state)
-                    .style(checkbox_style())
+                    .style(theme::checkbox_style())
                     .render_stateful(area, frame.buffer_mut());
                 self.run
                     .hits
@@ -3017,7 +3025,7 @@ impl TuiSession {
             let state = ButtonState::enabled();
             let _ = Button::new(&chip.label, &state)
                 .variant(ButtonVariant::SingleLine)
-                .style(run_chip_style())
+                .style(theme::run_chip_style())
                 .render_stateful(chip_area, frame.buffer_mut());
             hits.push(HitRegion {
                 rect: chip_area,
@@ -3044,7 +3052,7 @@ impl TuiSession {
                     continue;
                 };
                 let regions = Select::new(options, state)
-                    .style(select_style())
+                    .style(theme::select_style())
                     .render_dropdown(frame, anchor, screen);
                 self.run.dropdown_regions[index] = regions;
             }
@@ -4889,7 +4897,7 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
         push_run_copy(
             &mut items,
             &mut start,
-            run_copy(line.clone(), Style::default().fg(Color::Yellow)),
+            run_copy(line.clone(), theme::status(Status::Warning)),
             width,
         );
     }
@@ -4907,7 +4915,7 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
             &mut start,
             run_copy(
                 text(locale, key).into_owned(),
-                Style::default().fg(Color::Yellow),
+                theme::status(Status::Warning),
             ),
             width,
         );
@@ -4921,17 +4929,14 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
             &mut start,
             RunCopy {
                 line: Line::from(vec![
-                    Span::styled(
-                        format!("{} ", text(locale, "Preset:")),
-                        Style::default().fg(Color::White),
-                    ),
+                    Span::styled(format!("{} ", text(locale, "Preset:")), theme::text()),
                     Span::styled(
                         text(
                             locale,
                             "none yet — fill the form and press Ctrl+S to save one",
                         )
                         .into_owned(),
-                        Style::default().fg(Color::DarkGray),
+                        theme::hint(),
                     ),
                 ]),
             },
@@ -5022,27 +5027,24 @@ fn run_copy(value: String, style: Style) -> RunCopy {
 fn run_field_label(field: &RunField, locale: Locale) -> Line<'static> {
     let mut spans = vec![Span::styled(
         run_field_display_label(field, locale),
-        Style::default().fg(Color::White),
+        theme::text(),
     )];
     if field.required {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             text(locale, "required").into_owned(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            theme::required(),
         ));
     }
     if let Some(type_label) = run_type_label(field.parameter_type, locale) {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            type_label,
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(type_label, theme::hint()));
     }
     if field.secret() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             format!("🔒 {}", text(locale, "never saved to disk")),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
     }
     Line::from(spans)
@@ -5071,15 +5073,12 @@ fn run_type_label(parameter_type: ParameterType, locale: Locale) -> Option<Strin
 fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
     let mut notes = Vec::new();
     if !field.help.is_empty() {
-        notes.push(run_copy(
-            field.help.clone(),
-            Style::default().fg(Color::DarkGray),
-        ));
+        notes.push(run_copy(field.help.clone(), theme::hint()));
     }
     if field.degraded {
         notes.push(run_copy(
             text(locale, "Leave empty to use the script's own default.").into_owned(),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
     }
     if field.input_binding {
@@ -5089,7 +5088,7 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
                 "Leave empty and the script will ask you in the terminal.",
             )
             .into_owned(),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
     }
     if let Some(environment) = field.environment_source() {
@@ -5099,14 +5098,11 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
                 "Leave empty to read it from the environment variable {}.",
                 &[&environment],
             ),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
     }
     if let Some(expanded) = &field.feedback.expanded {
-        notes.push(run_copy(
-            format!("→ {expanded}"),
-            Style::default().fg(Color::DarkGray),
-        ));
+        notes.push(run_copy(format!("→ {expanded}"), theme::hint()));
     }
     if let Some(error) = &field.feedback.token_error {
         let message = match error {
@@ -5118,27 +5114,27 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
         };
         notes.push(run_copy(
             format!("→ {message}"),
-            Style::default().fg(Color::Yellow),
+            theme::status(Status::Warning),
         ));
     }
     if let Some(count) = field.feedback.glob_count {
-        let (message, color) = if count == 0 {
+        let (message, status) = if count == 0 {
             (
                 text(locale, "⚠ matches no files yet").into_owned(),
-                Color::Yellow,
+                Status::Warning,
             )
         } else {
             (
                 format_text(locale, "✓ matches {} file(s)", &[&count]),
-                Color::Green,
+                Status::Success,
             )
         };
-        notes.push(run_copy(message, Style::default().fg(color)));
+        notes.push(run_copy(message, theme::status(status)));
     }
     if let Some(error) = field.validation_error {
         notes.push(run_copy(
             run_validation_message(field, error, locale),
-            Style::default().fg(Color::Red),
+            theme::status(Status::Danger),
         ));
     }
     notes
@@ -5292,13 +5288,7 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
 
 /// The run form's scroll affordance colour.
 fn run_scrollbar_style() -> Style {
-    Style::default().fg(Color::DarkGray)
-}
-
-fn run_chip_style() -> ButtonStyle {
-    ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(Color::White, ACCENT)
-        .unfocused(ACCENT, SELECT_BG)
+    theme::scrollbar(Panel::Run)
 }
 
 pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
@@ -5378,22 +5368,16 @@ pub(crate) fn render_line_input_band(
     label: &str,
     suggestion: Option<&str>,
 ) -> Option<EditableGeometry> {
-    let border = if focused { ACCENT } else { BOX_DIM };
+    let border = theme::border_color(focused);
     let width = usize::from(clip.area().width.saturating_sub(2).max(1));
     let scroll = display_scroll(state.value(), state.cursor(), width, secret);
     let display = if secret {
-        Line::from(Span::styled(
-            secret_display(state.value()),
-            Style::default().fg(Color::White),
-        ))
+        Line::from(Span::styled(secret_display(state.value()), theme::text()))
     } else {
         let suffix = suggestion.and_then(|suggestion| suggestion.strip_prefix(state.value()));
         Line::from(vec![
-            Span::styled(state.value().to_owned(), Style::default().fg(Color::White)),
-            Span::styled(
-                suffix.unwrap_or_default().to_owned(),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(state.value().to_owned(), theme::text()),
+            Span::styled(suffix.unwrap_or_default().to_owned(), theme::suggestion()),
         ])
     };
     clip.paint_bordered_paragraph(
@@ -5457,7 +5441,7 @@ fn render_flat_search_input(
     };
     frame.render_widget(
         Paragraph::new(shown)
-            .style(Style::default().fg(Color::White))
+            .style(theme::text())
             .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
         content,
     );
@@ -5487,17 +5471,13 @@ pub(crate) fn render_textarea_band(
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused { ACCENT } else { BOX_DIM }))
+            .border_style(theme::border(focused))
             .title(label.to_owned()),
     );
-    state.set_style(Style::default().fg(Color::White));
+    state.set_style(theme::text());
     state.set_cursor_line_style(Style::default());
-    state.set_cursor_style(if focused {
-        Style::default().fg(Color::Black).bg(ACCENT)
-    } else {
-        Style::default().fg(Color::White)
-    });
-    state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
+    state.set_cursor_style(theme::caret(focused));
+    state.set_selection_style(theme::selection());
     let content_width = usize::from(clip.area().width.saturating_sub(2));
     let content_height = clip.full_height().saturating_sub(2);
     viewport.align(state, content_width, content_height);
@@ -5515,13 +5495,13 @@ pub(crate) fn render_textarea_band(
         content_end.saturating_sub(content_start),
         viewport.left_cell(),
         content_width,
-        Style::default().fg(SELECT_FG).bg(SELECT_BG),
+        theme::selection(),
     );
     clip.paint_bordered_lines(
         frame.buffer_mut(),
         lines,
         Line::from(label.to_owned()),
-        Style::default().fg(if focused { ACCENT } else { BOX_DIM }),
+        theme::border(focused),
     );
     let first = clip.row(content_start)?;
     (content_start < content_end && first.width > 2).then(|| {
@@ -5536,39 +5516,6 @@ pub(crate) fn render_textarea_band(
             usize::from(state.tab_length()),
         )
     })
-}
-
-pub(crate) fn checkbox_style() -> CheckBoxStyle {
-    CheckBoxStyle::unicode()
-        .focused_fg(ACCENT)
-        .unfocused_fg(Color::White)
-        .checked_fg(Color::Green)
-}
-
-pub(crate) fn select_style() -> SelectStyle {
-    SelectStyle {
-        focused_border: ACCENT,
-        unfocused_border: BOX_DIM,
-        dropdown_border: ACCENT,
-        highlight_style: Style::default().fg(SELECT_FG).bg(SELECT_BG),
-        ..SelectStyle::default()
-    }
-}
-
-pub(crate) fn radio_style() -> ButtonStyle {
-    ButtonStyle::new(ButtonVariant::Toggle)
-        .focused(SELECT_FG, SELECT_BG)
-        .unfocused(Color::White, Color::Reset)
-        .toggled(SELECT_FG, SELECT_BG)
-}
-
-/// The style of the selected option of the focused radio group.
-///
-/// `ratatui-interact` reads the toggled flag before the focused flag, so the focused colour of
-/// [`radio_style`] never reaches a selected option. This style puts the focus on the toggled
-/// colours instead.
-pub(crate) fn focused_radio_style() -> ButtonStyle {
-    radio_style().toggled(SELECT_FG, ACCENT)
 }
 
 /// The cells one radio option keeps for its value glyph.
@@ -5605,7 +5552,7 @@ pub(crate) fn render_radio_option(
         area.y,
         if selected { "◉ " } else { "○ " },
         usize::from(glyph_cells),
-        Style::default().fg(ACCENT),
+        theme::marker(),
     );
     let chip = Rect::new(
         area.x.saturating_add(glyph_cells),
@@ -5614,9 +5561,9 @@ pub(crate) fn render_radio_option(
         1,
     );
     let style = if focused && selected {
-        focused_radio_style()
+        theme::focused_radio_style()
     } else {
-        radio_style()
+        theme::radio_style()
     };
     Button::new(label, button)
         .variant(ButtonVariant::Toggle)
@@ -5628,6 +5575,7 @@ pub(crate) fn render_radio_option(
 
 #[cfg(test)]
 mod textarea_band_tests {
+    use crate::theme::{ACCENT, SELECT_BG, SELECT_FG, checkbox_style};
     use std::collections::BTreeMap;
 
     use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};

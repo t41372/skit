@@ -7,7 +7,7 @@ use std::{
 
 use ratatui_core::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
 };
@@ -37,7 +37,7 @@ use crate::{
     footer::handle_footer_scroll,
     pointer::{ClickOutcome, ClickTracker, EditableGeometry},
     session::render_search_line_input,
-    theme::{BOX_INDIGO, SELECT_BG, SELECT_FG, panel_block},
+    theme::{self, Panel, Status, panel_block},
 };
 
 /// Mouse target in the complete prompt-variable picker.
@@ -443,7 +443,7 @@ pub fn render_prompt_candidate_picker(
     let compact = area.height < 12 || area.width < 52;
     let outer = panel_block(
         text(locale, "Choose prompt variables").into_owned(),
-        BOX_INDIGO,
+        Panel::Picker,
     );
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -517,8 +517,7 @@ pub fn render_prompt_candidate_picker(
     session.list.ensure_visible(session.visible_height);
     if labels.is_empty() {
         frame.render_widget(
-            Paragraph::new(text(locale, "No matching entries"))
-                .style(Style::default().add_modifier(Modifier::DIM)),
+            Paragraph::new(text(locale, "No matching entries")).style(theme::muted()),
             rows,
         );
     } else {
@@ -1471,7 +1470,7 @@ pub fn render_file_picker(
             PickerPurpose::WorkingDirectory => text(locale, "Working directory").into_owned(),
             PickerPurpose::Configuration => text(locale, "Settings").into_owned(),
         },
-        BOX_INDIGO,
+        Panel::Picker,
     );
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -1511,7 +1510,7 @@ pub fn render_file_picker(
     if !compact {
         frame.render_widget(
             Paragraph::new(session.explorer.current_dir.display().to_string())
-                .style(Style::default().add_modifier(Modifier::DIM)),
+                .style(theme::muted()),
             path_row,
         );
     }
@@ -1522,16 +1521,13 @@ pub fn render_file_picker(
     }];
     if session.current_directory_available() {
         let style = if session.current_directory_focused {
-            Style::default()
-                .fg(SELECT_FG)
-                .bg(SELECT_BG)
-                .add_modifier(Modifier::BOLD)
+            theme::selection().add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         lines.push(
             Line::from(vec![
-                Span::styled("📂 ", Style::default().add_modifier(Modifier::DIM)),
+                Span::styled("📂 ", theme::muted()),
                 Span::raw(text(locale, "(use this directory)").into_owned()),
             ])
             .style(style),
@@ -1561,10 +1557,7 @@ pub fn render_file_picker(
         };
         lines.push(
             Line::from(format!("{mark} {icon} {}", entry.name)).style(if cursor {
-                Style::default()
-                    .fg(SELECT_FG)
-                    .bg(SELECT_BG)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             }),
@@ -1580,13 +1573,13 @@ pub fn render_file_picker(
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             text(locale, "No matching entries"),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         )));
     }
     if let Some(error) = &session.io_error {
         lines.push(Line::from(Span::styled(
             error,
-            Style::default().fg(Color::Red),
+            theme::status(Status::Danger),
         )));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows);
@@ -1674,10 +1667,7 @@ fn render_picker_footer_items<T>(
             .y
             .saturating_add(u16::try_from(item.row.saturating_sub(offset)).unwrap_or(u16::MAX));
         let chip_area = Rect::new(area.x.saturating_add(item.x), y, item.width, 1);
-        frame.render_widget(
-            Paragraph::new(item.label).style(Style::default().add_modifier(Modifier::DIM)),
-            chip_area,
-        );
+        frame.render_widget(Paragraph::new(item.label).style(theme::muted()), chip_area);
         hits.push((chip_area, item.target));
     }
     if rows > visible_height {
@@ -1689,7 +1679,7 @@ fn render_picker_footer_items<T>(
             "↕"
         };
         frame.render_widget(
-            Paragraph::new(indicator).style(Style::default().add_modifier(Modifier::DIM)),
+            Paragraph::new(indicator).style(theme::muted()),
             Rect::new(area.right().saturating_sub(1), area.y, 1, 1),
         );
     }
@@ -2080,6 +2070,7 @@ fn select_first_real_entry(explorer: &mut FileExplorerState) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::theme::SELECT_BG;
     use std::fs;
 
     use ratatui_core::{backend::TestBackend, terminal::Terminal};

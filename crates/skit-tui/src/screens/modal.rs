@@ -2,7 +2,7 @@
 
 use ratatui_core::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
 };
@@ -10,9 +10,8 @@ use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::components::{
-    Button, ButtonState, ButtonStyle, ButtonVariant, DialogConfig, DialogFocusTarget, DialogState,
-    PopupDialog, ScrollableContentState, handle_scrollable_content_key,
-    handle_scrollable_content_mouse,
+    Button, ButtonState, ButtonVariant, DialogConfig, DialogFocusTarget, DialogState, PopupDialog,
+    ScrollableContentState, handle_scrollable_content_key, handle_scrollable_content_mouse,
 };
 use ratatui_interact::traits::{ContainerAction, EventResult};
 use ratatui_widgets::{
@@ -32,7 +31,7 @@ use crate::{
         scroll as snapshot_scroll,
     },
     pointer::{ClickOutcome, ClickTracker},
-    theme::{ACCENT, BOX_DIM, padded_panel},
+    theme::{self, Panel, padded_panel},
 };
 
 /// Result of one mature confirmation-dialog event.
@@ -203,8 +202,8 @@ impl ConfirmRemoveSession {
             .height_percent(38)
             .min_size(34, 7)
             .max_size(90, 12)
-            .border_color(ACCENT)
-            .focused_border_color(ACCENT)
+            .border_color(theme::panel_color(Panel::Dialog))
+            .focused_border_color(theme::panel_color(Panel::Dialog))
             .close_on_outside_click(false)
             .buttons(vec![
                 (text(locale, "Remove").into_owned(), ContainerAction::Submit),
@@ -234,7 +233,7 @@ impl ConfirmRemoveSession {
             frame.render_widget(Clear, area);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(ACCENT))
+                .border_style(theme::panel_border(Panel::Dialog))
                 .title(format!(" {} ", text(locale, "Confirm removal")));
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -255,9 +254,7 @@ impl ConfirmRemoveSession {
                     .wrap(Wrap { trim: false }),
                 message_area,
             );
-            let style = ButtonStyle::new(ButtonVariant::SingleLine)
-                .focused(Color::Black, ACCENT)
-                .unfocused(Color::White, BOX_DIM);
+            let style = theme::dialog_button_style();
             for (index, button_area) in button_areas {
                 let mut state = ButtonState::enabled();
                 state.set_focused(self.dialog.is_button_focused(index));
@@ -279,7 +276,7 @@ impl ConfirmRemoveSession {
                     lines.push(Line::default());
                     lines.push(Line::from(Span::styled(
                         text(locale, "Your original file will not be deleted."),
-                        Style::default().add_modifier(Modifier::DIM),
+                        theme::muted(),
                     )));
                 }
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -559,7 +556,7 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     // Version 0.4 shows the question once, inside an untitled border
     // (`src/skit/tui_settings.py:42-65`). The header names the surface; the
     // panel itself must not repeat the body sentence as a title.
-    let block = padded_panel(String::new(), ACCENT);
+    let block = padded_panel(String::new(), Panel::Dialog);
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
 
@@ -581,9 +578,7 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     ])
     .spacing(1)
     .areas(actions);
-    let style = ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(Color::Black, ACCENT)
-        .unfocused(Color::White, BOX_DIM);
+    let style = theme::dialog_button_style();
     let discard_region = Button::new(&discard, &ButtonState::default())
         .variant(ButtonVariant::SingleLine)
         .style(style.clone())

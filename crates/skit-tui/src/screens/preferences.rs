@@ -4,7 +4,7 @@ use std::{cmp::Ordering, collections::HashMap, fmt::Display};
 
 use ratatui_core::{
     layout::{Alignment, Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     terminal::Frame,
     text::{Line, Span},
 };
@@ -13,8 +13,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use ratatui_interact::{
     components::{
-        Button, ButtonState, ButtonVariant, ListPicker, ListPickerState, ListPickerStyle,
-        ScrollableContentState, Select, SelectAction, SelectState, handle_scrollable_content_key,
+        Button, ButtonState, ButtonVariant, ListPicker, ListPickerState, ScrollableContentState,
+        Select, SelectAction, SelectState, handle_scrollable_content_key,
         handle_scrollable_content_mouse, handle_select_key,
     },
     state::FocusManager,
@@ -50,8 +50,8 @@ use crate::{
     footer::ActionFooterStyle,
     pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
     rowclip::RowClip,
-    session::{radio_option_width, render_line_input_band, render_radio_option, select_style},
-    theme::{ACCENT, BOX_DIM, BOX_INDIGO, padded_panel},
+    session::{radio_option_width, render_line_input_band, render_radio_option},
+    theme::{self, Panel, Status, padded_panel},
     viewport::AlignmentSignature,
 };
 
@@ -799,7 +799,7 @@ impl PreferencesWidgetSession {
             }
         }
 
-        let block = padded_panel(text(locale, "Preferences").into_owned(), BOX_INDIGO);
+        let block = padded_panel(text(locale, "Preferences").into_owned(), Panel::Preferences);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.viewport = inner;
@@ -837,14 +837,13 @@ impl PreferencesWidgetSession {
                 RenderItem::Spacer => {}
                 RenderItem::Heading(value) => clip.paint_paragraph(
                     frame.buffer_mut(),
-                    Paragraph::new(value.as_str())
-                        .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                    Paragraph::new(value.as_str()).style(theme::heading()),
                 ),
                 RenderItem::Copy(value) => clip.paint_paragraph(
                     frame.buffer_mut(),
                     Paragraph::new(value.as_str())
                         .wrap(Wrap { trim: false })
-                        .style(Style::default().fg(Color::DarkGray)),
+                        .style(theme::hint()),
                 ),
                 RenderItem::Control(control) => {
                     self.render_control(frame, clip, control, view, locale);
@@ -1136,7 +1135,7 @@ impl PreferencesWidgetSession {
         frame.render_widget(Clear, panel);
         let block = padded_panel(
             text(locale, "Teach an AI agent to use skit").into_owned(),
-            BOX_INDIGO,
+            Panel::Picker,
         );
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
@@ -1161,7 +1160,7 @@ impl PreferencesWidgetSession {
                     "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Install by hand with: skit agent install --to DIR",
                 ))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(theme::hint()),
                 list_area,
             );
         } else {
@@ -1177,18 +1176,7 @@ impl PreferencesWidgetSession {
                 })
                 .collect::<Vec<_>>();
             frame.render_widget(
-                ListPicker::new(&labels, &self.agent_picker).style(ListPickerStyle {
-                    selected_style: Style::default()
-                        .fg(Color::Black)
-                        .bg(ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                    normal_style: Style::default().fg(Color::White),
-                    indicator_style: Style::default().fg(ACCENT),
-                    border_style: Style::default(),
-                    indicator: "▶ ",
-                    indicator_empty: "  ",
-                    bordered: false,
-                }),
+                ListPicker::new(&labels, &self.agent_picker).style(theme::list_picker_style()),
                 list_area,
             );
             for visible in 0..self.agent_picker_height.min(picker.targets().len()) {
@@ -1207,8 +1195,7 @@ impl PreferencesWidgetSession {
             }
             if let Some(target) = picker.selected_target() {
                 frame.render_widget(
-                    Paragraph::new(target.skills_dir().display().to_string())
-                        .style(Style::default().fg(Color::DarkGray)),
+                    Paragraph::new(target.skills_dir().display().to_string()).style(theme::hint()),
                     preview_area,
                 );
             }
@@ -1222,11 +1209,7 @@ impl PreferencesWidgetSession {
             let button_area = Rect::new(cancel_area.x, cancel_area.y, width, 1);
             let region = Button::new(&label, &self.agent_cancel)
                 .variant(ButtonVariant::SingleLine)
-                .style(
-                    ratatui_interact::components::ButtonStyle::new(ButtonVariant::SingleLine)
-                        .focused(Color::White, ACCENT)
-                        .unfocused(Color::White, BOX_DIM),
-                )
+                .style(theme::action_button_style())
                 .render_stateful(button_area, frame.buffer_mut());
             self.agent_cancel_area = Some(region.area);
             self.agent_clicks
@@ -1400,8 +1383,7 @@ impl PreferencesWidgetSession {
                         1,
                     );
                     frame.render_widget(
-                        Paragraph::new(text(locale, &model.placeholder))
-                            .style(Style::default().fg(Color::DarkGray)),
+                        Paragraph::new(text(locale, &model.placeholder)).style(theme::hint()),
                         inner,
                     );
                 }
@@ -1420,11 +1402,11 @@ impl PreferencesWidgetSession {
                     let region = Select::new(labels, state)
                         .label(&label)
                         .placeholder(&placeholder)
-                        .style(select_style())
+                        .style(theme::select_style())
                         .render_stateful(frame, area);
                     *select_area = Some(region.area);
                 } else {
-                    let style = select_style();
+                    let style = theme::select_style();
                     let display = state
                         .selected_index
                         .and_then(|index| labels.get(index))
@@ -1510,11 +1492,7 @@ impl PreferencesWidgetSession {
                 Button::new(&label, state)
                     .variant(ButtonVariant::SingleLine)
                     .alignment(Alignment::Left)
-                    .style(
-                        ratatui_interact::components::ButtonStyle::new(ButtonVariant::SingleLine)
-                            .focused(Color::White, ACCENT)
-                            .unfocused(Color::White, BOX_DIM),
-                    )
+                    .style(theme::action_button_style())
                     .render_stateful(painted, frame.buffer_mut());
                 self.clicks
                     .register(painted, PreferencesHit::Control(control.id));
@@ -1547,7 +1525,7 @@ impl PreferencesWidgetSession {
                     dropdown_regions.clear();
                     continue;
                 };
-                let style = select_style();
+                let style = theme::select_style();
                 *dropdown_panel =
                     select_dropdown_panel(anchor, screen, labels.len(), style.max_visible_options);
                 *dropdown_regions = Select::new(labels, state)
@@ -1880,10 +1858,7 @@ fn render_radio_band(
     for (source, row) in clip.rows() {
         let body = options_band(row);
         if source < label_rows {
-            frame.render_widget(
-                Paragraph::new(label).style(Style::default().fg(Color::White)),
-                body,
-            );
+            frame.render_widget(Paragraph::new(label).style(theme::text()), body);
             continue;
         }
         let target_row = source.saturating_sub(label_rows);
@@ -2325,15 +2300,18 @@ fn runner_row_spans(
     let body = cells.saturating_sub(reserved);
     let label = clip_cells(&runner_row_label(row), body);
     let mut used = label.width();
-    let mut spans = vec![Span::styled(label, Style::default().fg(Color::White))];
-    for (value, color) in [
+    let mut spans = vec![Span::styled(label, theme::text())];
+    for (value, style) in [
         (
             row.argv().map_or_else(String::new, |argv| {
                 join_editable_argv(argv, EditableArgvDialect::host())
             }),
-            Color::DarkGray,
+            theme::hint(),
         ),
-        (runner_row_reason(row, locale), Color::Red),
+        (
+            runner_row_reason(row, locale),
+            theme::status(Status::Danger),
+        ),
     ] {
         let room = body.saturating_sub(used).saturating_sub(2);
         if value.is_empty() || room == 0 {
@@ -2341,16 +2319,13 @@ fn runner_row_spans(
         }
         let shown = clip_cells(&value, room);
         used = used.saturating_add(shown.width()).saturating_add(2);
-        spans.push(Span::styled(
-            format!("  {shown}"),
-            Style::default().fg(color),
-        ));
+        spans.push(Span::styled(format!("  {shown}"), style));
     }
     if reserved > 0 {
         let pad = cells.saturating_sub(used).saturating_sub(note.width());
         spans.push(Span::styled(
             format!("{}{note}", " ".repeat(pad)),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
     }
     spans
@@ -2502,7 +2477,7 @@ fn paint_focus_marker(frame: &mut Frame, row: Rect) {
         row.y,
         "▶ ",
         usize::from(FOCUS_GUTTER_CELLS.min(row.width)),
-        Style::default().fg(ACCENT),
+        theme::marker(),
     );
 }
 
@@ -2943,6 +2918,7 @@ fn button_action(id: PreferencesControlId) -> PreferencesEventHandling {
 
 #[cfg(test)]
 mod tests {
+    use ratatui_core::style::Color;
     use std::path::PathBuf;
 
     use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};

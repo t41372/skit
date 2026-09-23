@@ -1,13 +1,14 @@
 //! End-to-end palette census of the Ratatui interface.
 //!
-//! Each case starts the real `skit` binary on a pseudo-terminal, opens one screen, and replays the
-//! terminal output through `vt100`. The census records every visible cell with its foreground,
-//! background, and attributes. Every run writes each census to `CARGO_TARGET_TMPDIR/tui-census/`,
-//! and each census must be byte-identical to the committed file in `tests/tui_census/`. Set
-//! `SKIT_BLESS_TUI_CENSUS=1` to replace the committed files.
+//! Each case starts the real `skit` binary on a pseudo-terminal, opens one screen with the keys a
+//! person types, and replays the terminal output through `vt100`. The census records every visible
+//! cell with its foreground, background, and attributes. Every run writes each census to
+//! `CARGO_TARGET_TMPDIR/tui-census/`, and each census must be byte-identical to the committed file
+//! in `tests/tui_census/`. Set `SKIT_BLESS_TUI_CENSUS=1` to replace the committed files.
 //!
 //! The child gets an empty environment plus the exact variables each case names, so a variable in
-//! the developer's shell cannot change a census.
+//! the developer's shell cannot change a census. The fixture lives under `/tmp`, so its path has
+//! the same length on macOS and Linux, and the census replaces the random part of that path.
 //!
 //! Unix only: the handshake that `PtyChild` uses to start a Ratatui session is a Unix PTY protocol
 //! (see `terminal_pty.rs`).
@@ -18,7 +19,7 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use portable_pty::{CommandBuilder, PtySize};
@@ -28,65 +29,193 @@ use tempfile::TempDir;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, strip_terminal_control};
+use pty::{AnswerQueries, PtyChild};
 
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 100;
-/// A word that the library footer shows once the first frame is complete.
-///
-/// Every needle is one word: Ratatui moves the cursor over a default-style space instead of
-/// writing it, so a needle with a space can miss text that the screen shows.
-const LIBRARY_READY: &str = "entries";
+/// Text that the library shows once its first frame is drawn.
+const LIBRARY_READY: &str = "Library";
+/// How long one step may take to show its needle on a loaded host.
+const STEP_BUDGET: Duration = Duration::from_secs(30);
+/// The fixture root that every census shows in place of the random temporary directory. It has
+/// the same length as the real root (`/tmp/.tmp` and six random characters).
+const ROOT_TOKEN: &str = "/tmp/.tmpCENSUS";
 
-/// One screen of the census: the keys that open it from the library, and text that only the new
-/// frame draws.
-struct Screen {
-    name: &'static str,
+const DOWN: &[u8] = b"\x1b[B";
+const TO_BETA: &[u8] = DOWN;
+// The library lists command entries first, then Python, then prompts.
+const TO_GAMMA: &[u8] = b"\x1b[B\x1b[B";
+const TO_ETA: &[u8] = b"\x1b[B\x1b[B\x1b[B";
+const TO_ZETA: &[u8] = b"\x1b[B\x1b[B\x1b[B\x1b[B";
+const CTRL_R: &[u8] = b"\x12";
+const CTRL_C: &[u8] = b"\x03";
+const CTRL_O: &[u8] = b"\x0f";
+const CTRL_S: &[u8] = b"\x13";
+const CTRL_T: &[u8] = b"\x14";
+const DELETE: &[u8] = b"\x1b[3~";
+const ESCAPE: &[u8] = b"\x1b";
+const F2: &[u8] = b"\x1bOQ";
+
+/// One key press or typed text, and a word that the screen shows only after it. An empty needle
+/// waits for the terminal to go quiet instead.
+struct Step {
     keys: &'static [u8],
     needle: &'static str,
 }
 
-const SCREENS: [Screen; 8] = [
+const fn step(keys: &'static [u8], needle: &'static str) -> Step {
+    Step { keys, needle }
+}
+
+/// One screen of the census: the steps that open it from the library, the terminal size, and the
+/// working directory when it is not the fixture home.
+struct Screen {
+    name: &'static str,
+    rows: u16,
+    columns: u16,
+    steps: &'static [Step],
+    cwd: Option<&'static str>,
+}
+
+const fn screen(name: &'static str, steps: &'static [Step]) -> Screen {
     Screen {
-        name: "library",
-        keys: b"",
-        needle: LIBRARY_READY,
-    },
+        name,
+        rows: ROWS,
+        columns: COLUMNS,
+        steps,
+        cwd: None,
+    }
+}
+
+const OPEN_ALPHA_RUN: Step = step(b"\r", "Preset:");
+const OPEN_GAMMA: Step = step(TO_GAMMA, "Typed");
+const OPEN_GAMMA_RUN: Step = step(b"\r", "whole");
+const OPEN_SETTINGS: Step = step(b"p", "Renaming");
+const OPEN_PREFERENCES: Step = step(b",", "Interface");
+const OPEN_ADD: Step = step(b"a", "script,");
+
+const SCREENS: &[Screen] = &[
+    screen("library", &[]),
+    screen("library-detail-hidden", &[step(b"\t", "Kind")]),
+    screen("library-beta", &[step(TO_BETA, "failed")]),
+    screen("library-gamma", &[OPEN_GAMMA]),
+    screen("library-python", &[step(TO_ETA, "Python")]),
     Screen {
-        name: "library-detail-hidden",
-        keys: b"\t",
-        needle: "Kind",
+        name: "library-narrow",
+        rows: 12,
+        columns: 44,
+        steps: &[],
+        cwd: None,
     },
+    screen("search", &[step(b"/", "list")]),
+    screen("search-typed", &[step(b"/", "list"), step(b"al", "1/5")]),
+    screen("quit-notice", &[step(CTRL_C, "again")]),
+    screen("help", &[step(b"?", "Rerun")]),
+    screen("run-form", &[OPEN_ALPHA_RUN]),
+    screen("run-required", &[OPEN_ALPHA_RUN, step(b"\r", "required.")]),
+    screen("run-typed", &[OPEN_GAMMA, OPEN_GAMMA_RUN]),
+    screen(
+        "run-bad-number",
+        &[
+            OPEN_GAMMA,
+            OPEN_GAMMA_RUN,
+            step(b"\x7fabc", "abc"),
+            step(b"\r", "typed"),
+        ],
+    ),
+    screen(
+        "run-path-suggestion",
+        &[
+            OPEN_GAMMA,
+            OPEN_GAMMA_RUN,
+            step(b"\t\t\t", ""),
+            step(b"da", "ta.csv"),
+        ],
+    ),
+    // The menu shows the working directory as a fixed path. The resolved fixture path is longer
+    // on macOS and wraps there, so this screen runs from `/`.
     Screen {
-        name: "run-form",
-        keys: b"\r",
-        needle: "Preset:",
+        cwd: Some("/"),
+        ..screen(
+            "run-token-menu",
+            &[OPEN_ALPHA_RUN, step(CTRL_T, "run-time")],
+        )
     },
-    Screen {
-        name: "help",
-        keys: b"?",
-        needle: "Rerun",
-    },
-    Screen {
-        name: "add",
-        keys: b"a",
-        needle: "script,",
-    },
-    Screen {
-        name: "entry-settings",
-        keys: b"p",
-        needle: "Renaming",
-    },
-    Screen {
-        name: "remove",
-        keys: b"\x1b[3~",
-        needle: "removal",
-    },
-    Screen {
-        name: "search",
-        keys: b"/",
-        needle: "list",
-    },
+    screen("run-preset-name", &[OPEN_ALPHA_RUN, step(CTRL_S, "preset")]),
+    screen(
+        "run-preset-name-empty",
+        &[OPEN_ALPHA_RUN, step(CTRL_S, "preset"), step(b"\r", "")],
+    ),
+    screen(
+        "run-prompt",
+        &[step(TO_ZETA, "prompt."), step(b"\r", "Runner")],
+    ),
+    screen("rename", &[step(F2, "Rename")]),
+    screen("remove", &[step(DELETE, "removal")]),
+    screen("entry-settings", &[OPEN_SETTINGS]),
+    screen(
+        "entry-settings-name-focus",
+        &[OPEN_SETTINGS, step(b"\t", "")],
+    ),
+    screen("entry-settings-typed", &[OPEN_GAMMA, OPEN_SETTINGS]),
+    screen(
+        "entry-settings-prompt",
+        &[step(TO_ZETA, "prompt."), OPEN_SETTINGS],
+    ),
+    screen(
+        "entry-settings-discard",
+        &[OPEN_SETTINGS, step(b"x", ""), step(ESCAPE, "Discard")],
+    ),
+    screen("presets", &[step(b"s", "None")]),
+    screen("preferences", &[OPEN_PREFERENCES]),
+    screen(
+        "preferences-new-agent",
+        &[
+            OPEN_PREFERENCES,
+            step(b"\t\t\t\t\t\t", ""),
+            step(b"\r", "aider"),
+        ],
+    ),
+    screen(
+        "preferences-agent-skill",
+        &[
+            OPEN_PREFERENCES,
+            step(b"\t\t\t\t\t\t\t", ""),
+            step(b"\r", "(user)"),
+        ],
+    ),
+    screen(
+        "preferences-language",
+        &[
+            OPEN_PREFERENCES,
+            step(b"\t\t\t\t\t\t\t\t\t\t\t\t", ""),
+            step(b"\r", "zh-TW"),
+        ],
+    ),
+    screen("health", &[step(b"D", "Issues")]),
+    screen("health-rebuilt", &[step(b"D", "Issues"), step(CTRL_R, "")]),
+    screen("add", &[OPEN_ADD]),
+    screen(
+        "add-missing-source",
+        &[
+            OPEN_ADD,
+            step(b"/nonexistent/file.sh", ""),
+            step(b"\r", "found:"),
+        ],
+    ),
+    screen("add-file-picker", &[OPEN_ADD, step(CTRL_O, "directory")]),
+    screen(
+        "add-file-picker-selection",
+        &[OPEN_ADD, step(CTRL_O, "directory"), step(DOWN, "")],
+    ),
+    screen(
+        "add-review",
+        &[OPEN_ADD, step(b"hello.sh", ""), step(b"\r", "Tick")],
+    ),
+    screen(
+        "add-editor-error",
+        &[OPEN_ADD, step(b"\t\t\t\t", ""), step(b"\r", "editor")],
+    ),
 ];
 
 /// Terminal variables for one census environment, added to the fixed base environment.
@@ -113,55 +242,101 @@ const EMPTY_NO_COLOR: Environment = Environment {
 };
 
 struct Fixture {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    home: TempDir,
+    root: TempDir,
 }
 
 impl Fixture {
     fn new() -> Self {
         let fixture = Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            home: TempDir::new().unwrap(),
+            root: TempDir::new_in("/tmp").unwrap(),
         };
-        FileConfigStore::new(fixture.config.path().to_path_buf())
+        for directory in ["data", "state", "config", "home"] {
+            fs::create_dir(fixture.root.path().join(directory)).unwrap();
+        }
+        FileConfigStore::new(fixture.path("config"))
             .mark_mirror_configured()
             .unwrap();
+        let data = fixture.path("data");
         write_command_entry(
-            fixture.data.path(),
+            &data,
             "alpha",
             "Alpha",
             "0123456789abcdef0123456789abcdef",
             true,
         );
         write_command_entry(
-            fixture.data.path(),
+            &data,
             "beta",
             "Beta",
             "fedcba9876543210fedcba9876543210",
             false,
         );
-        FileStore::new(fixture.data.path())
-            .rebuild_registry()
-            .unwrap();
+        write_typed_entry(&data);
+        write_prompt_entry(&data);
+        write_python_entry(&data);
+        FileStore::new(&data).rebuild_registry().unwrap();
+        // A timestamp that is not RFC 3339 shows as written, so the census does not depend on
+        // the clock.
+        write_last_run(&fixture.path("state"), "alpha", 0);
+        write_last_run(&fixture.path("state"), "beta", 2);
+        // A run that recorded no exit status.
+        fs::write(
+            fixture.path("state").join("values").join("gamma.toml"),
+            "[last_run]\nat = \"yesterday\"\n",
+        )
+        .unwrap();
+        let home = fixture.path("home");
+        fs::write(home.join("data.csv"), "a,b\n").unwrap();
+        fs::write(
+            home.join("hello.sh"),
+            "#!/bin/sh\n# Greet someone.\nNAME=\"world\"\necho \"hello $NAME\"\n",
+        )
+        .unwrap();
+        // Agent directories make the Agent Skill picker list real targets.
+        fs::create_dir(home.join(".claude")).unwrap();
+        fs::create_dir(home.join(".codex")).unwrap();
         fixture
     }
 
-    fn spawn(&self, environment: &Environment) -> PtyChild {
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.path().join(name)
+    }
+
+    /// The fixture root as the child sees it, then as the operating system resolves it.
+    ///
+    /// macOS resolves `/tmp` to `/private/tmp`, so a path that the child reads from its working
+    /// directory is longer there. The resolved form comes first, because it contains the other.
+    fn root_spellings(&self) -> Vec<String> {
+        let given = self.root.path().to_string_lossy().into_owned();
+        let resolved = fs::canonicalize(self.root.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            given.chars().count(),
+            ROOT_TOKEN.chars().count(),
+            "the fixture root {given} does not match the census token length"
+        );
+        if resolved == given {
+            vec![given]
+        } else {
+            vec![resolved, given]
+        }
+    }
+
+    fn spawn(&self, environment: &Environment, screen: &Screen) -> PtyChild {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.env_clear();
-        command.cwd(self.home.path());
-        // No screen in this census reads PATH, and a fixed value keeps a later one stable.
+        command.cwd(screen.cwd.map_or_else(|| self.path("home"), PathBuf::from));
+        // A fixed PATH that finds nothing keeps every health and agent check the same on every
+        // host.
         command.env("PATH", "/nonexistent-skit-census-path");
-        command.env("HOME", self.home.path());
+        command.env("HOME", self.path("home"));
         command.env("TERM", "xterm-256color");
         command.env("SKIT_LANG", "en");
-        command.env("SKIT_DATA_DIR", self.data.path());
-        command.env("SKIT_STATE_DIR", self.state.path());
-        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("SKIT_DATA_DIR", self.path("data"));
+        command.env("SKIT_STATE_DIR", self.path("state"));
+        command.env("SKIT_CONFIG_DIR", self.path("config"));
         for (key, value) in environment.variables {
             command.env(key, value);
         }
@@ -176,8 +351,8 @@ impl Fixture {
         PtyChild::spawn(
             command,
             PtySize {
-                rows: ROWS,
-                cols: COLUMNS,
+                rows: screen.rows,
+                cols: screen.columns,
                 pixel_width: 0,
                 pixel_height: 0,
             },
@@ -190,15 +365,16 @@ impl Fixture {
     /// The snapshot happens while the interface still runs, because `vt100` replays the alternate
     /// screen only until the session leaves it.
     fn capture(&self, environment: &Environment, screen: &Screen) -> Vec<u8> {
-        let mut child = self.spawn(environment);
+        let mut child = self.spawn(environment, screen);
         child.wait_cursor_query_after(0);
-        wait_for_text(&mut child, 0, LIBRARY_READY);
-        child.settle();
-        if !screen.keys.is_empty() {
-            let checkpoint = child.checkpoint();
-            child.send(screen.keys);
-            wait_for_text(&mut child, checkpoint, screen.needle);
-            child.settle();
+        wait_for_screen(&mut child, screen, LIBRARY_READY);
+        for step in screen.steps {
+            child.send(step.keys);
+            if step.needle.is_empty() {
+                child.settle();
+            } else {
+                wait_for_screen(&mut child, screen, step.needle);
+            }
         }
         let raw = child.raw_after(0);
         quit(&mut child);
@@ -208,11 +384,13 @@ impl Fixture {
 
 /// End the session the way a person does: two Ctrl+C presses.
 ///
-/// A killed child never writes its coverage profile, so the census would add no coverage.
+/// A screen that already shows the quit notice ends at the first press. A killed child never
+/// writes its coverage profile, so the census would add no coverage.
 fn quit(child: &mut PtyChild) {
-    child.send(&[0x03]);
+    child.send(CTRL_C);
     child.settle();
-    child.send(&[0x03]);
+    // The child may be gone already. A failed write then only confirms it.
+    let _ = child.try_send(CTRL_C);
     let status = child.wait_exit_within(Duration::from_secs(10));
     assert!(
         status.success(),
@@ -221,10 +399,27 @@ fn quit(child: &mut PtyChild) {
     );
 }
 
-fn wait_for_text(child: &mut PtyChild, checkpoint: usize, needle: &str) {
-    child.wait_for_after_rendered(checkpoint, needle, |bytes| {
-        strip_terminal_control(&String::from_utf8_lossy(bytes))
-    });
+/// Wait until the replayed screen shows `needle`, then until the terminal goes quiet.
+///
+/// The replay applies cursor moves. Ratatui skips a cell that did not change, so the raw bytes of
+/// a word can be split even when the screen shows the whole word.
+fn wait_for_screen(child: &mut PtyChild, screen: &Screen, needle: &str) {
+    let deadline = Instant::now() + STEP_BUDGET;
+    loop {
+        child.settle();
+        let raw = child.raw_after(0);
+        let mut parser = vt100::Parser::new(screen.rows, screen.columns, 0);
+        parser.process(&raw);
+        let shown = parser.screen().contents();
+        if shown.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{}: the screen never showed {needle:?}:\n{shown}",
+            screen.name
+        );
+    }
 }
 
 fn write_command_entry(data: &Path, slug: &str, name: &str, id: &str, with_parameter: bool) {
@@ -259,10 +454,114 @@ fn write_command_entry(data: &Path, slug: &str, name: &str, id: &str, with_param
     meta.push_str(parameters);
     fs::write(directory.join("meta.toml"), meta).unwrap();
 }
+fn write_typed_entry(data: &Path) {
+    let directory = data.join("scripts").join("gamma");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Gamma\"\n",
+            "kind = \"command\"\n",
+            "mode = \"copy\"\n",
+            "source = \"\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"00112233445566778899aabbccddeeff\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"Typed parameters.\"\n",
+            "template = \"echo {count} {mode} {loud} {target} {token}\"\n",
+            "params = [\"count\", \"mode\", \"loud\", \"target\", \"token\"]\n",
+            "[[parameters]]\n",
+            "name = \"count\"\n",
+            "delivery = \"placeholder\"\n",
+            "type = \"int\"\n",
+            "default = 3\n",
+            "help = \"How many times\"\n",
+            "[[parameters]]\n",
+            "name = \"mode\"\n",
+            "delivery = \"placeholder\"\n",
+            "type = \"choice\"\n",
+            "choices = [\"fast\", \"slow\"]\n",
+            "default = \"fast\"\n",
+            "[[parameters]]\n",
+            "name = \"loud\"\n",
+            "delivery = \"placeholder\"\n",
+            "type = \"bool\"\n",
+            "default = false\n",
+            "[[parameters]]\n",
+            "name = \"target\"\n",
+            "delivery = \"placeholder\"\n",
+            "type = \"path\"\n",
+            "[[parameters]]\n",
+            "name = \"token\"\n",
+            "delivery = \"placeholder\"\n",
+            "type = \"str\"\n",
+            "secret = true\n",
+            "env_source = \"CENSUS_TOKEN\"\n",
+        ),
+    )
+    .unwrap();
+}
+fn write_prompt_entry(data: &Path) {
+    let directory = data.join("scripts").join("zeta");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("prompt.md"), "Summarize the notes.\n").unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Zeta\"\n",
+            "kind = \"prompt\"\n",
+            "mode = \"copy\"\n",
+            "source = \"prompt.md\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"ffeeddccbbaa99887766554433221100\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"A prompt.\"\n",
+            "interpolate = true\n",
+        ),
+    )
+    .unwrap();
+}
+/// A Python entry. The census PATH has no uv, so health and the detail pane report it.
+fn write_python_entry(data: &Path) {
+    let directory = data.join("scripts").join("eta");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("eta.py"), "print(\"eta\")\n").unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Eta\"\n",
+            "kind = \"python\"\n",
+            "mode = \"copy\"\n",
+            "source = \"eta.py\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"99887766554433221100ffeeddccbbaa\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"A Python script.\"\n",
+            "params = []\n",
+        ),
+    )
+    .unwrap();
+}
 
-/// The screen that `raw` leaves on a terminal of the census size.
-fn replay(raw: &[u8]) -> vt100::Parser {
-    let mut parser = vt100::Parser::new(ROWS, COLUMNS, 0);
+fn write_last_run(state: &Path, slug: &str, exit: i64) {
+    let directory = state.join("values");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join(format!("{slug}.toml")),
+        format!("[last_run]\nat = \"yesterday\"\nexit = {exit}\n"),
+    )
+    .unwrap();
+}
+
+/// The screen that `raw` leaves on a terminal of the given size.
+fn replay(raw: &[u8], rows: u16, columns: u16) -> vt100::Parser {
+    let mut parser = vt100::Parser::new(rows, columns, 0);
     parser.process(raw);
     assert!(
         parser.screen().alternate_screen(),
@@ -292,47 +591,84 @@ fn attributes(cell: &vt100::Cell) -> Vec<&'static str> {
     .collect()
 }
 
-/// One run of cells in a row that share foreground, background, and attributes.
-#[derive(PartialEq)]
-struct Segment {
+/// One visible cell: its text and the style it shows.
+#[derive(Clone, PartialEq)]
+struct CellView {
     text: String,
     foreground: String,
     background: String,
     attributes: Vec<&'static str>,
 }
 
-fn segments(screen: &vt100::Screen, row: u16) -> Vec<Segment> {
-    let mut segments: Vec<Segment> = Vec::new();
-    for column in 0..COLUMNS {
-        let cell = screen.cell(row, column).unwrap();
-        if cell.is_wide_continuation() {
+impl CellView {
+    fn same_style(&self, other: &Self) -> bool {
+        self.foreground == other.foreground
+            && self.background == other.background
+            && self.attributes == other.attributes
+    }
+}
+
+fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<CellView> {
+    let (_, columns) = screen.size();
+    (0..columns)
+        .map(|column| screen.cell(row, column).unwrap())
+        .filter(|cell| !cell.is_wide_continuation())
+        .map(|cell| CellView {
+            text: if cell.has_contents() {
+                cell.contents().to_owned()
+            } else {
+                " ".to_owned()
+            },
+            foreground: color_name(cell.fgcolor()),
+            background: color_name(cell.bgcolor()),
+            attributes: attributes(cell),
+        })
+        .collect()
+}
+
+/// Replace every `pattern` in a row with `token`, and keep the row width.
+///
+/// A longer pattern leaves fewer spaces before the next item on the row. The census returns those
+/// spaces at the first space after the replaced word, where the host with the shorter path has
+/// them.
+fn replace_in_row(cells: &mut Vec<CellView>, pattern: &str, token: &str) {
+    let pattern = pattern.chars().map(String::from).collect::<Vec<_>>();
+    let token = token.chars().map(String::from).collect::<Vec<_>>();
+    assert!(token.len() <= pattern.len());
+    let mut start = 0;
+    while start + pattern.len() <= cells.len() {
+        let found = pattern
+            .iter()
+            .enumerate()
+            .all(|(offset, text)| cells[start + offset].text == *text);
+        if !found {
+            start += 1;
             continue;
         }
-        let text = if cell.has_contents() {
-            cell.contents()
-        } else {
-            " "
-        };
-        let foreground = color_name(cell.fgcolor());
-        let background = color_name(cell.bgcolor());
-        let attributes = attributes(cell);
-        match segments.last_mut() {
-            Some(last)
-                if last.foreground == foreground
-                    && last.background == background
-                    && last.attributes == attributes =>
-            {
-                last.text.push_str(text);
+        let style = cells[start].clone();
+        let replacement = token
+            .iter()
+            .map(|text| CellView {
+                text: text.clone(),
+                ..style.clone()
+            })
+            .collect::<Vec<_>>();
+        cells.splice(start..start + pattern.len(), replacement);
+        let slack = pattern.len() - token.len();
+        if slack > 0 {
+            let gap = (start + token.len()..cells.len())
+                .find(|&index| cells[index].text == " ")
+                .unwrap_or(cells.len());
+            let filler = cells.get(gap).cloned().unwrap_or(CellView {
+                text: " ".to_owned(),
+                ..style
+            });
+            for _ in 0..slack {
+                cells.insert(gap, filler.clone());
             }
-            _ => segments.push(Segment {
-                text: text.to_owned(),
-                foreground,
-                background,
-                attributes,
-            }),
         }
+        start += token.len();
     }
-    segments
 }
 
 fn json_string(text: &str) -> String {
@@ -340,16 +676,27 @@ fn json_string(text: &str) -> String {
 }
 
 /// The census document for one screen: one JSON line per terminal row.
-fn census(raw: &[u8], screen: &str, environment: &str) -> String {
-    let parser = replay(raw);
+fn census(raw: &[u8], screen: &Screen, environment: &str, roots: &[String]) -> String {
+    let parser = replay(raw, screen.rows, screen.columns);
     let mut out = String::new();
     writeln!(out, "{{").unwrap();
-    writeln!(out, "  \"screen\": {},", json_string(screen)).unwrap();
+    writeln!(out, "  \"screen\": {},", json_string(screen.name)).unwrap();
     writeln!(out, "  \"environment\": {},", json_string(environment)).unwrap();
-    writeln!(out, "  \"columns\": {COLUMNS},").unwrap();
+    writeln!(out, "  \"columns\": {},", screen.columns).unwrap();
     writeln!(out, "  \"rows\": [").unwrap();
-    for row in 0..ROWS {
-        let cells = segments(parser.screen(), row)
+    for row in 0..screen.rows {
+        let mut cells = row_cells(parser.screen(), row);
+        for root in roots {
+            replace_in_row(&mut cells, root, ROOT_TOKEN);
+        }
+        let mut segments: Vec<CellView> = Vec::new();
+        for cell in cells {
+            match segments.last_mut() {
+                Some(last) if last.same_style(&cell) => last.text.push_str(&cell.text),
+                _ => segments.push(cell),
+            }
+        }
+        let line = segments
             .iter()
             .map(|segment| {
                 let attributes = segment
@@ -367,8 +714,8 @@ fn census(raw: &[u8], screen: &str, environment: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let separator = if row + 1 == ROWS { "" } else { "," };
-        writeln!(out, "    [{cells}]{separator}").unwrap();
+        let separator = if row + 1 == screen.rows { "" } else { "," };
+        writeln!(out, "    [{line}]{separator}").unwrap();
     }
     writeln!(out, "  ]").unwrap();
     writeln!(out, "}}").unwrap();
@@ -407,12 +754,13 @@ fn check_census(file: &str, actual: &str) -> Option<String> {
 
 fn run_census(environment: &Environment) {
     let fixture = Fixture::new();
+    let roots = fixture.root_spellings();
     let failures = SCREENS
         .iter()
         .filter_map(|screen| {
             let raw = fixture.capture(environment, screen);
             let file = format!("{}.{}.json", screen.name, environment.name);
-            check_census(&file, &census(&raw, screen.name, environment.name))
+            check_census(&file, &census(&raw, screen, environment.name, &roots))
         })
         .collect::<Vec<_>>();
     assert!(
@@ -437,24 +785,25 @@ fn census_with_no_color() {
     run_census(&NO_COLOR);
 }
 
-/// Every cell of the selected library row that shows `name`, and every cell on the screen.
+/// Every cell of the selected library row that shows `Alpha`, and every cell on the screen.
 fn library_cells(environment: &Environment) -> (Vec<vt100::Cell>, Vec<vt100::Cell>) {
     let fixture = Fixture::new();
-    let raw = fixture.capture(environment, &SCREENS[0]);
-    let parser = replay(&raw);
+    let library = &SCREENS[0];
+    let raw = fixture.capture(environment, library);
+    let parser = replay(&raw, library.rows, library.columns);
     let screen = parser.screen();
-    let row = (0..ROWS)
+    let row = (0..library.rows)
         .find(|row| {
             screen
-                .contents_between(*row, 0, *row, COLUMNS)
+                .contents_between(*row, 0, *row, library.columns)
                 .starts_with("│Alpha")
         })
         .expect("the library shows the Alpha row");
     let name = (1..=5)
         .map(|column| screen.cell(row, column).unwrap().clone())
         .collect();
-    let all = (0..ROWS)
-        .flat_map(|row| (0..COLUMNS).map(move |column| (row, column)))
+    let all = (0..library.rows)
+        .flat_map(|row| (0..library.columns).map(move |column| (row, column)))
         .map(|(row, column)| screen.cell(row, column).unwrap().clone())
         .collect();
     (name, all)

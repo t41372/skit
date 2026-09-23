@@ -2,7 +2,7 @@
 
 use ratatui_core::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::Modifier,
     terminal::Frame,
     text::Line,
 };
@@ -11,8 +11,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use ratatui_interact::{
     components::{
-        ListPicker, ListPickerState, ListPickerStyle, ScrollableContentState,
-        handle_scrollable_content_key, handle_scrollable_content_mouse,
+        ListPicker, ListPickerState, ScrollableContentState, handle_scrollable_content_key,
+        handle_scrollable_content_mouse,
     },
     traits::ClickRegionRegistry,
 };
@@ -37,7 +37,7 @@ use crate::{
     local_action::LocalKey,
     pointer::{ClickOutcome, ClickTracker, EditableGeometry},
     session::render_line_input,
-    theme::{ACCENT, BOX_DIM, BOX_GREEN, padded_panel},
+    theme::{self, Panel, Status, padded_panel},
 };
 
 /// Result of one Health terminal event.
@@ -154,7 +154,7 @@ impl HealthScreenSession {
     ) {
         self.clicks.clear();
         self.issue_areas.clear();
-        let block = padded_panel(text(locale, "Health check").into_owned(), BOX_GREEN);
+        let block = padded_panel(text(locale, "Health check").into_owned(), Panel::Health);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let has_issues = !view.snapshot().issues.is_empty();
@@ -176,23 +176,16 @@ impl HealthScreenSession {
         self.render_summary(frame, summary, view, locale);
         if has_issues {
             frame.render_widget(
-                Paragraph::new(text(locale, "Issues (Enter jumps to the entry):")).style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Paragraph::new(text(locale, "Issues (Enter jumps to the entry):"))
+                    .style(theme::status(Status::Warning).add_modifier(Modifier::BOLD)),
                 issue_heading,
             );
             self.render_issues(frame, issue_list, view, locale);
         } else {
             self.issue_height = 0;
         }
-        self.footer.render(
-            frame,
-            footer,
-            &footer_items,
-            ActionFooterStyle::new(Color::White, BOX_DIM),
-        );
+        self.footer
+            .render(frame, footer, &footer_items, ActionFooterStyle::dialog());
     }
 
     fn render_summary(&mut self, frame: &mut Frame, area: Rect, view: &HealthView, locale: Locale) {
@@ -203,18 +196,18 @@ impl HealthScreenSession {
         match &snapshot.uv {
             UvHealth::Found(path) => lines.push(Line::styled(
                 format!("✓ {}", format_text(locale, "uv: {}", &[path])),
-                Style::default().fg(Color::Green),
+                theme::status(Status::Success),
             )),
             UvHealth::NotRequired => lines.push(Line::styled(
                 format!("✓ {}", text(locale, "uv: not required")),
-                Style::default().fg(Color::Green),
+                theme::status(Status::Success),
             )),
             UvHealth::Missing => lines.push(Line::styled(
                 format!(
                     "✗ {}",
                     text(locale, "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/")
                 ),
-                Style::default().fg(Color::Red),
+                theme::status(Status::Danger),
             )),
         }
         let count_message = if snapshot.entry_count == 1 {
@@ -227,7 +220,7 @@ impl HealthScreenSession {
                 "✓ {}",
                 format_text(locale, count_message, &[&snapshot.entry_count])
             ),
-            Style::default().fg(Color::Green),
+            theme::status(Status::Success),
         ));
         if !snapshot.invalid_runner_rows.is_empty() {
             lines.push(Line::styled(
@@ -239,7 +232,7 @@ impl HealthScreenSession {
                         &[&snapshot.invalid_runner_rows.join(", ")],
                     )
                 ),
-                Style::default().fg(Color::Yellow),
+                theme::status(Status::Warning),
             ));
         }
         let mirror = match &snapshot.mirror {
@@ -251,7 +244,7 @@ impl HealthScreenSession {
         };
         lines.push(Line::styled(
             format!("✓ {mirror}"),
-            Style::default().fg(Color::Green),
+            theme::status(Status::Success),
         ));
         lines.push(Line::styled(
             format_text(
@@ -263,7 +256,7 @@ impl HealthScreenSession {
                     &snapshot.library_size,
                 ],
             ),
-            Style::default().fg(Color::DarkGray),
+            theme::hint(),
         ));
         if let Some(outcome) = view.rebuilt() {
             let template = if outcome.entry_count == 1 {
@@ -273,14 +266,14 @@ impl HealthScreenSession {
             };
             lines.push(Line::styled(
                 format_text(locale, template, &[&outcome.entry_count]),
-                Style::default().fg(Color::Green),
+                theme::status(Status::Success),
             ));
             lines.extend(
                 outcome
                     .problems
                     .iter()
                     .cloned()
-                    .map(|problem| Line::styled(problem, Style::default().fg(Color::Yellow))),
+                    .map(|problem| Line::styled(problem, theme::status(Status::Warning))),
             );
         }
         lines.extend(
@@ -288,7 +281,7 @@ impl HealthScreenSession {
                 .diagnostics
                 .iter()
                 .cloned()
-                .map(|problem| Line::styled(problem, Style::default().fg(Color::Yellow))),
+                .map(|problem| Line::styled(problem, theme::status(Status::Warning))),
         );
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         let content_height = paragraph.line_count(area.width.max(1));
@@ -317,7 +310,7 @@ impl HealthScreenSession {
             .map(|issue| health_issue_label(issue, locale))
             .collect::<Vec<_>>();
         frame.render_widget(
-            ListPicker::new(&labels, &self.issues).style(list_style(ACCENT)),
+            ListPicker::new(&labels, &self.issues).style(theme::list_picker_style()),
             area,
         );
         for visible in 0..self.issue_height {
@@ -563,7 +556,7 @@ impl RunnerEditorSession {
             .min(area.height);
         let hint_content = Paragraph::new(text(locale, "{{prompt}} marks where the prompt text goes. Each word becomes one argument — quotes group words, and no shell is involved."))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::DarkGray));
+            .style(theme::hint());
         let hint_height =
             u16::try_from(hint_content.line_count(expected_inner_width)).unwrap_or(u16::MAX);
         let panel = centered(
@@ -580,7 +573,7 @@ impl RunnerEditorSession {
                 text(locale, "Edit agent (runner)")
             }
         };
-        let block = padded_panel(title.into_owned(), ACCENT);
+        let block = padded_panel(title.into_owned(), Panel::Dialog);
         let inner = block.inner(panel);
         frame.render_widget(block, panel);
         let [name, command, hint, error, actions] = Layout::vertical([
@@ -627,16 +620,12 @@ impl RunnerEditorSession {
             frame.render_widget(
                 Paragraph::new(message)
                     .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(Color::Red)),
+                    .style(theme::status(Status::Danger)),
                 error,
             );
         }
-        self.footer.render(
-            frame,
-            actions,
-            &footer_items,
-            ActionFooterStyle::new(Color::White, BOX_DIM),
-        );
+        self.footer
+            .render(frame, actions, &footer_items, ActionFooterStyle::dialog());
     }
 
     /// Dispatch one event through the focused mature input or visible buttons.
@@ -948,21 +937,6 @@ fn centered(area: Rect, maximum_width: u16, desired_height: u16) -> Rect {
     horizontal
 }
 
-fn list_style(accent: Color) -> ListPickerStyle {
-    ListPickerStyle {
-        selected_style: Style::default()
-            .fg(Color::Black)
-            .bg(accent)
-            .add_modifier(Modifier::BOLD),
-        normal_style: Style::default().fg(Color::White),
-        indicator_style: Style::default().fg(accent),
-        border_style: Style::default(),
-        indicator: "▶ ",
-        indicator_empty: "  ",
-        bordered: false,
-    }
-}
-
 pub(crate) fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     vec![
         ActionFooterItem::new(
@@ -1009,6 +983,7 @@ pub(crate) fn runner_editor_footer_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui_core::style::Style;
     use ratatui_core::{backend::TestBackend, style::Color, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent};
     use skit_ui::{

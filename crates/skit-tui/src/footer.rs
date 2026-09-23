@@ -1,10 +1,6 @@
 //! Responsive command footer with persistent mature scrolling state.
 
-use ratatui_core::{
-    layout::Rect,
-    style::{Color, Style},
-    terminal::Frame,
-};
+use ratatui_core::{layout::Rect, terminal::Frame};
 use ratatui_crossterm::crossterm::event::{KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui_interact::components::{
     Button, ButtonState, ButtonStyle, ButtonVariant, ScrollableContentState,
@@ -30,10 +26,8 @@ use crate::{
     layout::ViewportProfile,
     local_action::LocalKey,
     pointer::{ClickDispatch, ClickOutcome, ClickTracker},
+    theme,
 };
-
-const PILL_BACKGROUND: Color = Color::Rgb(0x2A, 0x21, 0x1C);
-const PILL_FOREGROUND: Color = Color::Rgb(0xD9, 0x77, 0x57);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FooterInputOwnership {
@@ -93,19 +87,19 @@ impl ActionFooterStyle {
         self.button.clone()
     }
 
-    /// Use the supplied foreground and background for each command chip.
-    pub(crate) fn new(foreground: Color, background: Color) -> Self {
+    /// The chips of a dialog's action row.
+    pub(crate) fn dialog() -> Self {
         Self {
-            button: ButtonStyle::new(ButtonVariant::SingleLine)
-                .focused(foreground, background)
-                .unfocused(foreground, background),
+            button: theme::dialog_footer_chip_style(),
         }
     }
 }
 
 impl Default for ActionFooterStyle {
     fn default() -> Self {
-        Self::new(PILL_FOREGROUND, PILL_BACKGROUND)
+        Self {
+            button: theme::footer_chip_style(),
+        }
     }
 }
 
@@ -215,7 +209,7 @@ impl<A: Clone + Eq> ActionFooterSession<A> {
             ["", "↓", "↑", "↕"][usize::from(!at_top).saturating_mul(2) + usize::from(!at_bottom)];
         if !indicator.is_empty() {
             frame.render_widget(
-                Paragraph::new(indicator).style(Style::default().fg(PILL_FOREGROUND)),
+                Paragraph::new(indicator).style(theme::footer_indicator()),
                 Rect::new(
                     self.viewport.right(),
                     area.y,
@@ -626,7 +620,7 @@ impl FooterSession {
             let region = Button::new(&chip.label, &state)
                 .icon(&chip.key)
                 .variant(ButtonVariant::SingleLine)
-                .style(footer_button_style())
+                .style(theme::footer_chip_style())
                 .render_stateful(chip_area, frame.buffer_mut());
             hits.push(HitRegion {
                 rect: region.area,
@@ -694,12 +688,6 @@ pub(crate) fn handle_footer_scroll(
         _ => return false,
     }
     true
-}
-
-fn footer_button_style() -> ButtonStyle {
-    ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(PILL_FOREGROUND, PILL_BACKGROUND)
-        .unfocused(PILL_FOREGROUND, PILL_BACKGROUND)
 }
 
 fn chips(
