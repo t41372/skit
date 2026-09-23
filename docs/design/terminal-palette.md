@@ -1,6 +1,6 @@
 # Terminal palette design
 
-Status: owner-approved design, 2026-09-23. Phases 0, 1, and 2 are done; see "Phases".
+Status: owner-approved design, 2026-09-23. Phases 0 to 3 are done; see "Phases".
 
 ## Decision
 
@@ -349,8 +349,16 @@ first, because the output filter does not depend on the role refactor.
      `idx:7`, or `idx:15`, and no background without inverse, in every terminal-theme file.
    - Roles are split by their version 0.4 counterpart (see "Role counterparts"), so phase 3
      changes one role at a time.
-3. Parity restorations, after the site mapping: body text to the default foreground, secondary
-   text to dim, scrollbars to `#4A413C`. The census changes only those cells.
+3. Parity restorations (done 2026-09-23). Four end-to-end tests pinned version 0.4 first and
+   failed: body text in the default foreground, hints as dim default text, scrollbars in
+   `#4A413C`, and widget labels on the terminal background in the default foreground. Then the
+   `text`, `hint`, and `scrollbar` roles and the unfocused radio, check box, and select text
+   changed. A cell-by-cell comparison of the census showed only these changes: 4104 cells from
+   bright white to default, 6212 cells from bright black to dim default, 3106 `NO_COLOR` cells
+   that gained dim, and 414 scrollbar cells to `#4A413C`. No text and no background changed.
+   Buttons with a fixed dark background keep white text. Seven old unit assertions that checked
+   the port's white, bright black, or indigo scrollbar now check the version 0.4 value. One
+   skit-tui PTY marker became one word, because Ratatui skips a default-style space.
 4. `skit` theme color depth. Only the `no-colorterm` census changes, and no cell in it keeps a
    `#rrggbb` color. This phase follows the role refactor on purpose: each palette entry then holds
    its 24-bit, 256-color, and 16-color forms, so no color can reach the output without a mapping.

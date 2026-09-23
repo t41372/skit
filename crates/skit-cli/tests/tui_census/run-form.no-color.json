@@ -4,7 +4,7 @@
   "columns": 100,
   "rows": [
     [{"text": "╭", "fg": "default", "bg": "default", "attrs": []}, {"text": " Run Alpha ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "───────────────────────────────────────────────────────────────────────────────────────╮", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│Preset: none yet — fill the form and press Ctrl+S to save one                                     │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│Preset: ", "fg": "default", "bg": "default", "attrs": []}, {"text": "none yet — fill the form and press Ctrl+S to save one", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "                                     │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│name  ", "fg": "default", "bg": "default", "attrs": []}, {"text": "required", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "   📁 browse   ▾ insert                                                             │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│┌────────────────────────────────────────────────────────────────────────────────────────────────┐│", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "││                                                                                                ││", "fg": "default", "bg": "default", "attrs": []}],

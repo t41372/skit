@@ -7,7 +7,7 @@
     [{"text": "│ ✗ uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/         │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│ ✓ 5 entries registered                                                                           │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│ ✓ Mirrors: off                                                                                   │", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│ Library: /tmp/.tmpCENSUS/data/scripts (5 · 1.8 KB)                                               │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│ ", "fg": "default", "bg": "default", "attrs": []}, {"text": "Library: /tmp/.tmpCENSUS/data/scripts (5 · 1.8 KB)", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "                                               │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│ Index rebuilt: 5 entries                                                                         │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],

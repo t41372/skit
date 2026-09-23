@@ -839,3 +839,116 @@ fn no_color_drops_every_color_and_keeps_the_selected_row_bold() {
 fn empty_no_color_also_drops_every_color() {
     assert_no_color_contract(&EMPTY_NO_COLOR);
 }
+
+/// The screen that `screen` leaves in `environment`.
+fn shown(environment: &Environment, name: &str) -> vt100::Parser {
+    let fixture = Fixture::new();
+    let screen = SCREENS
+        .iter()
+        .find(|screen| screen.name == name)
+        .expect("a census screen with this name");
+    let raw = fixture.capture(environment, screen);
+    replay(&raw, screen.rows, screen.columns)
+}
+
+/// The cells that show the first occurrence of `needle` on the screen.
+fn cells_of(parser: &vt100::Parser, needle: &str) -> Vec<vt100::Cell> {
+    let screen = parser.screen();
+    let (rows, columns) = screen.size();
+    for row in 0..rows {
+        let text = screen.contents_between(row, 0, row, columns);
+        if let Some(byte) = text.find(needle) {
+            let column = u16::try_from(text[..byte].chars().count()).unwrap();
+            let width = u16::try_from(needle.chars().count()).unwrap();
+            return (column..column + width)
+                .map(|column| screen.cell(row, column).unwrap().clone())
+                .collect();
+        }
+    }
+    panic!(
+        "the screen does not show {needle:?}:\n{}",
+        screen.contents()
+    );
+}
+
+fn describe(cells: &[vt100::Cell]) -> String {
+    cells
+        .iter()
+        .map(|cell| {
+            format!(
+                "{}:{}/{}{}",
+                cell.contents(),
+                color_name(cell.fgcolor()),
+                color_name(cell.bgcolor()),
+                if cell.dim() { "/dim" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Version 0.4 draws body text in the terminal's default foreground (`theme.py`,
+/// `foreground="ansi_default"`). The port drew it in bright white, which vanishes on a light
+/// background.
+#[test]
+fn skit_theme_body_text_uses_the_default_foreground() {
+    let run = shown(&TRUECOLOR, "run-form");
+    let label = cells_of(&run, "Preset:");
+    assert!(
+        label
+            .iter()
+            .all(|cell| cell.fgcolor() == vt100::Color::Default),
+        "run form label: {}",
+        describe(&label)
+    );
+}
+
+/// Version 0.4 draws hints with `[dim]` on the default foreground (`tui.py:538-552`). The port
+/// drew them in bright black, which is the background color in Solarized Dark.
+#[test]
+fn skit_theme_hints_are_dim_default_text() {
+    let run = shown(&TRUECOLOR, "run-form");
+    let hint = cells_of(&run, "none yet");
+    assert!(
+        hint.iter()
+            .all(|cell| cell.fgcolor() == vt100::Color::Default && cell.dim()),
+        "run form hint: {}",
+        describe(&hint)
+    );
+}
+
+/// Version 0.4 paints scrollbars `#4A413C` (`theme.py:100`).
+#[test]
+fn skit_theme_scrollbars_use_the_version_0_4_color() {
+    let settings = shown(&TRUECOLOR, "entry-settings");
+    let screen = settings.screen();
+    let (rows, columns) = screen.size();
+    let bar = (0..rows)
+        .map(|row| screen.cell(row, columns - 1).unwrap().clone())
+        .filter(|cell| ["▲", "▼", "█", "║"].contains(&cell.contents()))
+        .collect::<Vec<_>>();
+    assert!(!bar.is_empty(), "the settings screen shows no scrollbar");
+    assert!(
+        bar.iter()
+            .all(|cell| cell.fgcolor() == vt100::Color::Rgb(0x4a, 0x41, 0x3c)),
+        "settings scrollbar: {}",
+        describe(&bar)
+    );
+}
+
+/// Version 0.4 widgets draw their labels in the default foreground too. An unselected radio
+/// option and an unchecked box sit on the terminal background.
+#[test]
+fn skit_theme_widget_labels_use_the_default_foreground() {
+    let run = shown(&TRUECOLOR, "run-typed");
+    for needle in ["slow", "off"] {
+        let label = cells_of(&run, needle);
+        assert!(
+            label
+                .iter()
+                .all(|cell| cell.fgcolor() == vt100::Color::Default),
+            "{needle}: {}",
+            describe(&label)
+        );
+    }
+}

@@ -3,7 +3,7 @@
   "environment": "no-colorterm",
   "columns": 44,
   "rows": [
-    [{"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "Search                                    ", "fg": "idx:15", "bg": "default", "attrs": []}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": " Search                                     ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "╭", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": " Library ", "fg": "idx:15", "bg": "default", "attrs": ["bold"]}, {"text": "─────────────────────────────────╮", "fg": "#3d7b46", "bg": "default", "attrs": []}],
     [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Name                   Kind               ", "fg": "idx:15", "bg": "default", "attrs": ["bold"]}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
     [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Alpha                  $ Command          ", "fg": "#eeeeee", "bg": "#5a2d1e", "attrs": ["bold"]}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],

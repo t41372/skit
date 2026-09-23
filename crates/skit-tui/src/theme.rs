@@ -26,6 +26,8 @@ pub(crate) const BOX_INDIGO: Color = Color::Rgb(0x4B, 0x44, 0xB0);
 pub(crate) const BOX_MAROON: Color = Color::Rgb(0x92, 0x35, 0x35);
 pub(crate) const BOX_DIM: Color = Color::Rgb(0x3A, 0x3A, 0x3A);
 const PILL_BACKGROUND: Color = Color::Rgb(0x2A, 0x21, 0x1C);
+/// Version 0.4's scrollbar color (`theme.py:100`).
+const SCROLLBAR: Color = Color::Rgb(0x4A, 0x41, 0x3C);
 
 /// The palette that a frame draws with.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -111,9 +113,12 @@ pub(crate) fn padded_panel(label: String, panel: Panel) -> Block<'static> {
 }
 
 /// Body text, list items, labels, and typed values. Version 0.4: `ansi_default`.
+///
+/// The color is an explicit reset, not an absent one, so the text keeps the default foreground
+/// inside a styled parent, as the bright white it replaces did.
 pub(crate) fn text() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(Color::White),
+        Theme::Skit => Style::default().fg(Color::Reset),
     }
 }
 
@@ -160,7 +165,9 @@ pub(crate) fn emphasis() -> Style {
 /// Version 0.4: `[dim]`.
 pub(crate) fn hint() -> Style {
     match current() {
-        Theme::Skit => Style::default().fg(Color::DarkGray),
+        Theme::Skit => Style::default()
+            .fg(Color::Reset)
+            .add_modifier(Modifier::DIM),
     }
 }
 
@@ -178,13 +185,10 @@ pub(crate) fn suggestion() -> Style {
     }
 }
 
-/// A scrollbar beside a panel. Version 0.4: `#4A413C`.
-pub(crate) fn scrollbar(panel: Panel) -> Style {
+/// A scrollbar beside a panel. Version 0.4: `#4A413C` for every panel.
+pub(crate) fn scrollbar() -> Style {
     match current() {
-        Theme::Skit => match panel {
-            Panel::Run => Style::default().fg(Color::DarkGray),
-            _ => Style::default().fg(panel_color(panel)),
-        },
+        Theme::Skit => Style::default().fg(SCROLLBAR),
     }
 }
 
@@ -263,7 +267,7 @@ pub(crate) fn caret(focused: bool) -> Style {
             if focused {
                 Style::default().fg(Color::Black).bg(ACCENT)
             } else {
-                Style::default().fg(Color::White)
+                text()
             }
         }
     }
@@ -291,7 +295,7 @@ pub(crate) fn checkbox_style() -> CheckBoxStyle {
     match current() {
         Theme::Skit => CheckBoxStyle::unicode()
             .focused_fg(ACCENT)
-            .unfocused_fg(Color::White)
+            .unfocused_fg(Color::Reset)
             .checked_fg(Color::Green),
     }
 }
@@ -303,6 +307,8 @@ pub(crate) fn select_style() -> ratatui_interact::components::SelectStyle {
             unfocused_border: border_color(false),
             dropdown_border: ACCENT,
             highlight_style: selection(),
+            text_fg: Color::Reset,
+            option_style: text(),
             ..ratatui_interact::components::SelectStyle::default()
         },
     }
@@ -312,7 +318,7 @@ pub(crate) fn radio_style() -> ButtonStyle {
     match current() {
         Theme::Skit => ButtonStyle::new(ButtonVariant::Toggle)
             .focused(SELECT_FG, SELECT_BG)
-            .unfocused(Color::White, Color::Reset)
+            .unfocused(Color::Reset, Color::Reset)
             .toggled(SELECT_FG, SELECT_BG),
     }
 }

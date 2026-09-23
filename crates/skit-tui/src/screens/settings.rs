@@ -1313,7 +1313,7 @@ pub fn render_settings(
 
 /// The settings scroll affordance's colour, shared with the run form's.
 fn settings_scrollbar_style() -> Style {
-    theme::scrollbar(Panel::Settings)
+    theme::scrollbar()
 }
 
 /// Lay every section out into virtual rows.
@@ -1656,7 +1656,7 @@ mod tests {
         SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
         TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
-    use crate::theme::{ACCENT, BOX_INDIGO, SELECT_BG};
+    use crate::theme::{ACCENT, SELECT_BG};
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
     /// padding. Every geometry assertion here uses it, so a regression is one a viewer would see.
@@ -3927,7 +3927,7 @@ mod tests {
         assert!(
             (0..terminal.backend().buffer().area.height).any(|row| {
                 let cell = &terminal.backend().buffer()[(39, row)];
-                cell.symbol() == "█" && cell.fg == BOX_INDIGO
+                cell.symbol() == "█" && cell.fg == Color::Rgb(0x4A, 0x41, 0x3C)
             }),
             "the overflow scrollbar lost its indigo thumb"
         );

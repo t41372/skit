@@ -182,8 +182,10 @@ fn every_public_terminal_wrapper_owns_a_real_terminal_lifecycle() {
     for (mode, marker) in [
         ("run", "Library"),
         ("run-with-path", "Library"),
-        ("collect-run", "Extra arguments"),
-        ("collect-run-with-path", "Extra arguments"),
+        // One word: Ratatui moves the cursor over a default-style space instead of writing it,
+        // so the raw stream of "Extra arguments" can hold a cursor move between the words.
+        ("collect-run", "arguments"),
+        ("collect-run-with-path", "arguments"),
     ] {
         run_child_in_pty("public_terminal_wrapper_child", Some(mode), marker, &[]);
     }

@@ -5288,7 +5288,7 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
 
 /// The run form's scroll affordance colour.
 fn run_scrollbar_style() -> Style {
-    theme::scrollbar(Panel::Run)
+    theme::scrollbar()
 }
 
 pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
@@ -6305,7 +6305,7 @@ mod textarea_band_tests {
     #[test]
     fn run_checkbox_style_is_visible_on_the_rendered_control() {
         for (checked, focused, symbol, color) in [
-            (false, false, "☐", Color::White),
+            (false, false, "☐", Color::Reset),
             (false, true, "☐", ACCENT),
             (true, false, "☑", Color::Green),
             (true, true, "☑", ACCENT),
@@ -6887,7 +6887,7 @@ mod textarea_band_tests {
                 .find(|(symbol, _)| symbol == "a")
                 .expect("first radio option")
                 .1,
-            Color::White
+            Color::Reset
         );
         assert_eq!(
             selected
@@ -6909,7 +6909,7 @@ mod textarea_band_tests {
                     .find(|(symbol, _)| symbol == option)
                     .expect("unselected radio option")
                     .1,
-                Color::White,
+                Color::Reset,
                 "a missing model selection toggled {option}"
             );
         }
@@ -7013,7 +7013,7 @@ mod textarea_band_tests {
                 .find(|(symbol, _)| symbol == "a")
                 .expect("externally unselected radio option")
                 .1,
-            Color::White
+            Color::Reset
         );
     }
 
@@ -7037,7 +7037,7 @@ mod textarea_band_tests {
                 .find(|(symbol, _)| symbol == "b")
                 .expect("unfocused radio option")
                 .1,
-            Color::White
+            Color::Reset
         );
 
         let mut unfocused = widget_control(&missing);
@@ -7050,7 +7050,7 @@ mod textarea_band_tests {
                     .find(|(symbol, _)| symbol == option)
                     .expect("blurred radio option")
                     .1,
-                Color::White,
+                Color::Reset,
                 "blur left focus on {option}"
             );
         }
