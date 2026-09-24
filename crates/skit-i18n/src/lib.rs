@@ -190,9 +190,9 @@ const CATALOG: &[Translation] = &[
         "檢查 uv 是否可用以及工具庫是否完好",
     ),
     row!(
-        "Read or set skit's settings (language, editor, mirror, form style, after-run)",
-        "读取或设置 skit 的设置（语言、编辑器、镜像、表单形态、运行后行为）",
-        "讀取或設定 skit 的設定（語言、編輯器、鏡像、表單形態、執行後行為）",
+        "Read or set skit's settings (language, editor, mirror, launch menu style, after-run)",
+        "读取或设置 skit 的设置（语言、编辑器、镜像、启动菜单样式、运行后行为）",
+        "讀取或設定 skit 的設定（語言、編輯器、鏡像、啟動選單樣式、執行後行為）",
     ),
     row!(
         "Manage the agents (runners) that prompt entries run with",
@@ -478,9 +478,9 @@ const CATALOG: &[Translation] = &[
         "執行目標已從磁碟消失",
     ),
     row!(
-        "form definitions are out of sync (open Entry settings → Resync)",
-        "表单定义不同步（打开条目设置 → 重新同步）",
-        "表單定義不同步（開啟項目設定 → 重新同步）",
+        "parameter definitions are out of sync (open Entry settings → Resync)",
+        "参数定义不同步（打开条目设置 → 重新同步）",
+        "參數定義不同步（開啟項目設定 → 重新同步）",
     ),
     row!(
         "missing external command(s): {}",
@@ -706,9 +706,9 @@ const CATALOG: &[Translation] = &[
         "--no-interpolate 只適用於提示詞項目",
     ),
     row!(
-        "cannot save a preset because the entry has no form fields",
-        "无法保存参数组合，因为该条目没有表单字段",
-        "無法儲存參數組合，因為該項目沒有表單欄位",
+        "cannot save a preset because the entry has no parameters",
+        "无法保存参数组合，因为该条目没有参数",
+        "無法儲存參數組合，因為該項目沒有參數",
     ),
     row!(
         "Added: {} ({} mode)",
@@ -733,9 +733,9 @@ const CATALOG: &[Translation] = &[
         "已更新 {}。已宣告的參數:{}",
     ),
     row!(
-        "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
-        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（{}）会先搁置，直到它们被移除（--unmanage）为止。",
-        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（{}）會先擱置，直到它們被移除（--unmanage）為止。",
+        "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments ({}) until you remove the managed parameters (--unmanage).",
+        "启动菜单现在改问这些管理的参数；脚本自己的命令行参数（{}）先不显示，等你移除这些管理的参数（--unmanage）后才会回来。",
+        "啟動選單現在改問這些管理的參數；腳本自己的命令列參數（{}）先不顯示，等你移除這些管理的參數（--unmanage）後才會回來。",
     ),
     row!(
         "Variable insertion is off for {} — turn it on first with: skit params {} --interpolate",
@@ -758,9 +758,9 @@ const CATALOG: &[Translation] = &[
         "偵測到 {} 個佔位符——數量太多,未自動管理任何一個。需要的請用 skit params {} --add 名稱 管理,或用 --no-interpolate 關閉插值。",
     ),
     row!(
-        "Detected parameters: {} (the run form asks for them; your last values are remembered)",
-        "检测到参数：{}（运行表单会询问；会记住你上次的值）",
-        "偵測到參數：{}（執行表單會詢問；會記住你上次的值）",
+        "Detected parameters: {} (the launch menu asks for them; your last values are remembered)",
+        "检测到参数：{}（启动菜单会询问；会记住你上次的值）",
+        "偵測到參數：{}（啟動選單會詢問；會記住你上次的值）",
     ),
     row!(
         "Secret parameter values are never saved by skit: {}",
@@ -921,9 +921,9 @@ const CATALOG: &[Translation] = &[
         "已刪除參數組合：{}"
     ),
     row!(
-        "{} has no form fields, so there's nothing to save.",
-        "{} 没有表单字段，没有东西可存。",
-        "{} 沒有表單欄位，沒有東西可存。",
+        "{} has no parameters, so there is nothing to save.",
+        "{} 没有参数，没有东西可存。",
+        "{} 沒有參數，沒有東西可存。",
     ),
     row!(
         "Reusing your last arguments: {}",
@@ -984,7 +984,7 @@ const CATALOG: &[Translation] = &[
     row!("insert", "插入", "插入"),
     row!("New agent…", "新增 agent…", "新增 agent…"),
     row!(
-        "none yet — fill the form and press Ctrl+S to save one",
+        "none yet — fill in the fields and press Ctrl+S to save one",
         "还没有——填好后按 Ctrl+S 可存成一组",
         "還沒有——填好後按 Ctrl+S 可存成一組",
     ),
@@ -1243,9 +1243,9 @@ const CATALOG: &[Translation] = &[
         "警告 {}：執行目標已從磁碟消失",
     ),
     row!(
-        "WARN {}: form definitions are out of sync; run: skit params {} --resync",
-        "警告 {}：表单定义不同步；请运行：skit params {} --resync",
-        "警告 {}：表單定義不同步；請執行：skit params {} --resync",
+        "WARN {}: parameter definitions are out of sync; run: skit params {} --resync",
+        "警告 {}：参数定义不同步；请运行：skit params {} --resync",
+        "警告 {}：參數定義不同步；請執行：skit params {} --resync",
     ),
     row!(
         "WARN {}: missing external commands: {}",
@@ -1352,11 +1352,62 @@ const CATALOG: &[Translation] = &[
         "运行完成，退出状态为 {}",
         "執行完成，結束狀態為 {}",
     ),
+    row!("{} finished", "{} 已完成", "{} 已完成"),
+    row!("✓ {} finished", "✓ {} 已完成", "✓ {} 已完成"),
+    row!(
+        "{} exited with code {}",
+        "{} 以退出码 {} 结束",
+        "{} 以結束碼 {} 結束",
+    ),
+    row!(
+        "✗ {} exited with code {}",
+        "✗ {} 以退出码 {} 结束",
+        "✗ {} 以結束碼 {} 結束",
+    ),
+    row!(
+        "Run exited with code {}",
+        "本次运行以退出码 {} 结束",
+        "本次執行以結束碼 {} 結束",
+    ),
+    row!(
+        "{} is not on PATH. Install it, or set the interpreter in Entry settings.",
+        "PATH 上找不到 {}。请先安装，或在条目设置里指定解释器。",
+        "PATH 上找不到 {}。請先安裝，或在項目設定裡指定直譯器。",
+    ),
+    row!(
+        "{} is not on PATH. Install it, or choose another agent.",
+        "PATH 上找不到 {}。请先安装，或换一个 agent。",
+        "PATH 上找不到 {}。請先安裝，或換一個 agent。",
+    ),
+    row!(
+        "{} is not on PATH. Install it, then run again.",
+        "PATH 上找不到 {}。请先安装，再重新运行。",
+        "PATH 上找不到 {}。請先安裝，再重新執行。",
+    ),
+    row!(
+        "Library reloaded (1 entry)",
+        "工具库已重新加载（1 个条目）",
+        "工具庫已重新載入（1 個項目）",
+    ),
+    row!(
+        "Library reloaded ({} entries)",
+        "工具库已重新加载（{} 个条目）",
+        "工具庫已重新載入（{} 個項目）",
+    ),
+    row!("Preset applied.", "已应用参数组合。", "已套用參數組合。"),
+    row!("Show hidden files", "显示隐藏文件", "顯示隱藏檔案"),
+    row!("Hide hidden files", "不显示隐藏文件", "不顯示隱藏檔案"),
+    row!("↩ last values", "↩ 上次的值", "↩ 上次的值"),
+    row!(
+        "Last values restored.",
+        "已恢复上次的值。",
+        "已還原上次的值。"
+    ),
     row!("Error: {}", "错误：{}", "錯誤：{}"),
     row!(
-        "{} hasn't run yet — press Enter to fill the form first.",
-        "{} 还没运行过——先按 Enter 填一次表单。",
-        "{} 還沒執行過——先按 Enter 填一次表單。",
+        "{} has not run yet — press Enter to open the launch menu first.",
+        "{} 还没运行过——先按 Enter 打开启动菜单。",
+        "{} 還沒執行過——先按 Enter 打開啟動選單。",
     ),
     row!("→ inject: {}", "→ 注入：{}", "→ 注入：{}"),
     row!(
@@ -1435,19 +1486,19 @@ const CATALOG: &[Translation] = &[
         "skit 無法讀懂這支腳本自己的參數宣告；請把參數放在 -- 之後直接傳入。",
     ),
     row!(
-        "No form fields — arguments after -- go to the selected agent.",
-        "没有表单字段——接在 -- 之后的参数会传给所选 agent。",
-        "沒有表單欄位——接在 -- 之後的參數會傳給所選 agent。",
+        "No parameters to fill in — arguments after -- go to the selected agent.",
+        "没有要填的参数——接在 -- 之后的参数会传给所选 agent。",
+        "沒有要填的參數——接在 -- 之後的參數會傳給所選 agent。",
     ),
     row!(
-        "No form fields — arguments after -- are appended to the command.",
-        "没有表单字段——接在 -- 之后的参数会附加到命令末尾。",
-        "沒有表單欄位——接在 -- 之後的參數會附加到指令末尾。",
+        "No parameters to fill in — arguments after -- are appended to the command.",
+        "没有要填的参数——接在 -- 之后的参数会附加到命令末尾。",
+        "沒有要填的參數——接在 -- 之後的參數會附加到指令末尾。",
     ),
     row!(
-        "No form fields — arguments after -- pass straight through to the script.",
-        "没有表单字段——接在 -- 之后的参数会透传给脚本。",
-        "沒有表單欄位——接在 -- 之後的參數會透傳給腳本。",
+        "No parameters to fill in — arguments after -- pass straight through to the script.",
+        "没有要填的参数——接在 -- 之后的参数会透传给脚本。",
+        "沒有要填的參數——接在 -- 之後的參數會透傳給腳本。",
     ),
     row!(
         "Run it: skit run {}",
@@ -1472,9 +1523,9 @@ const CATALOG: &[Translation] = &[
         "{} 不再從環境變數讀取(其 ${...:-default} 已被移除,或被普通賦值覆蓋)——你設定的值會被默默忽略。請重新加入或執行 resync。",
     ),
     row!(
-        "{}: injection target no longer exists (dropped from this run's form)",
-        "{}:找不到注入目标(已从本次表单剔除)",
-        "{}:找不到注入目標(已從本次表單剔除)",
+        "{}: injection target no longer exists (dropped from this run's launch menu)",
+        "{}:找不到注入目标(已从本次的启动菜单剔除)",
+        "{}:找不到注入目標(已從本次的啟動選單剔除)",
     ),
     row!(
         "{}: type changed from {} to {} in the source (still injected — double-check the value)",
@@ -1499,14 +1550,14 @@ const CATALOG: &[Translation] = &[
     row!("Prompt runner: {}", "提示词执行器：{}", "提示詞執行器：{}"),
     row!("Interpolation: {}", "插值：{}", "插值：{}"),
     row!(
-        "Prompt placeholders (the run form asks for them):",
-        "提示词的占位符(运行表单会询问):",
-        "提示詞的佔位符(執行表單會詢問):",
+        "Prompt placeholders (the launch menu asks for them):",
+        "提示词的占位符(启动菜单会询问):",
+        "提示詞的佔位符(啟動選單會詢問):",
     ),
     row!(
-        "Command template placeholders (the run form asks for them):",
-        "命令模板的占位符（运行表单会询问）：",
-        "命令範本的佔位符（執行表單會詢問）：",
+        "Command template placeholders (the launch menu asks for them):",
+        "命令模板的占位符（启动菜单会询问）：",
+        "命令範本的佔位符（啟動選單會詢問）：",
     ),
     row!(
         "Declared environment variables (set on the run):",
@@ -1609,6 +1660,11 @@ const CATALOG: &[Translation] = &[
         "已剔除 {}:腳本中已找不到。",
     ),
     row!(
+        "Everything still matches the script.",
+        "所有定义仍与脚本相符。",
+        "所有定義仍與腳本相符。",
+    ),
+    row!(
         "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
         "{}:因提示文字无法唯一对应,已重新锚定到其当前位置;请再次确认提示文字/机密设置仍然正确。",
         "{}:因提示文字無法唯一對應,已重新錨定到其目前位置;請再次確認提示文字/機密設定仍然正確。",
@@ -1707,29 +1763,29 @@ const CATALOG: &[Translation] = &[
         "找到 {} 個候選參數(寫死的常數 / input() 呼叫):",
     ),
     row!(
-        "This script reads command-line arguments; the run form has an extra-arguments field for them.",
-        "这个脚本会吃命令行参数；运行表单里有「额外参数」栏可以填。",
-        "這支腳本會吃命令列參數；執行表單裡有「額外參數」欄可以填。",
+        "This script reads command-line arguments; the launch menu has an extra-arguments field for them.",
+        "这个脚本会吃命令行参数；启动菜单里有「额外参数」栏可以填。",
+        "這支腳本會吃命令列參數；啟動選單裡有「額外參數」欄可以填。",
     ),
     row!(
-        "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
-        "这个脚本自己解析参数（{}）；skit 无法静态读懂它们，运行表单会提供「额外参数（原样传给脚本）」栏。",
-        "這支腳本自己解析參數（{}）；skit 無法靜態讀懂它們，執行表單會提供「額外參數（原樣傳給腳本）」欄。",
+        "This script parses its own arguments ({}); skit could not model them statically, so the launch menu offers an extra-arguments field.",
+        "这个脚本自己解析参数（{}）；skit 无法静态读懂它们，启动菜单会提供「额外参数（原样传给脚本）」栏。",
+        "這支腳本自己解析參數（{}）；skit 無法靜態讀懂它們，啟動選單會提供「額外參數（原樣傳給腳本）」欄。",
     ),
     row!(
-        "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
-        "✓ skit 看懂了这个脚本自己的参数（共 {} 项）。运行时会打开表单——不用背任何命令。",
-        "✓ skit 已讀取這支腳本自己的參數（{} 個欄位）。執行時會開啟表單，無需記憶指令。",
+        "✓ skit read this script's own arguments ({} field). Running it opens the launch menu — nothing to memorize.",
+        "✓ skit 看懂了这个脚本自己的参数（共 {} 项）。运行时会打开启动菜单——不用背任何命令。",
+        "✓ skit 看懂了這支腳本自己的參數（共 {} 項）。執行時會打開啟動選單——不用背任何指令。",
     ),
     row!(
-        "✓ skit read this script's own arguments ({} fields). Running it opens a form — nothing to memorize.",
-        "✓ skit 看懂了这个脚本自己的参数（共 {} 项）。运行时会打开表单——不用背任何命令。",
-        "✓ skit 已讀取這支腳本自己的參數（{} 個欄位）。執行時會開啟表單，無需記憶指令。",
+        "✓ skit read this script's own arguments ({} fields). Running it opens the launch menu — nothing to memorize.",
+        "✓ skit 看懂了这个脚本自己的参数（共 {} 项）。运行时会打开启动菜单——不用背任何命令。",
+        "✓ skit 看懂了這支腳本自己的參數（共 {} 項）。執行時會打開啟動選單——不用背任何指令。",
     ),
     row!(
-        "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
-        "💡 {} 直接写在代码里，skit 没法把它们变成表单字段。想管理其中一个，先在脚本开头给它取个名字，例如 OUTPUT = '…'（skit edit {}）。",
-        "💡 {} 直接寫在程式碼裡，skit 沒辦法把它們變成表單欄位。想管理其中一個，先在腳本開頭給它取個名字，例如 OUTPUT = '…'（skit edit {}）。",
+        "💡 {} are written directly inside the code, so skit cannot turn them into launch menu fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
+        "💡 {} 直接写在代码里，skit 没法把它们变成启动菜单里的字段。想管理其中一个，先在脚本开头给它取个名字，例如 OUTPUT = '…'（skit edit {}）。",
+        "💡 {} 直接寫在程式碼裡，skit 沒辦法把它們變成啟動選單裡的欄位。想管理其中一個，先在腳本開頭給它取個名字，例如 OUTPUT = '…'（skit edit {}）。",
     ),
     row!(
         "Reference mode never touches the original file, so parameter setup was skipped.",
@@ -1784,9 +1840,9 @@ const CATALOG: &[Translation] = &[
     // authoritative, and this is the heading of the settings section that manages them.
     row!("Presets", "参数组合", "參數組合"),
     row!(
-        "None yet — press Ctrl+S inside the run form to save one.",
-        "还没有——在运行表单里按 Ctrl+S 就能存一组。",
-        "還沒有——在執行表單裡按 Ctrl+S 就能存一組。",
+        "None yet — press Ctrl+S in the launch menu to save one.",
+        "还没有——在启动菜单里按 Ctrl+S 就能存一组。",
+        "還沒有——在啟動選單裡按 Ctrl+S 就能存一組。",
     ),
     row!(
         "Untick a preset to delete it on save:",
@@ -1806,7 +1862,7 @@ const CATALOG: &[Translation] = &[
     row!("Preferences", "偏好设置", "偏好設定"),
     row!("Language", "语言", "語言"),
     row!("Editor command", "编辑器命令", "編輯器命令"),
-    row!("Form style", "表单形态", "表單形態"),
+    row!("Launch menu style", "启动菜单样式", "啟動選單樣式"),
     row!("After run", "运行后", "執行後"),
     row!("Bash path", "Bash 路径", "Bash 路徑"),
     row!(
@@ -1853,9 +1909,9 @@ const CATALOG: &[Translation] = &[
     // The parameter section, in the order version 0.4 composes it
     // (`src/skit/tui_settings.py:588-719`).
     row!(
-        "Parameters (the run form's fields)",
-        "参数（运行表单的字段）",
-        "參數（執行表單的欄位）",
+        "Parameters (fields in the launch menu)",
+        "参数（启动菜单里的字段）",
+        "參數（啟動選單裡的欄位）",
     ),
     row!(
         "(programs have no managed parameters)",
@@ -1868,9 +1924,9 @@ const CATALOG: &[Translation] = &[
         "偵測到但尚未管理——勾選即可管理：",
     ),
     row!(
-        "This script's run form comes from its own command-line arguments. Managing a hardcoded constant here would replace that form — leave it as is.",
-        "这个脚本的运行表单来自它自己的命令行参数。在这里管理一个写死的常量会取代那张表单——保持原样即可。",
-        "這支腳本的執行表單來自它自己的命令列參數。在這裡管理一個寫死的常數會取代那張表單——維持原樣即可。",
+        "This script's launch menu comes from its own command-line arguments. Managing a hardcoded constant here would replace that launch menu — leave it as is.",
+        "这个脚本的启动菜单来自它自己的命令行参数。在这里管理一个写死的常量会取代这个启动菜单——保持原样即可。",
+        "這支腳本的啟動選單來自它自己的命令列參數。在這裡管理一個寫死的常數會取代這個啟動選單——維持原樣即可。",
     ),
     row!(
         "Every input() is managed — this script can now run with --no-input.",
@@ -1883,9 +1939,9 @@ const CATALOG: &[Translation] = &[
         "儲存時會從範本重新讀取 {placeholders}。",
     ),
     row!(
-        "Variable insertion ({{name}} placeholders become form fields)",
-        "变量插入({{name}} 占位符会成为表单字段)",
-        "變數插入({{name}} 佔位符會成為表單欄位)",
+        "Variable insertion ({{name}} placeholders become launch menu fields)",
+        "变量插入({{name}} 占位符会成为启动菜单里的字段)",
+        "變數插入({{name}} 佔位符會成為啟動選單裡的欄位)",
     ),
     row!(
         "Off — the body travels to the agent exactly as written.",
@@ -2083,7 +2139,7 @@ const CATALOG: &[Translation] = &[
     row!("{} repeats its flag", "{} 重复其标志", "{} 重複其旗標"),
     row!("{} prompt", "{} 提示文字", "{} 提示文字"),
     row!("{} help", "{} 帮助", "{} 說明"),
-    row!("Form label:", "字段提示：", "欄位提示："),
+    row!("Label in the launch menu:", "字段提示：", "欄位提示："),
     row!(
         "secret (never saved to disk)",
         "机密（不会存盘）",
@@ -2153,9 +2209,9 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Arguments after `--`", "`--` 后的参数", "`--` 後的參數"),
     row!(
-        "Skip the parameter form and injection and run the script as-is (escape hatch)",
-        "跳过参数表单与注入,原样运行脚本(逃生门)",
-        "跳過參數表單與注入,原樣執行腳本(逃生門)",
+        "Skip the launch menu and injection and run the script as-is (escape hatch)",
+        "跳过启动菜单与注入,原样运行脚本(逃生门)",
+        "跳過啟動選單與注入,原樣執行腳本(逃生門)",
     ),
     row!("Remove every dependency", "清空所有依赖", "清空所有依賴",),
     row!(
@@ -2187,9 +2243,9 @@ const CATALOG: &[Translation] = &[
         "說明（可行時從來源推斷）",
     ),
     row!(
-        "Line-by-line prompts instead of the inline form",
-        "用逐行问答取代迷你表单",
-        "用逐行問答取代迷你表單",
+        "Line-by-line prompts instead of the inline launch menu",
+        "用逐行问答取代内嵌的启动菜单",
+        "用逐行問答取代內嵌的啟動選單",
     ),
     row!(
         "Disable prompt interpolation",
@@ -2263,9 +2319,9 @@ const CATALOG: &[Translation] = &[
         "列出項目已儲存的參數組合（preset）",
     ),
     row!(
-        "Named preset of parameter values to prefill the form with",
-        "用哪个参数组合(preset)预填表单",
-        "用哪個參數組合(preset)預填表單",
+        "Named preset of parameter values to prefill the launch menu with",
+        "用哪个参数组合(preset)预填启动菜单",
+        "用哪個參數組合(preset)預填啟動選單",
     ),
     row!(
         "Bring a currently detected candidate under management (repeatable)",
@@ -2439,9 +2495,9 @@ const CATALOG: &[Translation] = &[
         "設定宣告的 flag 參數選項，格式 NAME=--out(留空為位置參數)",
     ),
     row!(
-        "Set a parameter's form prompt, as NAME=text (repeatable)",
-        "以 NAME=text 设定参数的表单提示(可重复)",
-        "以 NAME=text 設定參數的表單提示(可重複)",
+        "Set the label that the launch menu shows for a parameter, as NAME=text (repeatable)",
+        "以 NAME=text 设定参数在启动菜单里的提示(可重复)",
+        "以 NAME=text 設定參數在啟動選單裡的提示(可重複)",
     ),
     row!(
         "Set a declared parameter's type, as NAME=str|int|float|bool|choice|path",
@@ -2469,9 +2525,9 @@ const CATALOG: &[Translation] = &[
         "設定宣告參數的說明文字，格式 NAME=text",
     ),
     row!(
-        "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)",
-        "直接以 NAME=VALUE 指定参数值(可重复;值可用 {cwd}、{env:VAR} 等占位符;已指定的字段表单不再询问)",
-        "直接以 NAME=VALUE 指定參數值(可重複;值可用 {cwd}、{env:VAR} 等代換符;已指定的欄位表單不再詢問)",
+        "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the launch menu no longer asks for a field you set)",
+        "直接以 NAME=VALUE 指定参数值(可重复;值可用 {cwd}、{env:VAR} 等占位符;已指定的字段,启动菜单不会再问)",
+        "直接以 NAME=VALUE 指定參數值(可重複;值可用 {cwd}、{env:VAR} 等代換符;已指定的欄位,啟動選單不會再問)",
     ),
     row!(
         "Source file to register",
@@ -3029,9 +3085,9 @@ const CATALOG: &[Translation] = &[
         "未知的設定：{}。可用：{}",
     ),
     row!(
-        "Unknown form style: {}. Choose from: tui, plain",
-        "未知的表单形态：{}。可选：tui、plain",
-        "未知的表單形態：{}。可選：tui、plain",
+        "Unknown launch menu style: {}. Choose from: tui, plain",
+        "未知的启动菜单样式：{}。可选：tui、plain",
+        "未知的啟動選單樣式：{}。可選：tui、plain",
     ),
     row!(
         "Unknown after-run behavior: {}. Choose from: exit, stay",
@@ -3350,9 +3406,9 @@ const CATALOG: &[Translation] = &[
         "⚠ 這個腳本會讀自己的位置($0 / $BASH_SOURCE),而注入後的值是從臨時副本執行的——所以它看到的是副本的路徑,不是原檔案的。把常數改寫成 NAME=\"${NAME:-value}\" 就能改用環境變數傳值,完全不寫副本(`skit params <script> --normalize NAME` 會在儲存的副本上幫你做這個改寫)。",
     ),
     row!(
-        "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
-        "脚本内容和表单定义对不上了：{}。运行 `skit params {} --resync` 即可修复。",
-        "腳本內容和表單定義對不上了：{}。執行 `skit params {} --resync` 即可修復。",
+        "The script and its parameter definitions no longer match: {}. Run `skit params {} --resync` to fix it.",
+        "脚本内容和参数定义对不上了：{}。运行 `skit params {} --resync` 即可修复。",
+        "腳本內容和參數定義對不上了：{}。執行 `skit params {} --resync` 即可修復。",
     ),
     row!(
         "source management applies only to a stored copy",
@@ -3668,11 +3724,11 @@ const CATALOG: &[Translation] = &[
         "留空表示：{}（来自 $VISUAL / $EDITOR）",
         "留空表示：{}（來自 $VISUAL / $EDITOR）",
     ),
-    row!("Interactive form", "交互表单", "互動表單"),
+    row!("Launch menu", "启动菜单", "啟動選單"),
     row!(
-        "Mini form — opens in place, fully clickable",
-        "迷你表单——就地展开、可戳可点",
-        "迷你表單——就地展開、可戳可點",
+        "Inline launch menu — opens in place, fully clickable",
+        "内嵌启动菜单——就地展开、可戳可点",
+        "內嵌啟動選單——就地展開、可戳可點",
     ),
     row!(
         "Line-by-line prompts — plainest, best over slow terminals",
@@ -3969,9 +4025,9 @@ const CATALOG: &[Translation] = &[
         "npm 依賴只適用於儲存的副本，因此不會記錄任何依賴。",
     ),
     row!(
-        "Tick the ones the run form should ask for:",
-        "勾选运行表单要询问的项目：",
-        "勾選執行表單要詢問的項目：",
+        "Tick the ones the launch menu should ask for:",
+        "勾选启动菜单要询问的项目：",
+        "勾選啟動選單要詢問的項目：",
     ),
     row!(
         "No {{name}} placeholders detected — the body travels to the agent as written.",
@@ -3980,9 +4036,9 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Choose variables…", "选择变量…", "選擇變數…"),
     row!(
-        "ask on the run form",
-        "在运行表单上选择",
-        "在執行表單上選擇",
+        "ask in the launch menu",
+        "在启动菜单里选择",
+        "在啟動選單裡選擇",
     ),
     row!("Edit script", "编辑脚本", "編輯腳本"),
     row!("Edit prompt", "编辑提示词", "編輯提示詞"),
@@ -4018,6 +4074,18 @@ const CATALOG: &[Translation] = &[
         "…或从空白页开始:",
         "…或從空白頁開始:",
     ),
+    row!(
+        "…or register a command template below (e.g. ffmpeg -i {input}):",
+        "……或在下方登记一条命令模板（例如 ffmpeg -i {input}）：",
+        "……或在下方登記一條命令範本（例如 ffmpeg -i {input}）：",
+    ),
+    row!("Browse…", "浏览…", "瀏覽…"),
+    row!("Delete", "删除", "刪除"),
+    row!(
+        "Fill {{name}} placeholders from the launch menu before each run",
+        "每次运行前,先在启动菜单里填入 {{name}} 占位符",
+        "每次執行前,先在啟動選單裡填入 {{name}} 佔位符",
+    ),
     row!("…and {} more", "……还有 {} 个", "……還有 {} 個"),
     row!(
         "The #! in {} names no interpreter skit knows. What is it?",
@@ -4040,9 +4108,9 @@ const CATALOG: &[Translation] = &[
         "給 AI agent 的提示詞",
     ),
     row!(
-        "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
-        "💡 {} 直接写在代码里，skit 没法把它们变成表单字段。想管理其中一个，先在脚本开头给它取个名字，例如 OUTPUT = '…'（Ctrl+E 现在就改）。",
-        "💡 {} 直接寫在程式碼裡，skit 沒辦法把它們變成表單欄位。想管理其中一個，先在腳本開頭給它取個名字，例如 OUTPUT = '…'（Ctrl+E 現在就改）。",
+        "💡 {} are written directly inside the code, so skit cannot turn them into launch menu fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
+        "💡 {} 直接写在代码里，skit 没法把它们变成启动菜单里的字段。想管理其中一个，先在脚本开头给它取个名字，例如 OUTPUT = '…'（Ctrl+E 现在就改）。",
+        "💡 {} 直接寫在程式碼裡，skit 沒辦法把它們變成啟動選單裡的欄位。想管理其中一個，先在腳本開頭給它取個名字，例如 OUTPUT = '…'（Ctrl+E 現在就改）。",
     ),
     row!(
         "Detected {} placeholders — probably not written for insertion. Tick only the ones you need, or untick the switch above.",
@@ -4104,9 +4172,9 @@ const CATALOG: &[Translation] = &[
         "此項目的工作目錄不存在——已改從這裡開始。",
     ),
     row!(
-        "Runner picked on the run form",
-        "执行器在运行表单上选择",
-        "執行器在執行表單上選擇",
+        "Runner picked in the launch menu",
+        "执行器在启动菜单里选择",
+        "執行器在啟動選單裡選擇",
     ),
     row!(
         "{} (no longer configured)",
@@ -4130,9 +4198,9 @@ const CATALOG: &[Translation] = &[
     row!("failed (code {})", "失败（代码 {}）", "失敗（代碼 {}）"),
     row!("Not run yet", "还没运行过", "還沒執行過"),
     row!(
-        "The script changed — skit checks the form against it before every run.",
-        "脚本改过了——每次运行前 skit 会自动核对表单。",
-        "腳本改過了——每次執行前 skit 會自動核對表單。",
+        "The script changed — skit checks the parameter definitions against it before every run.",
+        "脚本改过了——每次运行前 skit 会自动核对参数定义。",
+        "腳本改過了——每次執行前 skit 會自動核對參數定義。",
     ),
     row!(
         "Press a to add the first one,",

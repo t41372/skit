@@ -12,6 +12,7 @@ mod rowclip;
 mod screen_target;
 mod screens;
 mod session;
+mod status_clock;
 mod terminal;
 mod theme;
 mod viewport;
@@ -182,7 +183,7 @@ pub fn render_with_session(
             session.render_confirm_remove(frame, areas.body, name, *original_file_preserved, locale)
         }
         Some(ModalState::ConfirmDiscardChanges) => {
-            screens::modal::discard_changes(frame, areas.body, locale)
+            session.render_confirm_discard(frame, areas.body, locale)
         }
         Some(
             modal @ (ModalState::RunPresetName { .. }
@@ -210,6 +211,7 @@ pub fn render_with_session(
     session.capture_local_actions(state);
     session.register_geometry(&geometry);
     session.complete_screen_target_render(state);
+    session.paint_pointer_feedback(frame.buffer_mut(), state);
     session.render_quit_toast(frame, locale);
     geometry
 }

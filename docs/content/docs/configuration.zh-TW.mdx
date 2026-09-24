@@ -12,8 +12,8 @@ description: config.toml 與每個 `skit config` 鍵。
 | --- | --- | --- |
 | `lang` | 語言標籤，或 `auto` | 介面語言 |
 | `editor` | 一條命令（允許帶參數） | `skit edit` 與 `Ctrl+E` 使用的編輯器 |
-| `form` | `tui` / `plain` | 互動樣式：內嵌小表單，或純文字逐行提問 |
-| `after_run` | `exit` / `stay` | 選單啟動的執行結束後：結束 skit（預設），或作為工作檯返回選單 |
+| `form` | `tui` / `plain` | 啟動選單樣式：內嵌的啟動選單，或純文字逐行提問 |
+| `after_run` | `exit` / `stay` | 選單啟動的執行印出結果行（`✓ <名稱> 已完成` 或 `✗ <名稱> 以結束碼 N 結束`）後：結束 skit 並回傳這次執行的結束碼（預設），或作為工作檯返回選單，結果顯示在狀態列 |
 | `shell.bash_path` | 一個路徑 | Windows：當 `PATH` 上沒有 bash 時，用來執行 shell 項目的 bash（設定時會驗證其存在） |
 | `js.runner` | `deno` / `bun` / `node`，為空表示自動 | 強制指定 JS 執行環境，而不是取先找到的 |
 | `mirror` | `on` / `off` | 鏡像總開關 —— `off` 會保留已儲存的 URL |

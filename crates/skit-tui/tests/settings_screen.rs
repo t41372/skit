@@ -8,11 +8,16 @@
 //! point, can hold the answer.
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
-use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use skit_domain::parameters::{ParamDecl, ParameterValue};
 use skit_i18n::Locale;
 use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
-use skit_ui::{Action, LibraryState, Screen, SettingsInputs, SettingsView};
+use skit_ui::{
+    Action, Effect, LibraryState, Screen, SettingsAction, SettingsInputs, SettingsResyncPreview,
+    SettingsView, SourceParameters,
+};
 
 /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
 /// padding — the same size `docs/assets/demo/shots.tape` runs the oracle at.
@@ -28,10 +33,15 @@ fn rendered(buffer: &Buffer) -> String {
         .join("\n")
 }
 
-/// The entry the demo tape opens settings on: a stored python copy with one managed constant.
-fn banner_view() -> SettingsView {
+/// The one constant the demo entry manages.
+fn banner_view_managed() -> Vec<ParamDecl> {
     let mut message = ParamDecl::new("MESSAGE");
     message.default = Some(ParameterValue::String("Hello from skit".to_owned()));
+    vec![message]
+}
+
+/// The entry the demo tape opens settings on: a stored python copy with one managed constant.
+fn banner_view() -> SettingsView {
     SettingsView::from_inputs(&SettingsInputs {
         selector: "banner".to_owned(),
         kind: "python".to_owned(),
@@ -43,7 +53,7 @@ fn banner_view() -> SettingsView {
         has_original_file: true,
         has_stored_name: true,
         has_analyzer: true,
-        managed: vec![message],
+        managed: banner_view_managed(),
         ..SettingsInputs::default()
     })
 }
@@ -87,7 +97,7 @@ fn settings_cursor_movement_is_consumed_before_global_dispatch() {
 /// The first frame reaches the parameter section, with no key pressed.
 ///
 /// Version 0.4's own frame at this size shows Basics, Storage, the four working-directory options,
-/// and `Parameters (the run form's fields)` with its first row. Anything less is a regression
+/// and `Parameters (fields in the launch menu)` with its first row. Anything less is a regression
 /// against the oracle rather than a matter of taste.
 #[test]
 fn the_recorded_terminal_reaches_the_parameter_section_on_the_first_frame() {
@@ -100,7 +110,7 @@ fn the_recorded_terminal_reaches_the_parameter_section_on_the_first_frame() {
         "Run in (working directory)",
         // The fourth option, which used to be the first thing cut off.
         "A fixed folder (type it below)",
-        "Parameters (the run form's fields)",
+        "Parameters (fields in the launch menu)",
         "MESSAGE",
     ] {
         assert!(
@@ -192,5 +202,126 @@ fn the_rename_sentence_follows_the_name_it_explains() {
     assert!(
         row_of("Renaming keeps everything") < row_of("Storage"),
         "{frame}"
+    );
+}
+
+fn render_state(
+    state: &LibraryState,
+    session: &mut TuiSession,
+    width: u16,
+    height: u16,
+) -> (String, ViewGeometry) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, state, Locale::En, session);
+        })
+        .unwrap();
+    (rendered(terminal.backend().buffer()), geometry)
+}
+
+fn click(column: u16, row: u16, kind: MouseEventKind) -> Event {
+    Event::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+/// The resync report scrolls into view with the control that asked for it.
+///
+/// On the recorded terminal the resync control is the last row of the parameter section, so a
+/// keyboard move puts it on the bottom row of the body. The report is under the control, and the
+/// first frame after the host's answer must show both. Version 0.4 rebuilds the screen and leaves
+/// the report below the fold (`src/skit/tui_settings.py:926`).
+#[test]
+fn the_resync_report_scrolls_into_view_with_its_control() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(banner_view()))));
+    let mut session = TuiSession::default();
+    let (_, geometry) = render_state(&state, &mut session, DEMO_WIDTH, DEMO_HEIGHT);
+    let EventHandling::Action(action) = session.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+        &state,
+        &geometry,
+    ) else {
+        panic!("Ctrl+R is the advertised resync chord");
+    };
+    assert_eq!(
+        state.update(action),
+        Effect::PreviewSettingsResync {
+            selector: "banner".to_owned()
+        }
+    );
+    let managed = banner_view_managed();
+    state.update(Action::Settings(SettingsAction::ResyncPreviewed {
+        selector: "banner".to_owned(),
+        preview: SettingsResyncPreview {
+            parameters: SourceParameters {
+                managed,
+                candidates: Vec::new(),
+                reader_fields: 0,
+            },
+            warnings: Vec::new(),
+        },
+    }));
+    let (frame, _) = render_state(&state, &mut session, DEMO_WIDTH, DEMO_HEIGHT);
+    assert!(
+        frame.contains("Read the parameter definitions from the script again on save"),
+        "{frame}"
+    );
+    assert!(
+        frame.contains("Everything still matches the script."),
+        "the report is below the fold:\n{frame}"
+    );
+}
+
+/// A prompt with more detected variables than the inline list shows has a footer chip for the
+/// full picker, and a click on it opens the picker.
+#[test]
+fn the_footer_chip_opens_the_variable_picker_of_a_flooded_prompt() {
+    let names = (0..25).map(|index| format!("v{index}")).collect::<Vec<_>>();
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "flood".to_owned(),
+            kind: "prompt".to_owned(),
+            name: "Flood".to_owned(),
+            declared_schema: true,
+            interpolate: true,
+            candidates: names,
+            ..SettingsInputs::default()
+        }),
+    ))));
+    let mut session = TuiSession::default();
+    let (frame, geometry) = render_state(&state, &mut session, DEMO_WIDTH, DEMO_HEIGHT);
+    let lines = frame.lines().collect::<Vec<_>>();
+    let row = lines
+        .iter()
+        .rposition(|line| line.contains("Choose variables"))
+        .unwrap_or_else(|| panic!("no chip offers the picker:\n{frame}"));
+    assert!(
+        row + 4 >= lines.len(),
+        "the chip is not in the footer:\n{frame}"
+    );
+    let column = lines[row][..lines[row].find("Choose variables").unwrap()]
+        .chars()
+        .count();
+    let (column, row) = (u16::try_from(column).unwrap(), u16::try_from(row).unwrap());
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        assert_eq!(
+            session.handle_event(click(column, row, kind), &state, &geometry),
+            EventHandling::Consumed
+        );
+    }
+    let (frame, _) = render_state(&state, &mut session, DEMO_WIDTH, DEMO_HEIGHT);
+    assert!(
+        frame.contains("Choose prompt variables"),
+        "the footer chip did not open the picker:\n{frame}"
     );
 }

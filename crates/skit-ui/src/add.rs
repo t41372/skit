@@ -16,8 +16,8 @@ use skit_language::{
     BindingIdentity, LosslessSource, UvMetadata, external_dependencies_at,
     has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, placeholder_params,
     python_version_pin, read_uv_metadata, shebang_program, split_pep508_requirements,
-    suggest_description, validate_pep440_specifiers, validate_pep508_requirement,
-    write_managed_params_bytes, write_uv_metadata_bytes,
+    suggest_description, suggest_prompt_name, validate_pep440_specifiers,
+    validate_pep508_requirement, write_managed_params_bytes, write_uv_metadata_bytes,
 };
 
 use crate::picker::{ChoicePicker, PickerItem, PickerMode};
@@ -224,6 +224,15 @@ impl SourceSnapshot {
     }
 
     fn default_name(&self, kind: KnownEntryKind) -> String {
+        // A new prompt draft lives in a temporary file whose name means nothing to the person, so
+        // its first words name it (C12 of the 2026-11 audit). The store makes the slug from this
+        // name with its usual rules.
+        if self.is_draft
+            && kind == KnownEntryKind::Prompt
+            && let Some(name) = suggest_prompt_name(&self.bytes)
+        {
+            return name;
+        }
         let stem = self
             .path
             .file_stem()
@@ -781,7 +790,7 @@ impl ReviewState {
         &self.runner_names
     }
 
-    /// Selected prompt runner. Empty means ask on the run form.
+    /// Selected prompt runner. Empty means ask in the launch menu.
     #[must_use]
     pub fn runner(&self) -> &str {
         &self.runner
@@ -1496,15 +1505,15 @@ impl AddWorkflowState {
             }
             AddAction::SetCommandTemplate(value) => {
                 self.source.command_template = value;
-                self.problem = None;
+                self.clear_problem_outside_the_path();
             }
             AddAction::SetCommandName(value) => {
                 self.source.command_name = value;
-                self.problem = None;
+                self.clear_problem_outside_the_path();
             }
             AddAction::SetCommandDescription(value) => {
                 self.source.command_description = value;
-                self.problem = None;
+                self.clear_problem_outside_the_path();
             }
             AddAction::SelectDraft(index) => {
                 if index < self.source.drafts.len() {
@@ -1805,12 +1814,31 @@ impl AddWorkflowState {
         }
     }
 
+    /// Clear a problem that an edit outside the path box answers.
+    ///
+    /// A path that cannot be read stays reported until the path changes: Continue still tries the
+    /// path first, so the report stays true while the person types in the template boxes.
+    fn clear_problem_outside_the_path(&mut self) {
+        if !matches!(self.problem, Some(AddProblem::SourceUnavailable { .. })) {
+            self.problem = None;
+        }
+    }
+
     fn open_review(&mut self, source: SourceSnapshot, kind: KnownEntryKind) {
-        self.review = Some(ReviewState::from_source(
-            source,
-            kind,
-            self.review_defaults.clone(),
-        ));
+        // A Name or a Description typed on the source screen must not be lost when a path or a
+        // draft opens the review (D8 of the 2026-11 audit). The typed value is the latest thing
+        // the person said, so it wins over a value the host supplied.
+        let mut defaults = self.review_defaults.clone();
+        for (typed, default) in [
+            (&self.source.command_name, &mut defaults.name),
+            (&self.source.command_description, &mut defaults.description),
+        ] {
+            let typed = typed.trim();
+            if !typed.is_empty() {
+                *default = Some(typed.to_owned());
+            }
+        }
+        self.review = Some(ReviewState::from_source(source, kind, defaults));
         self.kind_picker = None;
         self.pending_source = None;
         self.problem = None;
@@ -2359,6 +2387,155 @@ mod tests {
             [AddEffect::InspectSource { path, .. }] if path == &PathBuf::from("tool.unknown")
         ));
         assert_eq!(workflow.stage(), AddStage::Source);
+    }
+
+    /// D8 of the 2026-11 audit: a Name or a Description typed on the Add screen is not lost when
+    /// the path wins Continue. The review opens with the typed values, where the person sees them
+    /// and can change them.
+    #[test]
+    fn typed_command_name_and_description_prefill_the_review_of_a_path() {
+        let bytes = b"\"\"\"Docstring.\"\"\"\nprint(1)\n";
+        let mut workflow = AddWorkflowState::new(Vec::new());
+        let _ = workflow.reduce(AddAction::SetSourcePath("tool.py".into()));
+        let _ = workflow.reduce(AddAction::SetCommandName("  My tool ".into()));
+        let _ = workflow.reduce(AddAction::SetCommandDescription(" Does one thing. ".into()));
+        inspected(&mut workflow, source("tool.py", bytes));
+        let review = workflow.review().expect("the path opens its review");
+        assert_eq!(review.name(), "My tool");
+        assert_eq!(review.description(), "Does one thing.");
+        let effects = workflow.reduce(AddAction::Save);
+        let (_, entry) = effects
+            .iter()
+            .find_map(commit_effect)
+            .expect("the review commits");
+        assert_eq!(entry.name, "My tool");
+        assert_eq!(entry.description, "Does one thing.");
+
+        // Empty boxes keep the values that the source suggests.
+        let mut plain = AddWorkflowState::new(Vec::new());
+        let _ = plain.reduce(AddAction::SetSourcePath("tool.py".into()));
+        let _ = plain.reduce(AddAction::SetCommandName("   ".into()));
+        inspected(&mut plain, source("tool.py", bytes));
+        let review = plain.review().expect("the path opens its review");
+        assert_eq!(review.name(), "tool");
+        assert_eq!(review.description(), "Docstring.");
+
+        // A typed value wins over a value that the host supplied, and the supplied defaults stay
+        // unchanged for the next review.
+        let defaults = ReviewDefaults {
+            name: Some("Flag name".into()),
+            description: Some("Flag description".into()),
+            ..ReviewDefaults::default()
+        };
+        let mut flagged = AddWorkflowState::new(Vec::new()).with_review_defaults(defaults.clone());
+        let _ = flagged.reduce(AddAction::SetSourcePath("tool.unknown".into()));
+        let _ = flagged.reduce(AddAction::SetCommandName("Typed".into()));
+        inspected(&mut flagged, source("tool.unknown", b"plain text\n"));
+        let _ = flagged.reduce(AddAction::PickKind(Some(KnownEntryKind::Shell)));
+        let review = flagged.review().expect("the picked kind opens its review");
+        assert_eq!(review.name(), "Typed");
+        assert_eq!(review.description(), "Flag description");
+        assert_eq!(flagged.review_defaults(), &defaults);
+    }
+
+    /// A path that cannot be read stays reported until the path changes. The template boxes are
+    /// another lane, and Continue still tries the path first.
+    #[test]
+    fn a_source_path_problem_stays_until_the_path_changes() {
+        let mut workflow = AddWorkflowState::new(vec![DraftSummary {
+            path: PathBuf::from("/data/drafts/skit-new-a.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        }]);
+        let _ = workflow.reduce(AddAction::SetSourcePath("/missing/x.py".into()));
+        let effects = workflow.reduce(AddAction::Continue);
+        let (request, _) = effects
+            .iter()
+            .find_map(inspect_effect)
+            .expect("the path is inspected");
+        let _ = workflow.reduce(AddAction::SourceInspected {
+            request,
+            result: Err("File not found: /missing/x.py".into()),
+        });
+        let problem = AddProblem::SourceUnavailable {
+            path: PathBuf::from("/missing/x.py"),
+            reason: "File not found: /missing/x.py".into(),
+        };
+        assert_eq!(workflow.problem(), Some(&problem));
+        for action in [
+            AddAction::SetCommandTemplate("echo {name}".into()),
+            AddAction::SetCommandName("Echo".into()),
+            AddAction::SetCommandDescription("Say it".into()),
+            AddAction::HighlightDraft(0),
+        ] {
+            let _ = workflow.reduce(action.clone());
+            assert_eq!(workflow.problem(), Some(&problem), "{action:?}");
+        }
+        let _ = workflow.reduce(AddAction::SetSourcePath("/missing/x.p".into()));
+        assert_eq!(workflow.problem(), None);
+
+        // A missing command name is a template problem, so any template box clears it.
+        let _ = workflow.reduce(AddAction::SetSourcePath(String::new()));
+        let _ = workflow.reduce(AddAction::SetCommandName(String::new()));
+        assert!(workflow.reduce(AddAction::Continue).is_empty());
+        assert_eq!(workflow.problem(), Some(&AddProblem::MissingCommandName));
+        let _ = workflow.reduce(AddAction::SetCommandDescription("Say it again".into()));
+        assert_eq!(workflow.problem(), None);
+    }
+
+    /// C12 of the 2026-11 audit: a new prompt draft is named from its first words, not from its
+    /// temporary file. A typed name still wins, and a prompt file that is not a draft keeps its
+    /// file name.
+    #[test]
+    fn a_new_prompt_draft_is_named_from_its_first_words() {
+        let body = b"# New prompt\n\nReview the pull request for bugs\n";
+        let mut draft = source("/data/drafts/skit-new-91G1LH.prompt.md", body);
+        draft.is_draft = true;
+        let mut workflow = AddWorkflowState::new(Vec::new());
+        let effects = workflow.reduce(AddAction::NewDraft(DraftKind::Prompt));
+        let (request, _) = effects
+            .iter()
+            .find_map(author_effect)
+            .expect("authoring starts");
+        let _ = workflow.reduce(AddAction::DraftEdited {
+            request,
+            result: Ok(Some(draft.clone())),
+        });
+        let review = workflow.review().expect("the draft opens its review");
+        assert_eq!(review.name(), "Review the pull request");
+        assert_eq!(review.description(), "Review the pull request for bugs");
+        let _ = workflow.reduce(AddAction::SetReviewName("  ".into()));
+        let effects = workflow.reduce(AddAction::Save);
+        let (_, entry) = effects
+            .iter()
+            .find_map(commit_effect)
+            .expect("the review commits");
+        assert_eq!(entry.name, "Review the pull request");
+
+        let mut typed = AddWorkflowState::new(Vec::new());
+        let _ = typed.reduce(AddAction::SetCommandName("Code review".into()));
+        let effects = typed.reduce(AddAction::NewDraft(DraftKind::Prompt));
+        let (request, _) = effects.iter().find_map(author_effect).unwrap();
+        let _ = typed.reduce(AddAction::DraftEdited {
+            request,
+            result: Ok(Some(draft.clone())),
+        });
+        assert_eq!(typed.review().unwrap().name(), "Code review");
+
+        let mut blank = draft.clone();
+        blank.bytes = b"---\n".to_vec();
+        let review =
+            ReviewState::from_source(blank, KnownEntryKind::Prompt, ReviewDefaults::default());
+        assert_eq!(review.name(), "skit-new-91G1LH");
+
+        let mut file = draft;
+        file.is_draft = false;
+        file.path = PathBuf::from("/notes/triage.prompt.md");
+        let review =
+            ReviewState::from_source(file, KnownEntryKind::Prompt, ReviewDefaults::default());
+        assert_eq!(review.name(), "triage");
     }
 
     #[test]

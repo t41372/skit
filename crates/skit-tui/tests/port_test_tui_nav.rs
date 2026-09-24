@@ -336,7 +336,7 @@ fn test_add_source_arrows_walk_path_template_name() {
     let screen = buffer_text(&buffer);
     assert!(screen.contains("Tab/↓"), "{screen}");
     assert!(screen.contains("Shift+Tab/↑"), "{screen}");
-    assert!(screen.contains("[Ctrl+O] Select"), "{screen}");
+    assert!(screen.contains("Browse…  Ctrl+O"), "{screen}");
 
     // The independent key and the visible button both open the same typed picker contract without
     // moving the form keyboard away from the path field. Hover and release are inert.
@@ -350,7 +350,7 @@ fn test_add_source_arrows_walk_path_template_name() {
         .iter()
         .find(|hit| {
             hit.target == AddControlId::BrowseSource
-                && region_text(&buffer, hit.area).contains("[Ctrl+O] Select")
+                && region_text(&buffer, hit.area).contains("Browse…  Ctrl+O")
         })
         .expect("the advertised Browse button is a typed mouse hit");
     for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {

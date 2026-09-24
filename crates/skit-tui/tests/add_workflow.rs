@@ -892,7 +892,7 @@ fn add_review_notes_distinguish_empty_owned_metadata_and_modeled_boundaries() {
         "a zero-field parser must not claim a run form was modeled"
     );
     assert!(
-        !zero_rendered.contains("couldn't model them statically"),
+        !zero_rendered.contains("could not model them statically"),
         "a modeled zero-field parser must not get the unmodeled-framework notice"
     );
 
@@ -909,7 +909,7 @@ fn add_review_notes_distinguish_empty_owned_metadata_and_modeled_boundaries() {
     let (terminal, _) = draw_add_sized(&mut AddScreenSession::default(), &dynamic, 200, 100);
     assert!(
         text(terminal.backend().buffer())
-            .contains("so the run form offers an extra-arguments field"),
+            .contains("so the launch menu offers an extra-arguments field"),
         "the unmodeled CLI-framework notice is missing"
     );
 }
@@ -1602,7 +1602,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert!(
-        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        text(terminal.backend().buffer()).contains("Browse…  Ctrl+O"),
         "the visible Browse button must advertise its independent keyboard path"
     );
     assert_eq!(
@@ -1629,7 +1629,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert!(
-        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        text(terminal.backend().buffer()).contains("Browse…  Ctrl+O"),
         "Esc must return from the picker to Add Source"
     );
     assert_eq!(
@@ -1640,7 +1640,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
         ),
         EventHandling::Action(Action::Add(AddAction::Continue))
     );
-    let select_row = row_containing(terminal.backend().buffer(), "Select");
+    let select_row = row_containing(terminal.backend().buffer(), "Browse…");
     assert_eq!(
         session_click(&mut session, &state, &geometry, 3, select_row),
         EventHandling::Consumed
@@ -1765,7 +1765,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
     let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
     let rendered = text(terminal.backend().buffer());
     assert!(rendered.contains("Prompt runner"));
-    assert!(rendered.contains("Add Runner"));
+    assert!(rendered.contains("New agent…"));
 
     assert_eq!(
         session.handle_event(
@@ -1802,7 +1802,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
     );
 
     let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
-    let (runner_x, runner_y) = position_of(terminal.backend().buffer(), "Add Runner");
+    let (runner_x, runner_y) = position_of(terminal.backend().buffer(), "New agent…");
     assert_eq!(
         session_click(&mut session, &state, &geometry, runner_x, runner_y),
         EventHandling::Action(Action::OpenAddRunnerEditor)

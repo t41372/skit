@@ -20,7 +20,12 @@ use ratatui_interact::{
     state::FocusManager,
     traits::{ClickRegion, ClickRegionRegistry},
 };
-use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
+use ratatui_widgets::{
+    clear::Clear,
+    paragraph::Paragraph,
+    paragraph::Wrap,
+    scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
 use skit_application::preferences::{
     AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
     PreferencesField, RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, ThemeChoice,
@@ -521,6 +526,49 @@ impl PreferencesWidgetSession {
         self.agent_click.cancel();
     }
 
+    /// Each visible button and chip, and whether a primary press holds it.
+    ///
+    /// The agent-skill picker covers the screen while it shows, so then only its Cancel button
+    /// counts.
+    pub(crate) fn pointer_targets(&self, view: &PreferencesView) -> Vec<(Rect, bool)> {
+        if view.agent_skill_install().is_some() {
+            return self
+                .agent_cancel_area
+                .into_iter()
+                .map(|area| {
+                    (
+                        area,
+                        self.agent_click.pressed() == Some(&AgentSkillHit::Cancel),
+                    )
+                })
+                .collect();
+        }
+        let buttons = self
+            .control_areas
+            .iter()
+            .filter(|(id, area)| {
+                !area.is_empty()
+                    && matches!(self.widgets.get(id), Some(PreferencesWidget::Button(_)))
+            })
+            .map(|(id, area)| {
+                (
+                    *area,
+                    self.click.pressed() == Some(&PreferencesHit::Control(*id)),
+                )
+            });
+        let chips = self.runner_chip_areas.iter().map(|(index, chip, area)| {
+            (
+                *area,
+                self.click.pressed()
+                    == Some(&PreferencesHit::RunnerChip {
+                        index: *index,
+                        chip: *chip,
+                    }),
+            )
+        });
+        buttons.chain(chips).collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn perturb_agent_review_state(&mut self) {
         self.visible_height = self.visible_height.saturating_add(1);
@@ -850,6 +898,19 @@ impl PreferencesWidgetSession {
                     self.render_control(frame, clip, control, view, locale);
                 }
             }
+        }
+        // The scrollbar on the right border says the screen continues, as Entry settings shows
+        // it. Without it the Colors section below the fold has nothing that points at it.
+        let overflow = self.maximum_scroll_offset();
+        if overflow > 0 {
+            let mut scrollbar = ScrollbarState::new(overflow)
+                .position(self.scroll.scroll_offset())
+                .viewport_content_length(self.visible_height);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight).style(theme::scrollbar()),
+                area,
+                &mut scrollbar,
+            );
         }
         self.render_open_dropdowns(frame);
         if let Some(picker) = view.agent_skill_install() {
@@ -4737,7 +4798,7 @@ mod tests {
             "Interface language",
             "Currently in effect: en",
             "Empty means: vim (from $VISUAL / $EDITOR)",
-            "Mini form — opens in place, fully clickable",
+            "Inline launch menu — opens in place, fully clickable",
             "Quit skit — leave the run's output in the terminal",
             "Agents (prompt runners)",
             "The AI agents that run prompt entries.",
@@ -4774,7 +4835,7 @@ mod tests {
 
         for heading in [
             "Editor",
-            "Interactive form",
+            "Launch menu",
             "After a run (from this menu)",
             "JavaScript runtime",
             "Shell on Windows",
@@ -4791,7 +4852,7 @@ mod tests {
             );
         }
 
-        let interactive_control = find_row("Mini form — opens in place, fully clickable");
+        let interactive_control = find_row("Inline launch menu — opens in place, fully clickable");
         let interactive_help = find_row(
             "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel.",
         );

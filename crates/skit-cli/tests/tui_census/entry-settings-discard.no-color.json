@@ -20,7 +20,7 @@
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "                        │   Discard     Keep editing                       │                        ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "                        │  y Discard  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Esc Keep editing ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "                   │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        ╰──────────────────────────────────────────────────╯                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}],

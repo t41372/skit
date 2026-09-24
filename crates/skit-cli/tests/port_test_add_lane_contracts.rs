@@ -912,7 +912,7 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
     assert_eq!(first.status.code(), Some(0), "{}", combined(&first));
     let first_text = combined(&first);
     let receipt = "Updated both. Managed parameters: CITY";
-    let flip_note = "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage).";
+    let flip_note = "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments (getopts) until you remove the managed parameters (--unmanage).";
     let receipt_at = first_text
         .find(receipt)
         .unwrap_or_else(|| panic!("missing receipt: {first_text}"));
@@ -929,7 +929,7 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         .unwrap();
     assert_eq!(already.status.code(), Some(0), "{}", combined(&already));
     assert!(
-        !combined(&already).contains("The run form now asks for the managed parameters"),
+        !combined(&already).contains("The launch menu now asks for the managed parameters"),
         "{}",
         combined(&already)
     );
@@ -959,7 +959,7 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         .unwrap();
     assert_eq!(again.status.code(), Some(0), "{}", combined(&again));
     assert!(
-        !combined(&again).contains("The run form now asks for the managed parameters"),
+        !combined(&again).contains("The launch menu now asks for the managed parameters"),
         "{}",
         combined(&again)
     );
@@ -1000,7 +1000,7 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         combined(&dynamic_manage)
     );
     assert!(
-        !combined(&dynamic_manage).contains("The run form now asks for the managed parameters"),
+        !combined(&dynamic_manage).contains("The launch menu now asks for the managed parameters"),
         "{}",
         combined(&dynamic_manage)
     );
@@ -1044,5 +1044,5 @@ fn test_manage_flip_json_stdout_is_exactly_one_document() {
         .collect::<Vec<_>>();
     assert!(names.contains(&"CITY".to_owned()), "{names:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("The run form now asks"), "{stdout}");
+    assert!(!stdout.contains("The launch menu now asks"), "{stdout}");
 }

@@ -804,7 +804,7 @@ fn add_runner_editor_cancels_its_armed_underlay_and_remains_operable() {
     let mut state = prompt_add_state();
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 80, 60);
-    let underlay = buffer_position(terminal.backend().buffer(), "Add Runner");
+    let underlay = buffer_position(terminal.backend().buffer(), "New agent…");
     assert_eq!(
         session.handle_event(
             mouse(

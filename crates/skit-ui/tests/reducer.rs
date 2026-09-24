@@ -398,7 +398,10 @@ fn a_typed_add_cancel_returns_to_the_library_without_guessing_from_status() {
     state.update(Action::Present(Screen::Add(Box::new(
         AddWorkflowState::new(Vec::new()),
     ))));
-    state.update(Action::SetStatus("unchanged".to_owned()));
+    state.update(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "unchanged".to_owned(),
+    });
 
     assert_eq!(state.update(Action::AddCancelled), Effect::None);
     assert_eq!(state.screen(), &Screen::Library);
@@ -470,6 +473,128 @@ fn search_is_an_explicit_mode_and_filters_across_visible_fields() {
         assert_eq!(state.visible_entries().len(), 1, "query {query:?}");
         state.update(Action::FinishSearch);
     }
+}
+
+/// The audit case: `review` is the most recent entry, and its description holds the letters of
+/// `hello` in order, so the filter keeps it. Recency order then put it first, and Enter opened it.
+#[test]
+fn search_lists_the_best_match_first_and_enter_opens_it() {
+    let mut state = LibraryState::from_scan(LibraryScan {
+        entries: vec![
+            entry_with_kind(
+                "review",
+                "review",
+                "prompt",
+                "Check the change and tell me what looks wrong",
+            ),
+            entry("greet", "greet", "Print a greeting"),
+            entry_with_kind("hello", "hello", "ruby", "Say hello from Ruby."),
+        ],
+        diagnostics: Vec::new(),
+    });
+    assert_eq!(state.selected().unwrap().slug.as_str(), "review");
+
+    state.update(Action::BeginSearch);
+    for character in "hello".chars() {
+        state.update(Action::Input(character));
+    }
+
+    let visible = state
+        .visible_entries()
+        .map(|entry| entry.slug.as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, ["hello", "review"]);
+    assert_eq!(state.selected().unwrap().slug.as_str(), "hello");
+    assert_eq!(
+        state.update(Action::OpenRun),
+        Effect::Open {
+            request: HostRequest::Run,
+            selector: Some("hello".to_owned()),
+        }
+    );
+}
+
+/// Equal matches keep the recency order that the Library shows without a query.
+#[test]
+fn search_keeps_recency_order_between_equal_matches() {
+    for (first, second) in [("build-web", "build-api"), ("build-api", "build-web")] {
+        let mut state = LibraryState::from_scan(LibraryScan {
+            entries: vec![
+                entry(first, first, "deploy step"),
+                entry("notes", "notes", "unrelated"),
+                entry(second, second, "deploy step"),
+            ],
+            diagnostics: Vec::new(),
+        });
+        state.update(Action::BeginSearch);
+        state.update(Action::SetSearchQuery("build".to_owned()));
+        let visible = state
+            .visible_entries()
+            .map(|entry| entry.slug.as_str().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(visible, [first, second]);
+        assert_eq!(state.selected().unwrap().slug.as_str(), first);
+    }
+}
+
+/// A match in the name outranks the same word inside another entry's description.
+#[test]
+fn search_ranks_a_name_match_above_a_description_match() {
+    let mut state = LibraryState::from_scan(LibraryScan {
+        entries: vec![
+            entry("make", "make", "build the project"),
+            entry("build", "build", "compile everything"),
+        ],
+        diagnostics: Vec::new(),
+    });
+    state.update(Action::BeginSearch);
+    state.update(Action::SetSearchQuery("build".to_owned()));
+    let visible = state
+        .visible_entries()
+        .map(|entry| entry.slug.as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, ["build", "make"]);
+}
+
+/// Each change to the query puts the selection on the new best match, as version 0.4 does when
+/// it rebuilds the table (`src/skit/tui.py:398-412`). A reload with the same query keeps it.
+#[test]
+fn every_query_change_selects_the_best_match() {
+    let mut state = LibraryState::from_scan(LibraryScan {
+        entries: vec![
+            entry("alpha", "alpha", "first"),
+            entry("alphabet", "alphabet", "second"),
+            entry("beta", "beta", "third"),
+        ],
+        diagnostics: Vec::new(),
+    });
+    state.update(Action::BeginSearch);
+    state.update(Action::Input('b'));
+    assert_eq!(state.selected().unwrap().slug.as_str(), "beta");
+    state.update(Action::Backspace);
+    assert_eq!(state.selected().unwrap().slug.as_str(), "alpha");
+    state.update(Action::Paste("alphab".to_owned()));
+    assert_eq!(state.selected().unwrap().slug.as_str(), "alphabet");
+    state.update(Action::ClearSearch);
+    assert_eq!(state.selected().unwrap().slug.as_str(), "alpha");
+    state.update(Action::SetSearchQuery("beta".to_owned()));
+    assert_eq!(state.selected().unwrap().slug.as_str(), "beta");
+
+    state.update(Action::SetSearchQuery("a".to_owned()));
+    state.update(Action::End);
+    let chosen = state.selected().unwrap().slug.clone();
+    state.update(Action::Replace {
+        scan: LibraryScan {
+            entries: vec![
+                entry("alpha", "alpha", "first"),
+                entry("alphabet", "alphabet", "second"),
+                entry("beta", "beta", "third"),
+            ],
+            diagnostics: Vec::new(),
+        },
+        rerunnable: Vec::new(),
+    });
+    assert_eq!(state.selected().unwrap().slug, chosen);
 }
 
 #[test]
@@ -556,7 +681,10 @@ fn effects_and_status_are_frontend_neutral() {
     assert_eq!(state.update(Action::Reload), Effect::Reload);
     assert_eq!(state.update(Action::Quit), Effect::Quit);
 
-    state.update(Action::SetStatus("reloaded".to_owned()));
+    state.update(Action::SetStatus {
+        kind: skit_ui::StatusKind::Success,
+        message: "reloaded".to_owned(),
+    });
     assert_eq!(state.status(), Some("reloaded"));
     state.update(Action::ClearStatus);
     assert_eq!(state.status(), None);
@@ -864,6 +992,7 @@ fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
         }),
         rerunnable: Some(vec![Slug::parse("renamed").unwrap()]),
         message: "Saved".to_owned(),
+        kind: skit_ui::StatusKind::Success,
     });
 
     assert_eq!(state.screen(), &Screen::Library);
@@ -883,6 +1012,7 @@ fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
         }),
         rerunnable: Some(vec![Slug::parse("delta").unwrap()]),
         message: "Saved".to_owned(),
+        kind: skit_ui::StatusKind::Success,
     };
     let encoded = serde_json::to_string(&action).unwrap();
     assert_eq!(serde_json::from_str::<Action>(&encoded).unwrap(), action);
@@ -1370,6 +1500,7 @@ fn every_advertised_settings_key_reaches_the_reducer() {
             UiCommand::SaveSettings,
             UiCommand::NewRunner,
             UiCommand::ResyncSettings,
+            UiCommand::ChooseSettingsVariables,
             UiCommand::CloseSettings,
             UiCommand::FocusNext,
             UiCommand::FocusPrevious,
@@ -1404,9 +1535,12 @@ fn every_advertised_settings_key_reaches_the_reducer() {
         .find(|spec| spec.command == UiCommand::ChooseSettingsVariables)
         .unwrap();
     assert!(
-        !chooser.footer,
-        "the chooser is an inline settings affordance"
+        chooser.footer,
+        "the chooser is below the fold under its list, so the footer carries it too"
     );
+    // The one exception to "reaches the reducer": the full picker is the frontend's own overlay,
+    // so the key and the chip open it there. `settings_screen.rs` and `terminal_pty.rs` hold the
+    // positive tests for both.
     assert_eq!(UiCommand::ChooseSettingsVariables.direct_action(), None);
 
     // The nav pair walks the same stops the model defines.
@@ -1463,9 +1597,13 @@ fn the_resync_chord_reaches_a_control_and_the_save_carries_it() {
     state.update(Action::Present(Screen::Settings(Box::new(view))));
     assert!(state.command_enabled(UiCommand::ResyncSettings));
 
+    // Ticking reads the script at once, so the host gets a read with no write
+    // (`src/skit/tui_settings.py:908-926`).
     assert_eq!(
         state.update(UiCommand::ResyncSettings.direct_action().unwrap()),
-        Effect::None
+        Effect::PreviewSettingsResync {
+            selector: "tool".to_owned()
+        }
     );
     let view = state.settings_view().unwrap();
     assert_eq!(
@@ -1483,8 +1621,12 @@ fn the_resync_chord_reaches_a_control_and_the_save_carries_it() {
     };
     assert_eq!(values.get(RESYNC_KEY), Some(&FieldValue::boolean(true)));
 
-    // It is a control, so it is reversible: pressing the chord again takes the request back.
-    state.update(UiCommand::ResyncSettings.direct_action().unwrap());
+    // It is a control, so it is reversible: pressing the chord again takes the request back, and
+    // taking it back reads nothing.
+    assert_eq!(
+        state.update(UiCommand::ResyncSettings.direct_action().unwrap()),
+        Effect::None
+    );
     assert!(!state.settings_view().unwrap().is_dirty());
     let Effect::Submit { values, .. } =
         state.update(UiCommand::SaveSettings.direct_action().unwrap())
@@ -1678,6 +1820,7 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
             ]),
         },
         rerunnable: Vec::new(),
+        message: None,
     });
     assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
     assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");

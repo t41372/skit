@@ -845,8 +845,9 @@ pub(crate) fn draft_quarantine_corpus_operations() -> Vec<CorpusOperation> {
 
 /// The short operation vector that cuts the derived Add review name.
 ///
-/// It authors one prompt draft, reaches the review name, and cuts that name with `Control+U`.
-/// The cut name stays in the input cut buffer after the paste replaces the value.
+/// It authors one script draft, reaches the review name, and cuts that name with `Control+U`.
+/// The cut name stays in the input cut buffer after the paste replaces the value. A script draft
+/// keeps the allocator stem in its name. A prompt draft takes its name from its first words.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
     let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
@@ -860,22 +861,19 @@ pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
         )
     };
     let add_focus = |target| CorpusOperation::ScreenFocus(ScreenTarget::Add(target));
-    let add_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Add(target));
     let add_local = |target, key| CorpusOperation::LocalKeyboard {
         target: LocalActionTarget::Add(target),
         key,
     };
     vec![
         CorpusOperation::CommandKeyboard(UiCommand::Add),
-        add_focus(AddControlId::NewPrompt),
-        add_local(AddControlId::NewPrompt, plain(CorpusKey::Enter)),
-        add_focus(AddControlId::Interpolate),
-        add_hit(AddControlId::Interpolate),
+        add_focus(AddControlId::NewScript),
+        add_local(AddControlId::NewScript, plain(CorpusKey::Enter)),
         add_focus(AddControlId::EditSource),
         add_local(AddControlId::EditSource, control('e')),
         add_focus(AddControlId::Text(AddTextField::ReviewName)),
         CorpusOperation::RawKey(control('u')),
-        CorpusOperation::Paste("Corpus Prompt".to_owned()),
+        CorpusOperation::Paste("Corpus Script".to_owned()),
         add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
         add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
     ]
@@ -883,12 +881,13 @@ pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
 
 /// The short operation vector that moves the cursor in the derived Add review name.
 ///
-/// It authors one prompt draft. The review stage opens with the focus on the review name and the
-/// cursor at its end. One arrow key moves the cursor inside the name, and `Home` moves it to the
-/// start. The narrow viewport
-/// then makes the click at the center of the name field land inside the name, as in the nightly
-/// walks that found the defect. `End` moves the cursor back to the end. The value stays the
-/// derived name the whole time. Two `Esc` presses then leave the Add workflow.
+/// It authors one script draft, because a script draft keeps the allocator stem in its review
+/// name. A prompt draft takes its name from its first words. The review stage opens with the
+/// focus on the review name and the cursor at its end. One arrow key moves the cursor inside the
+/// name, and `Home` moves it to the start. The narrow viewport then makes the click at the center
+/// of the name field land inside the name, as in the nightly walks that found the defect. `End`
+/// moves the cursor back to the end. The value stays the derived name the whole time. Two `Esc`
+/// presses then leave the Add workflow.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn review_name_cursor_corpus_operations() -> Vec<CorpusOperation> {
     let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
@@ -900,8 +899,8 @@ pub(crate) fn review_name_cursor_corpus_operations() -> Vec<CorpusOperation> {
     };
     vec![
         CorpusOperation::CommandKeyboard(UiCommand::Add),
-        add_focus(AddControlId::NewPrompt),
-        add_local(AddControlId::NewPrompt, plain(CorpusKey::Enter)),
+        add_focus(AddControlId::NewScript),
+        add_local(AddControlId::NewScript, plain(CorpusKey::Enter)),
         CorpusOperation::RawKey(plain(CorpusKey::Left)),
         CorpusOperation::RawKey(plain(CorpusKey::Home)),
         CorpusOperation::Resize {
@@ -961,11 +960,11 @@ pub(crate) const UNBALANCED_ARGUMENTS: &str = " \"unbalanced";
 ///
 /// Three `Tab` presses move the settings focus from the name past the description and the
 /// working directory to the interpreter. It pastes [`MISSING_PROGRAM`] there, saves the settings,
-/// and runs the entry. The host refuses the run because it cannot find the program. One more
-/// `Tab` moves the run form focus from the parameter to the extra arguments, and
-/// [`UNBALANCED_ARGUMENTS`] makes their quoting invalid. The host refuses the second run before
-/// it looks for the program. The product shows each refusal as a status line and keeps the
-/// session, so the walk goes on and goes back to the Library.
+/// and runs the entry. The host cannot find the program, so it answers with a status that names
+/// the program. One more `Tab` moves the run form focus from the parameter to the extra
+/// arguments, and [`UNBALANCED_ARGUMENTS`] makes their quoting invalid. The host fails the second
+/// run before it looks for the program. The product shows each refusal as a status line and
+/// keeps the session, so the walk goes on and goes back to the Library.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn refused_run_corpus_operations() -> Vec<CorpusOperation> {
     let tab = CorpusOperation::RawKey(CorpusKeyEvent::press(CorpusKey::Tab, CorpusModifiers::NONE));

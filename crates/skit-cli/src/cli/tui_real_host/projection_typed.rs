@@ -173,7 +173,7 @@ impl PathMap {
             Action::AddCompleted { .. } => TypedActionProjection::AddCompleted,
             Action::AddCancelled => TypedActionProjection::Unit("add_cancelled"),
             Action::Complete { .. } => TypedActionProjection::Complete,
-            Action::SetStatus(_) => TypedActionProjection::Status,
+            Action::SetStatus { .. } => TypedActionProjection::Status,
             Action::ClearStatus => TypedActionProjection::Unit("clear_status"),
             Action::Quit => TypedActionProjection::Unit("quit"),
         };
@@ -258,6 +258,9 @@ impl PathMap {
             Effect::SaveRunPreset { .. } => TypedEffectProjection::Payload("save_run_preset"),
             Effect::Add(nested) => TypedEffectProjection::Add(nested),
             Effect::HealthRebuild => TypedEffectProjection::Unit("health_rebuild"),
+            Effect::PreviewSettingsResync { .. } => {
+                TypedEffectProjection::Payload("preview_settings_resync")
+            }
             Effect::SaveRunner { .. } => TypedEffectProjection::Payload("save_runner"),
             Effect::Preferences(nested) => TypedEffectProjection::Preferences(nested),
             Effect::Edit { .. } => TypedEffectProjection::Payload("edit"),
@@ -780,6 +783,7 @@ impl PathMap {
             SettingsAction::FocusNext => "focus_next",
             SettingsAction::FocusPrevious => "focus_previous",
             SettingsAction::Resync => "resync",
+            SettingsAction::ResyncPreviewed { .. } => "resync_previewed",
             SettingsAction::SetPromptCandidates { .. } => "set_prompt_candidates",
             SettingsAction::Save => "save",
             SettingsAction::Close => "close",

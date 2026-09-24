@@ -20,7 +20,7 @@
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        │                                                  │                        ", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "                        │  [Discard]   [Keep editing]                      │                        ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "                        │ ", "fg": "default", "bg": "default", "attrs": []}, {"text": " y ", "fg": "default", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Discard  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Esc ", "fg": "default", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Keep editing ", "fg": "default", "bg": "default", "attrs": ["inverse"]}, {"text": "                   │                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                        ╰──────────────────────────────────────────────────╯                        ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}],

@@ -110,7 +110,12 @@ const SCREENS: &[Screen] = &[
     },
     screen("search", &[step(b"/", "list")]),
     screen("search-typed", &[step(b"/", "list"), step(b"al", "1/5")]),
+    // `eta` matches Beta, Eta, and Zeta. The entry that the query names comes first and is
+    // selected, although Beta is newer.
+    screen("search-ranked", &[step(b"/", "list"), step(b"eta", "3/5")]),
     screen("quit-notice", &[step(CTRL_C, "again")]),
+    // The reload is a host effect, so the step waits for its receipt, not for a quiet terminal.
+    screen("library-reloaded", &[step(CTRL_R, "reloaded")]),
     screen("help", &[step(b"?", "Rerun")]),
     screen("run-form", &[OPEN_ALPHA_RUN]),
     screen("run-required", &[OPEN_ALPHA_RUN, step(b"\r", "required.")]),
@@ -1008,7 +1013,9 @@ fn terminal_rule_breaks(screen: &vt100::Screen, name: &str) -> Vec<String> {
             if background != vt100::Color::Default && !cell.inverse() {
                 breaks.insert(format!("{at}: background without reverse"));
             }
-            if foreground != vt100::Color::Default
+            // Success and warning text is green and yellow, as in version 0.4. The census accent
+            // is cyan or magenta, so a green or yellow letter is never the accent.
+            if !matches!(foreground, vt100::Color::Default | vt100::Color::Idx(2 | 3))
                 && !cell.inverse()
                 && text.chars().any(char::is_alphanumeric)
             {
@@ -1323,40 +1330,41 @@ fn terminal_theme_draws_footer_keys_as_keycaps() {
     }
 }
 
-/// The focused dialog button is reversed; the other button is plain.
+/// The focused dialog chip is reversed; the other chip keeps a plain label beside its keycap.
 #[test]
 fn terminal_theme_reverses_the_focused_dialog_button() {
     let remove = shown(&TERMINAL_UNKNOWN, "remove");
-    let keep = cells_of(&remove, "Keep");
-    let delete = cells_of(&remove, "Remove ")[..6].to_vec();
+    let keep = cells_of(&remove, " Esc Keep ");
+    let delete = cells_of(&remove, " y Remove ");
     assert!(
         all(&keep, vt100::Cell::inverse),
         "Keep: {}",
         describe(&keep)
     );
     assert!(
-        all(&delete, |cell| !cell.inverse()),
+        all(&delete[..3], vt100::Cell::inverse) && all(&delete[3..], |cell| !cell.inverse()),
         "Remove: {}",
         describe(&delete)
     );
 }
 
-/// A status line colors only its glyph.
+/// A success line is green and a warning line is yellow, text included, as in version 0.4. A
+/// warning without a glyph must not look like body text.
 #[test]
-fn terminal_theme_colors_only_the_status_glyph() {
-    let health = shown(&TERMINAL_DARK, "health");
-    let line = cells_of(&health, "✓ 5 entries");
-    assert_eq!(
-        line[0].fgcolor(),
-        vt100::Color::Idx(2),
-        "glyph: {}",
-        describe(&line)
-    );
-    assert!(
-        all(&line[2..], |cell| cell.fgcolor() == vt100::Color::Default),
-        "text: {}",
-        describe(&line)
-    );
+fn terminal_theme_colors_success_and_warning_text() {
+    let health = shown(&TERMINAL_DARK, "health-rebuilt");
+    for (needle, color) in [
+        ("✓ 5 entries registered", 2),
+        ("Index rebuilt: 5 entries", 2),
+        ("Issues (Enter jumps to the entry):", 3),
+    ] {
+        let line = cells_of(&health, needle);
+        assert!(
+            all(&line, |cell| cell.fgcolor() == vt100::Color::Idx(color)),
+            "{needle}: {}",
+            describe(&line)
+        );
+    }
 }
 
 /// The selected option of an unfocused radio group is bold, not reversed.
@@ -1446,14 +1454,9 @@ fn terminal_theme_titles_are_bold_and_never_dim() {
 fn terminal_theme_marks_idle_buttons_with_brackets() {
     for (name, labels) in [
         (
-            "entry-settings-discard",
-            &["[Discard]", "[Keep editing]"][..],
-        ),
-        (
             "run-path-suggestion",
-            &["[▾ insert]", "[↺ default]", "[📁 browse]"],
+            &["[▾ insert]", "[↺ default]", "[📁 browse]"][..],
         ),
-        ("remove", &["[Remove]"]),
         ("preferences-agent-skill", &["[Cancel]"]),
     ] {
         let parser = shown(&TERMINAL_UNKNOWN, name);
@@ -1466,21 +1469,56 @@ fn terminal_theme_marks_idle_buttons_with_brackets() {
     assert!(!skit.screen().contents().contains("[Discard]"));
 }
 
-/// The focused dialog button reverses its label and its padding, and no cell after them.
+/// The focused dialog chip reverses its keycap, its label, and its padding, and no cell after
+/// them.
 #[test]
 fn terminal_theme_reverses_only_the_focused_button() {
     let parser = shown(&TERMINAL_UNKNOWN, "remove");
-    let cells = cells_of(&parser, " Keep   ");
+    let cells = cells_of(&parser, " Esc Keep   ");
     assert!(
-        all(&cells[..6], vt100::Cell::inverse),
+        all(&cells[..10], vt100::Cell::inverse),
         "{}",
         describe(&cells)
     );
     assert!(
-        all(&cells[6..], |cell| !cell.inverse()),
+        all(&cells[10..], |cell| !cell.inverse()),
         "{}",
         describe(&cells)
     );
+}
+
+/// The actions of both confirmation dialogs are chips that name their keys, as the footer chips
+/// do: an idle chip shows a reversed keycap and a plain label (version 0.4
+/// `src/skit/tui.py:160-165`, `src/skit/tui_settings.py:58-63`).
+#[test]
+fn terminal_theme_draws_dialog_actions_as_key_chips() {
+    for (name, idle, focused) in [
+        ("remove", " y Remove ", " Esc Keep "),
+        (
+            "entry-settings-discard",
+            " y Discard ",
+            " Esc Keep editing ",
+        ),
+    ] {
+        let parser = shown(&TERMINAL_UNKNOWN, name);
+        let chip = cells_of(&parser, idle);
+        assert!(
+            all(&chip[..3], |cell| cell.inverse() && cell.bold()),
+            "{name} keycap: {}",
+            describe(&chip)
+        );
+        assert!(
+            all(&chip[3..], |cell| !cell.inverse()),
+            "{name} label: {}",
+            describe(&chip)
+        );
+        let ring = cells_of(&parser, focused);
+        assert!(
+            all(&ring, vt100::Cell::inverse),
+            "{name} focus ring: {}",
+            describe(&ring)
+        );
+    }
 }
 
 /// The keys of the agent rows in Preferences are keycaps, as the footer keys are.

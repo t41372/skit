@@ -38,6 +38,8 @@ use tempfile::Builder;
 
 use skit_ui::{AddEffect, Effect, FormPurpose, HostRequest, PreferencesEffect};
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use super::tui_real_host::derived_cursor;
 use super::tui_real_host::{
     ArtifactLeakOracleFact, LeakOracleFacts, ModifiedLeakOraclePair, RendererDraftFact,
     RendererReviewNameFact, SourceIdentityLeakOraclePair, StableSandboxNamespace,
@@ -197,6 +199,7 @@ impl EffectCoverageTally {
             | Effect::CountRunGlob { .. }
             | Effect::SaveRunPreset { .. }
             | Effect::HealthRebuild
+            | Effect::PreviewSettingsResync { .. }
             | Effect::SaveRunner { .. }
             | Effect::Edit { .. }
             | Effect::Remove { .. } => {}
@@ -398,6 +401,7 @@ fn served_effect_name(effect: &Effect) -> &'static str {
         Effect::SaveRunPreset { .. } => "save_run_preset",
         Effect::Add(_) => "add",
         Effect::HealthRebuild => "health_rebuild",
+        Effect::PreviewSettingsResync { .. } => "preview_settings_resync",
         Effect::SaveRunner { .. } => "save_runner",
         Effect::Preferences(_) => "preferences",
         Effect::Edit { .. } => "edit",
@@ -508,6 +512,10 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (json!({"add": []}), "add"),
         (json!("health_rebuild"), "health_rebuild"),
         (
+            json!({"preview_settings_resync": {"selector": "entry"}}),
+            "preview_settings_resync",
+        ),
+        (
             json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": {"editor": "add"}}}),
             "save_runner",
         ),
@@ -518,7 +526,7 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (json!({"edit": {"selector": "entry"}}), "edit"),
         (json!({"remove": {"selector": "entry"}}), "remove"),
     ];
-    assert_eq!(outer.len(), 14);
+    assert_eq!(outer.len(), 15);
     for (value, expected) in outer {
         assert_eq!(served_effect_name(&effect_fixture(value)), expected);
     }
@@ -3328,6 +3336,32 @@ pub(super) fn validate_completed_review_corpus(
         )?;
     }
     Ok(corpus)
+}
+
+/// Return the cursor index inside `text` when a recorded frame shows its cursor in `text`.
+///
+/// A frame keeps the raw value that the product draws. The cursor row holds `text` from one start
+/// column, so the column of the cursor less that start is the cursor index. A copy of `text`
+/// with a dot after it, for example inside a file path, is not the value.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn frame_cursor_in(frame: &Value, text: &str) -> Option<usize> {
+    if frame["cursor_visible"] != true {
+        return None;
+    }
+    let column = usize::try_from(frame["cursor_position"]["x"].as_u64()?).ok()?;
+    let row = frame["cells"]
+        .as_array()?
+        .iter()
+        .filter(|cell| cell["y"] == frame["cursor_position"]["y"])
+        .map(|cell| cell["symbol"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    let symbols = text.chars().map(String::from).collect::<Vec<_>>();
+    let start = row
+        .windows(symbols.len())
+        .position(|window| window == symbols.as_slice())?;
+    let cursor = column.checked_sub(start)?;
+    let next = row.get(start + symbols.len()).map(String::as_str);
+    (cursor <= symbols.len() && next != Some(".")).then_some(cursor)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -6664,9 +6698,10 @@ fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
 ///
 /// The operations move the cursor inside the derived name with an arrow key, to its start with
 /// `Home`, inside it again with a click at the field center, and back to its end with `End`. The
-/// value stays the derived name, so every recorded session must hold the typed sentinel. The
-/// raw cursors 15, 14, 0, and 9 in `skit-new-000000` project to 9, 8, 0, and 5 in `<draft:0>`:
-/// the ends keep their places, and the interior cursors stay interior and keep their order.
+/// value stays the derived name, so every recorded session must hold the typed sentinel. Each
+/// recorded frame keeps the raw name `skit-new-000000` and shows where the cursor is in it. The
+/// projected cursors must be exactly the projections of those raw cursors: the ends keep their
+/// places, and the interior cursors stay interior and keep their order.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_derived_review_name() {
@@ -6678,31 +6713,54 @@ fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_derived_review_name()
     )
     .unwrap();
 
+    let (raw, stable) = ("skit-new-000000", "<draft:0>");
+    let end = stable.chars().count();
     for recorded in &corpus.profiles {
         let profile = recorded.review_profile.to_string();
-        let mut cursors = BTreeSet::new();
+        let mut projected = BTreeSet::new();
+        let mut shown = BTreeSet::new();
         for ((kind, digest), bytes) in &recorded.objects {
-            if *kind != ObjectKind::Session {
-                continue;
-            }
-            let text = String::from_utf8_lossy(bytes);
-            assert!(
-                !text.contains("skit-new-"),
-                "{profile} {digest} holds a raw allocator name"
-            );
             let value: Value = serde_json::from_slice(bytes).unwrap();
-            let inputs = value
-                .pointer("/value/add/fields/inputs")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
-            for input in inputs {
-                if input["id"] == "ReviewName" && input["state"]["value"] == "<draft:0>" {
-                    cursors.insert(input["state"]["cursor"].as_u64().unwrap());
+            match kind {
+                ObjectKind::Session => {
+                    assert!(
+                        !String::from_utf8_lossy(bytes).contains("skit-new-"),
+                        "{profile} {digest} holds a raw allocator name"
+                    );
+                    let inputs = value
+                        .pointer("/value/add/fields/inputs")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten();
+                    for input in inputs {
+                        if input["id"] == "ReviewName" && input["state"]["value"] == stable {
+                            projected.insert(
+                                usize::try_from(input["state"]["cursor"].as_u64().unwrap())
+                                    .unwrap(),
+                            );
+                        }
+                    }
                 }
+                ObjectKind::StyledFrame => {
+                    shown.extend(
+                        frame_cursor_in(&value["value"], raw)
+                            .map(|cursor| derived_cursor(cursor, raw.len(), end)),
+                    );
+                }
+                ObjectKind::Reducer | ObjectKind::Host | ObjectKind::Geometry => {}
             }
         }
-        assert_eq!(cursors, BTreeSet::from([0, 5, 8, 9]), "{profile}");
+        assert_eq!(projected, shown, "{profile}");
+        assert!(
+            shown.contains(&0)
+                && shown.contains(&end)
+                && shown
+                    .iter()
+                    .filter(|cursor| (1..end).contains(*cursor))
+                    .count()
+                    >= 2,
+            "{profile} {shown:?}"
+        );
     }
 }
 
@@ -6755,13 +6813,14 @@ fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_picked_source_path() 
     }
 }
 
-/// A run that the host refuses becomes a status line, and the walk goes on.
+/// A refused run becomes an error status line, and the walk goes on.
 ///
 /// The operations run the entry twice. The first run has an interpreter that does not exist, and
-/// the second run also has extra arguments with an open quote. The product keeps the session and
-/// shows each localized host error, so the walker host must do the same. The first error holds a
-/// line feed, a carriage return, and a C0 control character, because the user pasted them. No
-/// recorded frame cell may hold a control character: a terminal would act on it.
+/// the host answers with the status that names the missing program. The second run also has
+/// extra arguments with an open quote, and the host fails that effect. The product keeps the
+/// session and shows each localized error, so the walker host must do the same. The first error
+/// holds a line feed, a carriage return, and a C0 control character, because the user pasted
+/// them. No recorded frame cell may hold a control character: a terminal would act on it.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
@@ -6774,27 +6833,33 @@ fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
     .unwrap();
 
     assert!(UNBALANCED_ARGUMENTS.contains('"'));
+    let visible = MISSING_PROGRAM
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
     for recorded in &corpus.profiles {
         let profile = recorded.review_profile.to_string();
         let locale = skit_i18n::detect_locale(Some(&recorded.locale));
         let missing = skit_i18n::format_text(
             locale,
-            "required program was not found: {}",
+            "{} is not on PATH. Install it, or set the interpreter in Entry settings.",
             &[&MISSING_PROGRAM],
         );
         let quoting = skit_i18n::text(locale, "extra arguments have invalid quoting");
-        let mut statuses = BTreeSet::new();
+        let mut errors = BTreeSet::new();
         let mut shown = false;
         for ((kind, digest), bytes) in &recorded.objects {
             let value: Value = serde_json::from_slice(bytes).unwrap();
             match kind {
                 ObjectKind::Reducer => {
-                    statuses.extend(
-                        value
-                            .pointer("/value/status")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                    );
+                    if value.pointer("/value/status_kind") == Some(&json!("error")) {
+                        errors.extend(
+                            value
+                                .pointer("/value/status")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        );
+                    }
                 }
                 ObjectKind::StyledFrame => {
                     let cells = value
@@ -6810,18 +6875,15 @@ fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
                         );
                         text.push_str(symbol);
                     }
-                    shown |= text.contains(missing.split('\n').next().unwrap());
+                    shown |= text.contains(&format!("{visible} is not on PATH"));
                 }
                 ObjectKind::Host | ObjectKind::Session | ObjectKind::Geometry => {}
             }
         }
-        assert!(statuses.contains(&missing), "{profile} {statuses:?}");
-        assert!(
-            statuses.contains(quoting.as_ref()),
-            "{profile} {statuses:?}"
-        );
+        assert!(errors.contains(&missing), "{profile} {errors:?}");
+        assert!(errors.contains(quoting.as_ref()), "{profile} {errors:?}");
         // Wide characters leave blank continuation cells, so only the English row reads back
-        // as one string.
+        // as one string. The terminal drops the control characters from the program name.
         if locale == skit_i18n::Locale::En {
             assert!(shown, "{profile} never paints the status line");
         }

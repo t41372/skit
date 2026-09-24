@@ -1674,6 +1674,35 @@ fn test_cli_python_human_params_falls_back_to_stored_schema_on_syntax_error() {
     assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
+// Ways this can fail: a managed constant whose block keeps no default shows no default in the
+// human view, although the script holds a literal; or the view shows the old literal instead of
+// the one that the script holds now. Version 0.4 shows the live literal first
+// (`src/skit/analysis.py:129-138`).
+#[test]
+fn test_cli_human_params_shows_the_live_literal_when_the_block_keeps_no_default() {
+    let workspace = lib();
+    let mut width = ParamDecl::new("WIDTH");
+    width.binding = ParameterBinding::Const;
+    width.delivery = ParameterDelivery::Inject;
+    width.parameter_type = ParameterType::Int;
+    let stored = write_managed_params("shell", "WIDTH=800\necho \"$WIDTH\"\n", &[width]).unwrap();
+    let source = workspace.write_script("tool.sh", &stored.replace("WIDTH=800", "WIDTH=1200"));
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "tool", "--no-input"])
+        .assert()
+        .success();
+
+    let output = workspace.run(&["params", "tool"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let human = combined(&output);
+    assert!(human.contains("Parameter: WIDTH"), "{human}");
+    assert!(human.contains("Current default: 1200"), "{human}");
+    assert!(!human.contains("Current default: 800"), "{human}");
+}
+
 #[test]
 fn test_cli_powershell_reader_and_choice_rider_have_one_localized_read_view() {
     let workspace = lib();

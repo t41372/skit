@@ -647,7 +647,7 @@ fn successful_adds_restore_the_complete_latest_main_summary() {
         .success()
         .stdout(
             predicate::str::contains(
-                "Detected parameters: API_KEY (the run form asks for them; your last values are remembered)",
+                "Detected parameters: API_KEY (the launch menu asks for them; your last values are remembered)",
             )
             .and(predicate::str::contains("Added: Secret command"))
             .and(predicate::str::contains(

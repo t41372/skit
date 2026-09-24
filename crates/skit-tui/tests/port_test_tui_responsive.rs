@@ -367,16 +367,19 @@ fn test_chip_glues_every_blank_so_the_pill_is_one_word() {
     );
 }
 
+// Version 0.4 drew the two navigation pills without words. Every footer now names them, as the
+// runner editor always did, so the same chip reads the same on every screen.
 #[test]
-fn test_nav_chip_is_exactly_the_two_key_only_pills() {
+fn test_nav_chip_is_exactly_the_two_named_pills() {
     let state = generic_form_state();
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 100, 22);
     let rendered = text(terminal.backend().buffer());
-    assert!(rendered.contains("Tab/↓"), "{rendered}");
-    assert!(rendered.contains("Shift+Tab/↑"), "{rendered}");
-    assert!(!rendered.contains("Next field"));
-    assert!(!rendered.contains("Previous field"));
+    assert!(rendered.contains("Tab/↓ Next field"), "{rendered}");
+    assert!(
+        rendered.contains("Shift+Tab/↑ Previous field"),
+        "{rendered}"
+    );
     for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
         assert_eq!(
             geometry
@@ -547,7 +550,10 @@ fn test_footer_minimum_structure_is_monotonic_and_keeps_status_out_of_hits() {
                 summary("beta", "Beta"),
                 summary("gamma", "Gamma"),
             ]);
-            state.update(Action::SetStatus("STATUS_SENTINEL".to_owned()));
+            state.update(Action::SetStatus {
+                kind: skit_ui::StatusKind::Info,
+                message: "STATUS_SENTINEL".to_owned(),
+            });
             state.update(Action::ToggleDetail {
                 currently_visible: true,
             });
@@ -823,7 +829,7 @@ fn test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack
     let mut session = TuiSession::default();
     let (terminal, _) = draw(&mut session, &state, 120, 40);
     assert!(
-        position(terminal.backend().buffer(), "Mini form")
+        position(terminal.backend().buffer(), "Inline launch menu")
             .unwrap()
             .0
             < position(terminal.backend().buffer(), "Line-by-line prompts")
@@ -905,7 +911,10 @@ fn test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen() {
 fn compact_confirm_remove_keeps_central_keyboard_paths_at_tiny_boundaries() {
     for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
         let mut state = library(vec![summary("alpha", "Alpha")]);
-        state.update(Action::SetStatus("BACKGROUND STATUS".to_owned()));
+        state.update(Action::SetStatus {
+            kind: skit_ui::StatusKind::Info,
+            message: "BACKGROUND STATUS".to_owned(),
+        });
         state.update(Action::AskRemove);
 
         for (width, height) in [(24, 6), (1, 1)] {

@@ -43,8 +43,41 @@ Version 0.5 gives the same chord, and the chord reaches a visible checkbox in th
 Product rule 2 requires it: "Keep each TUI action available by keyboard and mouse." The checkbox is
 also reversible, so a person who presses the chord by mistake can untick it.
 
-The request now applies when the save runs, rather than immediately. The pre-save report version 0.4
-prints is not built yet; it is recorded in `docs/parity-backlog.md`.
+Ticking the checkbox reads the definitions at once, as version 0.4 does. The host runs the resync
+that the save runs and writes nothing. The parameter rows show the result, and the report sits
+under the checkbox: the analyzer warnings, or `Everything still matches the script.`
+(`src/skit/tui_settings.py:917-925`). The save keeps the result. It runs the resync again on the
+script as it is at that time, so a script that changed in the meantime cannot be overwritten with an
+old read. Unticking takes the request back: the rows the screen opened with return, and the report
+goes away.
+
+Version 0.4 rebuilds the whole screen after `Ctrl+R` (`:926`), and every unsaved edit in every
+section is lost. Version 0.5 rebuilds only the parameter rows. An edit in another section stays,
+and an edit on a row that the resync keeps moves to the rebuilt row. Version 0.4 also prints the
+report at the end of the section, which is often below the fold. Version 0.5 scrolls the report
+into view together with its checkbox.
+
+## The full variable picker has a footer chip
+
+Version 0.4 opens the complete list of a prompt's detected variables with `Ctrl+O`, and the only
+place that names the key is a chip under the capped inline list (`src/skit/tui_settings.py:702-717`).
+Its binding is hidden from the footer (`:271-276`). The capped list is long, so the chip is below
+the fold on a normal terminal.
+
+Version 0.5 also shows the chip in the footer, while the inline list is capped and variable
+insertion is on, which is exactly when the key does something. Product rule 3 requires it: "A user
+must not need to remember commands, keys, or script arguments." A click on the footer chip opens
+the same picker as the key and the inline chip.
+
+## A placeholder added by name is secret when its name says so
+
+Version 0.4 makes two kinds of declaration for a prompt's placeholder. A ticked candidate is
+required, and secret when its name says so (`src/skit/tui_settings.py:1122-1139`). A name typed in
+the add-a-parameter box is required and never secret (`:721-730`).
+
+Version 0.5 makes the first kind on both paths, so one placeholder gets one declaration however a
+person brings it under management. A name such as `api_key` that the box adds is secret, so its
+value is not remembered. The person can untick the secret checkbox before the save.
 
 ## The preset deep link moves the keyboard, not only the viewport
 
@@ -133,8 +166,9 @@ Version 0.5 adds the `theme` setting with two values. The owner picked `terminal
 - `terminal` draws text in the terminal's default foreground on its default background. Bold,
   dim, and reverse video show the state. One accent hue marks focused borders, selection markers,
   and footer keys: cyan on a dark background, magenta on a light background, and no hue when the
-  background is unknown. A status line colors only its ✓ ✗ ⚠ → glyph. A footer key is a reversed
-  keycap. An idle button shows brackets, as in `[Discard]`, and a focused button is reversed.
+  background is unknown. Success text is green and warning text is yellow, as in version 0.4. An
+  error colors only its ✗ glyph. A footer key is a reversed keycap. An idle button shows
+  brackets, as in `[Discard]`, and a focused button is reversed.
 - `skit` keeps the version 0.4 palette, with the parity restorations of the design, so nothing is
   removed. `skit config theme skit` or the Preferences "Colors" section gives it back.
 
@@ -142,7 +176,7 @@ A user who does not change the setting sees a different look after the upgrade. 
 deliberate change. Every state that the `skit` theme shows with a color, the `terminal` theme shows
 with an attribute. The census in `crates/skit-cli/tests/tui_palette_census.rs` checks every
 terminal-theme frame: no fixed color, no background without reverse video, and no hue on a letter
-or a digit.
+or a digit except the green and yellow of status text.
 
 A downgrade is safe. Version 0.4 reads `config.toml` as a whole and keeps a key it does not know
 (`src/skit/config.py:91-103`).
@@ -202,3 +236,170 @@ bold, and every border has the default foreground. The `skit` theme keeps that r
 The `terminal` theme shows the state with attributes before any filter, so under `NO_COLOR` its
 selected row is bold and reversed, and an idle border is dim. With the new default, a `NO_COLOR` user
 sees this look. It adds a visible state and removes none.
+
+## Search lists the best match first
+
+Version 0.4 filters the Library with a case-insensitive subsequence match and keeps the matches in
+recency order (`src/skit/tui.py:85-95`, `:398-405`). Enter in the search box runs the top row
+(`:614-619`). A weak match in a description can therefore stand above the entry that the query
+names. For example, `hello` listed `review` first, because the description of `review` holds the
+letters of `hello` in order, and Enter opened `review`.
+
+Version 0.5 keeps the same filter and changes the order. An entry whose name starts with the query
+comes first, then the higher match score. Recency decides between equal matches. Each change to the
+query selects the first row, as the table rebuild of version 0.4 does, so Enter opens the best
+match. `search_lists_the_best_match_first_and_enter_opens_it` and the `search-ranked` census screen
+pin the order.
+
+## Rename is a small dialog, and Enter submits it
+
+Version 0.4 renames an entry only through the Name box of its settings screen. Version 0.5 adds
+`F2`, which opened a whole screen for one box, and Enter in that box only moved the focus. Now
+Rename is a small dialog in the middle of the screen. Enter renames and Esc cancels, and the footer
+shows both keys. The dialog repeats the note that Entry settings shows beside the same box.
+
+The rule is general for a generic form: Enter submits from a single-line field, as Enter runs the
+launch form. A multi-line field keeps Enter for a new line, and `Ctrl+S` submits from there. A form
+with one field shows no field keys in its footer. `rename_dialog_renames_the_entry_on_enter`
+pins the dialog on the real binary.
+
+## Add keeps a typed Name and Description for a path
+
+The Add screen of version 0.4 takes the path first, and a Name or a Description typed in the
+command template boxes is not used for the path (`src/skit/tui_add.py:455-463`). Nothing tells the
+person that the values are lost.
+
+Version 0.5 puts the two boxes in the template part of the screen, with the labels
+"Name for the command" and "Description (optional)", as version 0.4 does with its placeholders.
+When a path or a draft opens the review anyway, a typed value fills the Name or the Description of
+the review. The person sees it there and can change it before the entry is added.
+`typed_command_name_and_description_prefill_the_review_of_a_path` and
+`a_typed_name_and_description_reach_the_entry_of_a_path` pin this.
+
+## A second pick of a kept draft continues with it
+
+Version 0.4 resumes a kept draft with one pick in its list (`src/skit/tui_add.py:332-336`).
+Version 0.5 puts a picked draft in the path box first, so that `Delete draft…` can act on the row
+that the mouse picked. A second pick of the same draft now continues with it, and the footer
+names that key `Enter Continue`. Before, the person had to find the Continue button.
+
+## A new prompt draft takes its name from its first words
+
+Version 0.4 names an entry that comes from a new draft after the temporary file, for example
+`skit-new-91G1LH`, and shows that name in the Library and in the review title. It also suggests
+the starter line `# New prompt` as the description of a new prompt.
+
+Version 0.5 skips the starter line that skit writes. The description comes from the first line that
+the person wrote, and the name comes from the first four words of that line. The name drops the
+braces of `{{name}}` placeholders and does not end with a sentence mark. The store makes the slug
+from this name with its usual rules. A name that another entry already has is refused when the
+person adds the entry, as for every other name, and the review keeps the draft so that the person
+can change the name. A typed name wins, and a prompt file that is not a draft keeps its file name.
+`a_new_prompt_draft_is_named_from_its_first_words` pins this on the real binary.
+
+## Each status line reports its outcome, and a receipt clears itself
+
+Version 0.4 writes a status into one line under the Library and keeps it until the next search or
+reload replaces it (`src/skit/tui.py:430-441`). A few receipts are Textual toasts with their own
+timeout instead, for example `Preset "triple" saved.`. A status has no outcome of its own, so an
+error and a receipt look the same.
+
+Version 0.5 gives every status one of four kinds in `skit-ui` (`StatusKind`): information,
+success, warning, and error. The footer draws a success with `✓`, a warning with `⚠`, and an error
+with `✗`, in the colors that the theme gives status text. Information has no glyph. A success or
+information line clears itself after 4 seconds, and the footer shows its usual line again, for
+example the entry count. A warning or an error stays until the next key press, paste, or click,
+because the user must read it to act. A status that is wider than the footer wraps onto a second
+row. Product rule 3 asks for this: a person who looks away must still see that a run failed, and a
+receipt must not hide the entry count for the rest of the session.
+
+These receipts are new. Version 0.4 is silent at each of them:
+
+- `Ctrl+R` in the Library shows `✓ Library reloaded (N entries)`.
+- A choice in the preset picker shows `✓ Preset applied.`, or `✓ Last values restored.` for the
+  `↩ last values` row (`src/skit/tui_form.py:761-779` applies the values without a word).
+
+## A run from the interface reports its outcome on both sides of the screen
+
+Version 0.4 prints `── Run <name> ──` before a run from the Library (`src/skit/tui.py:829`,
+`:1068-1072`), and a session that the run ends returns the exit code of the run
+(`src/skit/tui.py:1067-1103`). Version 0.5 keeps both. Two lines differ:
+
+- A run that ends the session (`after_run = "exit"`, the default) prints one result line after
+  the output of the script: `✓ <name> finished`, or `✗ <name> exited with code N`. Version 0.4
+  prints nothing there (`src/skit/tui.py:1067-1103`). Its `skit run` prints
+  `Run exited with code N` (`src/skit/cli.py:3244-3248`), so a person who started the run from the
+  interface now sees the same fact. The owner decided on 2026-11-08 that both outcomes print a
+  line, so the shell never shows the output of a script with no word about how the run ended.
+  `a_successful_run_that_ends_the_session_prints_its_result_line_and_exits_with_zero` pins this on
+  the real binary.
+- A run that returns to the Library (`after_run = "stay"`) reports `✓ <name> finished` or
+  `✗ <name> exited with code N` as a status. Version 0.4 says `Last: <name> ✓ finished` or
+  `Last: <name> ✗ failed (code N)` (`src/skit/tui.py:857-862`). The glyph now comes from the
+  status kind, so the line starts with it.
+
+A run that cannot start because a program is not on PATH says so with the next step:
+`✗ pwsh is not on PATH. Install it, or set the interpreter in Entry settings.` A prompt names
+another agent as the step, and a command template says to install the program. Version 0.4 refuses
+the same run before its launch menu opens, with an error that names only the interpreter
+(`src/skit/langs/launch.py:466`).
+
+## Confirmation dialogs have a focus ring
+
+Version 0.4 draws the actions of the Remove and Discard dialogs as footer chips, `y Remove` and
+`Esc Keep`, and `y Discard` and `Esc Keep editing` (`src/skit/tui.py:160-165`,
+`src/skit/tui_settings.py:58-63`). The chips are links: no key moves between them, and Enter does
+nothing.
+
+Version 0.5 draws the same chips and adds a focus ring. Tab and Shift+Tab move it, and Enter
+activates the chip under it. Product rule 2 asks for a keyboard path to each visible target. The
+ring opens on the answer that keeps the work, `Keep` or `Keep editing`, every time a dialog opens,
+so a reflexive Enter can never remove an entry or throw edits away.
+
+## Footer chips name their navigation keys and both quit keys
+
+Version 0.4 shows the field navigation chips without words, `Tab/↓` and `Shift+Tab/↑`
+(`src/skit/tui_footer.py:82-94`), and its runner editor names them. Every footer in version 0.5 now
+names them `Next field` and `Previous field`, so one chip reads the same on every screen.
+
+The Library footer shows `q/Esc Quit`, and Help lists `q / Esc / Ctrl+C Ctrl+C`. Version 0.4 shows
+`q Quit` in the footer and `Ctrl+C Ctrl+C / Esc` in Help (`src/skit/tui.py:210`), so each surface
+left out a key that the other one named.
+
+## Chips and buttons follow the pointer
+
+Version 0.4 tints a footer chip under the pointer. Version 0.5 makes a chip or a button under the
+pointer bold and underlined, and inverts the chip that a primary press holds until the release.
+This covers the footers, the dialogs, Preferences, the buttons and footer chips of Add, and the
+footer chips of the file picker and the prompt variable picker. Attributes carry both looks, so
+they show in both themes and under `NO_COLOR`.
+
+## A refused value marks its field
+
+Version 0.4 shows a refused launch-menu value as red text under the field. Version 0.5 starts that
+line with `✗` and draws the border of the field in red and bold, so the field shows before the text
+is read.
+
+## The screen that asks for parameters is the launch menu
+
+Version 0.4 calls the screen where a person fills the parameters and runs the entry a form, for
+example "the run form asks for them", "Interactive form", and "Form label:". Its README already
+calls the same screen the launch menu. The owner decided on 2026-11-08 that the product uses one
+name: every English, Simplified Chinese (启动菜单), and Traditional Chinese (啟動選單) text in the
+interface, the CLI help, the messages, the Agent Skill, and the documentation now says launch menu.
+The parameter declarations that the script's block keeps are "parameter definitions". The machine
+contracts stay: the `form` setting with its values `tui` and `plain`, the JSON keys, and the flag
+names. `every_catalog_row_calls_the_parameter_screen_the_launch_menu` pins the catalog.
+
+## The footer keeps its border
+
+Version 0.4 docks a bare `KeysBar` with no border under every screen
+(`src/skit/tui_footer.py:97-108`, and visible in every shipped frame under `docs/assets/`).
+Version 0.5 draws the footer keys inside a rounded box. The owner decided on 2026-11-08 to keep the
+border, so the density of every screen stays as it is.
+
+The trade-off: the border costs two rows of body on every terminal, so the launch menu can need a
+scroll to show its argument tail, which the version 0.4 demo frame shows without one. On the
+recorded demo terminal, Entry settings shows its parameter section and one row past it, and version
+0.4 shows the same rows and two more. In return, the box sets the keys apart from the body as one
+group.

@@ -1,6 +1,7 @@
 use ratatui_crossterm::crossterm::event as crossterm_event;
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File, Metadata},
@@ -90,8 +91,9 @@ use skit_ui::{
     PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction,
     PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions,
     RunFormView, RunPathContext, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
-    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
+    RunnerSaveTarget, Screen, SettingsAction, SettingsInputs, SettingsResyncPreview,
+    SettingsSectionId, SettingsView, SourceParameters, SourceSnapshot as AddSourceSnapshot,
+    StatusKind, SubmittedValues, TypedValue,
 };
 #[cfg(test)]
 use skit_ui::{HealthAction, LibraryState};
@@ -460,7 +462,7 @@ enum Command {
         #[arg(long)]
         rebuild: bool,
     },
-    /// Read or set skit's settings (language, editor, mirror, form style, after-run).
+    /// Read or set skit's settings (language, editor, mirror, launch menu style, after-run).
     Config {
         /// Configuration key.
         #[arg(add = ArgValueCandidates::new(config_key_candidates))]
@@ -577,7 +579,7 @@ struct ParamsArgs {
     /// Set a declared parameter's help text, as NAME=text.
     #[arg(long = "help-text")]
     help_text: Vec<String>,
-    /// Set a parameter's form prompt, as NAME=text (repeatable).
+    /// Set the label that the launch menu shows for a parameter, as NAME=text (repeatable).
     #[arg(long = "prompt")]
     prompts: Vec<String>,
     /// Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable).
@@ -874,7 +876,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             )?;
             Ok(0)
         }
-        Some(Command::Run(args)) => run_entry(&service, &store, args),
+        Some(Command::Run(args)) => run_entry(&service, &store, args).map(report_run_exit),
         Some(Command::Describe {
             selector,
             description,
@@ -923,10 +925,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             agent(command)?;
             Ok(0)
         }
-        Some(Command::Tui) => {
-            tui(&service)?;
-            Ok(0)
-        }
+        Some(Command::Tui) => tui(&service),
         None => {
             // Version 0.4 offers mirror setup only on the bare invocation, before the workbench
             // opens (`src/skit/cli.py:159-160`).
@@ -936,8 +935,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                 &TerminalFirstRun,
                 io::stdin().is_terminal() && io::stdout().is_terminal(),
             )?;
-            tui(&service)?;
-            Ok(0)
+            tui(&service)
         }
     }
 }
@@ -2232,6 +2230,18 @@ fn user_home_from_environment(
     }
 }
 
+/// Say on stderr that a run failed, and keep its exit code.
+///
+/// Version 0.4 prints `Run exited with code N` after a run that fails
+/// (`src/skit/cli.py:3244-3248`). The line goes to stderr, so a pipe that reads the output of the
+/// script never gets it. A dry run and a run that succeeds print nothing here.
+fn report_run_exit(exit: i32) -> i32 {
+    if exit != 0 {
+        humanerrln!(Yellow: "Run exited with code {}", exit);
+    }
+    exit
+}
+
 fn run_entry(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -3226,8 +3236,14 @@ fn write_human_show<W: io::Write>(
         kind_label(locale, entry.meta.kind.as_str()),
         mode_name(entry.meta.mode)
     )?;
-    if !entry.meta.description.is_empty() {
-        writeln!(output, "  {}", entry.meta.description)?;
+    // A description can hold line breaks. Each line keeps the indent, so a second line does not
+    // read as a new item of the view.
+    for line in entry.meta.description.lines() {
+        if line.is_empty() {
+            writeln!(output)?;
+        } else {
+            writeln!(output, "  {line}")?;
+        }
     }
     if entry.meta.kind.as_str() != "command" {
         writeln!(
@@ -3330,9 +3346,13 @@ fn write_human_show<W: io::Write>(
     }
     if plan.fields.is_empty() {
         let message = match entry.meta.kind.as_str() {
-            "prompt" => "No form fields — arguments after -- go to the selected agent.",
-            "command" => "No form fields — arguments after -- are appended to the command.",
-            _ => "No form fields — arguments after -- pass straight through to the script.",
+            "prompt" => "No parameters to fill in — arguments after -- go to the selected agent.",
+            "command" => {
+                "No parameters to fill in — arguments after -- are appended to the command."
+            }
+            _ => {
+                "No parameters to fill in — arguments after -- pass straight through to the script."
+            }
         };
         writeln!(output, "  {}", text(locale, message))?;
     } else {
@@ -3459,7 +3479,7 @@ fn show_drift_lines(plan: &PreparedFormPlan, entry_name: &str, locale: Locale) -
             }
             FormDrift::Missing { declaration } => format_text(
                 locale,
-                "{}: injection target no longer exists (dropped from this run's form)",
+                "{}: injection target no longer exists (dropped from this run's launch menu)",
                 &[&declaration.name],
             ),
             FormDrift::TypeChanged { stored, current } => format_text(
@@ -3699,13 +3719,13 @@ fn print_copy_onboarding_facts(plan: &OnboardingPlan, entry_name: &str) {
     let modeled = print_modeled_reader_notice(plan);
     if !modeled && plan.uses_cli_framework() {
         humanln!(
-            Dim: "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+            Dim: "This script parses its own arguments ({}); skit could not model them statically, so the launch menu offers an extra-arguments field.",
             plan.frameworks.join(", ")
         );
     }
     if plan.uses_argv && !plan.uses_cli_framework() {
         humanln!(
-            Dim: "This script reads command-line arguments; the run form has an extra-arguments field for them."
+            Dim: "This script reads command-line arguments; the launch menu has an extra-arguments field for them."
         );
     }
     if !plan.filename_literals.is_empty() {
@@ -3716,7 +3736,7 @@ fn print_copy_onboarding_facts(plan: &OnboardingPlan, entry_name: &str) {
             .collect::<Vec<_>>()
             .join(", ");
         humanln!(
-            "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
+            "💡 {} are written directly inside the code, so skit cannot turn them into launch menu fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
             names,
             entry_name
         );
@@ -3732,12 +3752,12 @@ fn print_modeled_reader_notice(plan: &OnboardingPlan) -> bool {
     };
     if fields.len() == 1 {
         humanln!(
-            "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
+            "✓ skit read this script's own arguments ({} field). Running it opens the launch menu — nothing to memorize.",
             fields.len()
         );
     } else {
         humanln!(
-            "✓ skit read this script's own arguments ({} fields). Running it opens a form — nothing to memorize.",
+            "✓ skit read this script's own arguments ({} fields). Running it opens the launch menu — nothing to memorize.",
             fields.len()
         );
     }
@@ -4425,6 +4445,32 @@ fn commit_add_source_after(
     Ok((entry, cleanup))
 }
 
+/// Return one labelled value as indented lines, and keep each line break of the value.
+///
+/// The first line follows the label. Each later line starts under the first character of the
+/// value, so the value reads as one block. An empty line of the value stays empty.
+fn labelled_value_lines(indent: &str, locale: Locale, template: &str, value: &str) -> String {
+    let label_width = text(locale, template)
+        .split("{}")
+        .next()
+        .unwrap_or_default()
+        .width();
+    let continuation = format!("{indent}{}", " ".repeat(label_width));
+    let mut lines = value.lines();
+    let mut shown = format!(
+        "{indent}{}",
+        format_text(locale, template, &[&lines.next().unwrap_or_default()])
+    );
+    for line in lines {
+        shown.push('\n');
+        if !line.is_empty() {
+            shown.push_str(&continuation);
+            shown.push_str(line);
+        }
+    }
+    shown
+}
+
 fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
     let settings = effective_settings(store, entry);
     let source = show_source_text(store, entry)?;
@@ -4453,7 +4499,7 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
 
     if entry.meta.kind.as_str() == "command" && !settings.params.is_empty() {
         humanln!(
-            "Detected parameters: {} (the run form asks for them; your last values are remembered)",
+            "Detected parameters: {} (the launch menu asks for them; your last values are remembered)",
             settings.params.join(", ")
         );
     }
@@ -4468,11 +4514,12 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
     }
     if !entry.meta.description.is_empty() {
         println!(
-            "  {}",
-            format_text(
+            "{}",
+            labelled_value_lines(
+                "  ",
                 active_locale(),
                 "Description: {}",
-                &[&entry.meta.description],
+                &entry.meta.description
             )
         );
     }
@@ -6147,7 +6194,7 @@ fn params(
                 .any(|item| item.binding != ParameterBinding::None)
         }) {
             humanln!(
-                "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
+                "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments ({}) until you remove the managed parameters (--unmanage).",
                 frameworks
             );
         }
@@ -6440,36 +6487,11 @@ fn collect_named_values(raw: &[String], flag: &str) -> (Vec<NamedEdit<String>>, 
     (edits, malformed)
 }
 
+/// Return the sentence for one source edit warning.
+///
+/// The settings screen shows the same sentence before a save, so the set lives on the warning.
 fn source_edit_warning_message(warning: &SourceEditWarning) -> Message {
-    match warning {
-        SourceEditWarning::ResyncSkipped => Message::new(
-            "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
-        ),
-        SourceEditWarning::ResyncDropped { name } => {
-            Message::new("Dropped {}: it no longer exists in the script.").with(name)
-        }
-        SourceEditWarning::ResyncRebound { name } => Message::new(
-            "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
-        )
-        .with(name),
-        SourceEditWarning::AlreadyManaged { name } => {
-            Message::new("{} is already managed; skipped.").with(name)
-        }
-        SourceEditWarning::NotCandidate { name } => {
-            Message::new("{} isn't a detectable parameter in the current script; skipped.")
-                .with(name)
-        }
-        SourceEditWarning::NotManaged { name } => {
-            Message::new("{} isn't a managed parameter; skipped.").with(name)
-        }
-        SourceEditWarning::EnvSourceNotManaged { name } => {
-            Message::new("{} isn't a managed parameter; --env-source skipped.").with(name)
-        }
-        SourceEditWarning::EnvSourceNotSecret { name } => Message::new(
-            "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
-        )
-        .with(name),
-    }
+    warning.message()
 }
 
 fn source_normalization_refusal_message(refusal: &SourceNormalizationRefusal) -> Message {
@@ -6602,21 +6624,12 @@ fn human_parameter_declarations(
     if !source_owned_schema(kind) {
         return declarations.to_vec();
     }
-    let mut stored = managed_params(kind, source);
+    let stored = managed_params(kind, source);
     if stored.is_empty() {
         return declarations.to_vec();
     }
-    let current_defaults = match parse_document(kind, source) {
-        ParseOutcome::Parsed(document) => document.reconcile(&stored).current_defaults,
-        ParseOutcome::ParserUnavailable(_) | ParseOutcome::SyntaxError(_) => BTreeMap::new(),
-    };
-    for declaration in &mut stored {
-        if declaration.default.is_some()
-            && let Some(current) = current_defaults.get(&declaration.name)
-        {
-            declaration.default = Some(current.clone());
-        }
-    }
+    // The live literal shows also when the block keeps no default, as Entry settings shows it.
+    let mut stored = with_live_defaults(kind, source, stored);
     let managed_names = stored
         .iter()
         .map(|declaration| declaration.name.clone())
@@ -6687,7 +6700,7 @@ fn write_human_command_params(
         return Ok(());
     }
     if !settings.params.is_empty() {
-        humanln!("Command template placeholders (the run form asks for them):");
+        humanln!("Command template placeholders (the launch menu asks for them):");
         // form_params puts each managed placeholder first, in settings order.
         for (name, declaration) in settings.params.iter().zip(declarations) {
             write_prompt_parameter(name, declaration, &state.values);
@@ -6736,7 +6749,7 @@ fn write_human_prompt_params(
         return Ok(());
     }
     if !settings.params.is_empty() {
-        humanln!("Prompt placeholders (the run form asks for them):");
+        humanln!("Prompt placeholders (the launch menu asks for them):");
         // form_params puts each managed placeholder first, in settings order.
         for (name, declaration) in settings.params.iter().zip(declarations) {
             write_prompt_parameter(name, declaration, &state.values);
@@ -7480,7 +7493,7 @@ fn preset(
             let declarations = entry_parameters(store, &entry);
             if declarations.is_empty() {
                 return Err(CliError::Usage(
-                    Message::new("{} has no form fields, so there's nothing to save.")
+                    Message::new("{} has no parameters, so there is nothing to save.")
                         .with(&entry.meta.name),
                 ));
             }
@@ -7817,7 +7830,7 @@ fn doctor(
             humanln!(Yellow: "WARN {}: the launch target is gone from disk", name);
         }
         for name in drift {
-            humanln!(Yellow:                 "WARN {}: form definitions are out of sync; run: skit params {} --resync",
+            humanln!(Yellow:                 "WARN {}: parameter definitions are out of sync; run: skit params {} --resync",
                 name,
                 name
             );
@@ -8230,7 +8243,15 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
 /// source literal, and only when reconciliation publishes a sound, non-secret value. Source row
 /// defaults are not editable controls, so this display clone never becomes an implicit resync.
 fn settings_managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
-    let mut managed = managed_params(kind, text);
+    with_live_defaults(kind, text, managed_params(kind, text))
+}
+
+/// Show each source-managed row with the default that the script holds now.
+///
+/// Version 0.4 resolves a shown default through `analysis.effective_default`: the source's live
+/// literal first, then the value that the block keeps (`src/skit/analysis.py:129-138`,
+/// `src/skit/tui_settings.py:609-611`).
+fn with_live_defaults(kind: &str, text: &str, mut managed: Vec<ParamDecl>) -> Vec<ParamDecl> {
     let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
         return managed;
     };
@@ -8241,6 +8262,60 @@ fn settings_managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
         }
     }
     managed
+}
+
+/// Read one entry's parameter definitions from its stored copy again, and write nothing.
+///
+/// Version 0.4's `Ctrl+R` runs the resync on the text that the screen holds and keeps the result
+/// in memory (`src/skit/tui_settings.py:908-926`). This runs the resync that the save runs, on the
+/// stored copy as it is now, and returns the rows and the warnings for the screen to show.
+fn tui_preview_settings_resync(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    selector: &str,
+) -> Result<UiAction, CliError> {
+    let entry = service.show(selector)?;
+    let kind = entry.meta.kind.as_str();
+    if entry.meta.mode != StorageMode::Copy || !source_owned_schema(kind) {
+        return Err(CliError::Failure(Message::new(
+            "source management applies only to a stored copy",
+        )));
+    }
+    let path = store.payload_path(&entry)?;
+    let bytes = fs::read(&path).map_err(|source| CliError::SourceRead {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let text = LosslessSource::from_bytes(&bytes)
+        .normalized_text()
+        .to_owned();
+    let result = edit_source_declarations(
+        kind,
+        &text,
+        &managed_params(kind, &text),
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .map_err(|error| CliError::Usage(error.message()))?;
+    let managed = with_live_defaults(kind, &text, result.declarations);
+    let candidates = detect_candidates(kind, &text)
+        .into_iter()
+        .map(|candidate| candidate.name)
+        .filter(|name| !managed.iter().any(|current| current.name == *name))
+        .collect();
+    Ok(UiAction::Settings(SettingsAction::ResyncPreviewed {
+        selector: selector.to_owned(),
+        preview: SettingsResyncPreview {
+            parameters: SourceParameters {
+                reader_fields: cli_params(kind, &text).len(),
+                managed,
+                candidates,
+            },
+            warnings: result.warnings,
+        },
+    }))
 }
 
 /// Everything the parameter section decision needs, read once.
@@ -8440,7 +8515,8 @@ fn known_entry_kind(kind: &str) -> bool {
     )
 }
 
-fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
+/// Run the interface and return the exit code for the shell.
+fn tui(service: &LibraryService<FileStore>) -> Result<i32, CliError> {
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
     let host = TuiHost::system(service, &state_dir, &config_dir);
@@ -8453,7 +8529,8 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
         tui_appearance(),
         path_completion_provider(),
     )
-    .map_err(CliError::from)
+    .map_err(CliError::from)?;
+    Ok(host.session_exit_code())
 }
 
 /// The color choices of a terminal session.
@@ -8606,6 +8683,10 @@ fn tui_accent() -> skit_application::preferences::AccentChoice {
 /// `COLORTERM` of `truecolor` or `24bit` gives 24-bit color; otherwise the text after the last
 /// hyphen of `TERM` decides, where `256color` and `kitty` give 256 colors and anything else gives
 /// the 16 standard colors.
+///
+/// skit does not port one case: for `TERM` of `dumb` or `unknown`, Rich uses no color system
+/// (`console.py:793`). Without a color system Rich also drops bold and reverse, and the interface
+/// then shows no selection.
 #[cfg(not(windows))]
 fn tui_color_depth() -> skit_tui::ColorDepth {
     let lowered = |name| {
@@ -8867,6 +8948,7 @@ fn complete_add_effect_with(
             surface: None,
             rerunnable: None,
             message,
+            kind: StatusKind::Warning,
         });
     };
     let surface = match load_surface(store, state_dir, config_dir) {
@@ -8882,6 +8964,7 @@ fn complete_add_effect_with(
                 surface: None,
                 rerunnable: None,
                 message,
+                kind: StatusKind::Warning,
             });
         }
     };
@@ -9634,11 +9717,14 @@ fn tui_preferences_effect_at(
                         ),
                     },
                 )),
-                Err(error) => Ok(UiAction::SetStatus(format_text(
-                    current_locale,
-                    "Error: {}",
-                    &[&error.message().localize(current_locale)],
-                ))),
+                Err(error) => Ok(UiAction::SetStatus {
+                    kind: StatusKind::Error,
+                    message: format_text(
+                        current_locale,
+                        "Error: {}",
+                        &[&error.message().localize(current_locale)],
+                    ),
+                }),
             }
         }
     }
@@ -9705,6 +9791,7 @@ fn tui_rerun(
             .filter(|value| !value.is_empty())
             .or_else(|| env::var("EDITOR").ok().filter(|value| !value.is_empty())),
         &run_services,
+        &Cell::new(None),
     )
 }
 
@@ -9719,6 +9806,7 @@ fn tui_rerun_with_services(
     tokens: TokenContext,
     editor_fallback: Option<String>,
     run_services: &crate::run::RunServices<'_>,
+    run_exit: &Cell<Option<i32>>,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -9726,11 +9814,14 @@ fn tui_rerun_with_services(
         && saved.last_run.exit.is_none()
         && saved.last_run.values.is_none()
     {
-        return Ok(UiAction::SetStatus(format_text(
-            locale,
-            "{} hasn't run yet — press Enter to fill the form first.",
-            &[&entry.meta.name],
-        )));
+        return Ok(UiAction::SetStatus {
+            kind: StatusKind::Info,
+            message: format_text(
+                locale,
+                "{} has not run yet — press Enter to open the launch menu first.",
+                &[&entry.meta.name],
+            ),
+        });
     }
     if entry.meta.kind.as_str() == "prompt"
         && EntrySettings::from_meta(&entry.meta).runner.is_empty()
@@ -9749,11 +9840,12 @@ fn tui_rerun_with_services(
         )?));
     }
 
-    let result = crate::run::run_with_services(
+    let result = tui_launch(
         service,
         store,
         state_dir,
         config_dir,
+        &entry,
         RunArgs {
             selector: selector.to_owned(),
             values: Vec::new(),
@@ -9768,16 +9860,20 @@ fn tui_rerun_with_services(
             forget_args: false,
             extra_args: Vec::new(),
         },
+        locale,
         run_services,
     );
     match result {
-        Ok(_) if FileConfigStore::new(config_dir).get("after_run")? == "exit" => Ok(UiAction::Quit),
-        Ok(exit) => tui_complete_at(
+        Ok(exit) => tui_after_run(
             service,
             state_dir,
             config_dir,
             run_services.now_utc(),
-            &format_text(locale, "Run finished with exit status {}", &[&exit]),
+            &entry,
+            exit,
+            locale,
+            Some(run_services.output()),
+            run_exit,
         ),
         Err(RunError::Inputs(skit_application::run_inputs::RunInputError::Preparation(_))) => {
             Ok(UiAction::Present(tui_open_with_context(
@@ -9793,11 +9889,12 @@ fn tui_rerun_with_services(
                 run_services.probe(),
             )?))
         }
-        Err(error) => Ok(UiAction::SetStatus(format_text(
-            locale,
-            "Error: {}",
-            &[&error.message().localize(locale)],
-        ))),
+        Err(error) => Ok(UiAction::SetStatus {
+            kind: StatusKind::Error,
+            message: tui_missing_program(&entry, &error, locale).unwrap_or_else(|| {
+                format_text(locale, "Error: {}", &[&error.message().localize(locale)])
+            }),
+        }),
     }
 }
 
@@ -10593,11 +10690,10 @@ fn tui_commit_preferences(
         return Ok(
             match FileConfigStore::new(config_dir).set_many(&change.settings) {
                 Ok(()) => None,
-                Err(error) => Some(UiAction::SetStatus(format_text(
-                    locale,
-                    "Error: {}",
-                    &[&error.message().localize(locale)],
-                ))),
+                Err(error) => Some(UiAction::SetStatus {
+                    kind: StatusKind::Error,
+                    message: format_text(locale, "Error: {}", &[&error.message().localize(locale)]),
+                }),
             },
         );
     }
@@ -10629,11 +10725,10 @@ fn project_preferences_commit(
         Err(RunnerManagementStoreError::Library(error)) => error.message().localize(locale),
         Err(RunnerManagementStoreError::Config(error)) => error.message().localize(locale),
     };
-    Some(UiAction::SetStatus(format_text(
-        locale,
-        "Error: {}",
-        &[&message],
-    )))
+    Some(UiAction::SetStatus {
+        kind: StatusKind::Error,
+        message: format_text(locale, "Error: {}", &[&message]),
+    })
 }
 
 fn runners_changed_refusal() -> UiAction {
@@ -10883,6 +10978,7 @@ fn tui_submit(
     values: &SubmittedValues,
 ) -> Result<UiAction, CliError> {
     let run_services = (purpose == FormPurpose::Run).then(crate::run::RunServices::system);
+    let run_exit = Cell::new(None);
     let home = user_home();
     tui_submit_at(
         service,
@@ -10895,7 +10991,7 @@ fn tui_submit(
         active_locale(),
         time::OffsetDateTime::now_utc(),
         &SYSTEM_OUTPUT,
-        run_services.as_ref(),
+        run_services.as_ref().map(|services| (services, &run_exit)),
         PreferenceHost {
             home: home.as_deref(),
             platform: InterpreterPlatform::current(),
@@ -10916,20 +11012,24 @@ fn tui_submit_at(
     locale: Locale,
     now: time::OffsetDateTime,
     output: &(impl HostOutput + ?Sized),
-    run_services: Option<&crate::run::RunServices<'_>>,
+    run: Option<(&crate::run::RunServices<'_>, &Cell<Option<i32>>)>,
     preference_host: PreferenceHost<'_>,
 ) -> Result<UiAction, CliError> {
     match purpose {
-        FormPurpose::Run => tui_submit_run_with_services(
-            service,
-            store,
-            state_dir,
-            config_dir,
-            tui_selector(&selector)?,
-            values,
-            locale,
-            run_services.expect("a run submit has run services"),
-        ),
+        FormPurpose::Run => {
+            let (run_services, run_exit) = run.expect("a run submit has run services");
+            tui_submit_run_with_services(
+                service,
+                store,
+                state_dir,
+                config_dir,
+                tui_selector(&selector)?,
+                values,
+                locale,
+                run_services,
+                run_exit,
+            )
+        }
         FormPurpose::Add => {
             let source = tui_value(values, "source");
             let template = tui_value(values, "template");
@@ -10954,7 +11054,14 @@ fn tui_submit_at(
                     no_input: false,
                 },
             )?;
-            tui_complete_at(service, state_dir, config_dir, now, "Entry added")
+            tui_complete_at(
+                service,
+                state_dir,
+                config_dir,
+                now,
+                "Entry added",
+                StatusKind::Success,
+            )
         }
         FormPurpose::Settings => {
             let outcome = tui_submit_settings_at(
@@ -10965,12 +11072,19 @@ fn tui_submit_at(
                 values,
                 crate::run::system_time_from_utc(now),
             )?;
+            // A save that reports a problem with the script stays until the user reads it.
+            let kind = if outcome.warnings.is_empty() && outcome.normalization_refusals.is_empty() {
+                StatusKind::Success
+            } else {
+                StatusKind::Warning
+            };
             tui_complete_at(
                 service,
                 state_dir,
                 config_dir,
                 now,
                 &settings_saved_message(&outcome, locale),
+                kind,
             )
         }
         FormPurpose::Preferences => {
@@ -10986,7 +11100,14 @@ fn tui_submit_at(
             .validate_files(|path| preference_path_is_file(path, preference_host))
             .map_err(|error| CliError::Usage(error.message()))?;
             config.set_many(&settings)?;
-            tui_complete_at(service, state_dir, config_dir, now, "Preferences saved")
+            tui_complete_at(
+                service,
+                state_dir,
+                config_dir,
+                now,
+                "Preferences saved",
+                StatusKind::Success,
+            )
         }
         FormPurpose::Runners => {
             let config = FileConfigStore::new(config_dir);
@@ -11009,7 +11130,14 @@ fn tui_submit_at(
                     true,
                 )?;
             }
-            tui_complete_at(service, state_dir, config_dir, now, "Prompt runners saved")
+            tui_complete_at(
+                service,
+                state_dir,
+                config_dir,
+                now,
+                "Prompt runners saved",
+                StatusKind::Success,
+            )
         }
         FormPurpose::Rename => {
             rename_with_output(
@@ -11019,7 +11147,14 @@ fn tui_submit_at(
                 output,
                 locale,
             )?;
-            tui_complete_at(service, state_dir, config_dir, now, "Entry renamed")
+            tui_complete_at(
+                service,
+                state_dir,
+                config_dir,
+                now,
+                "Entry renamed",
+                StatusKind::Success,
+            )
         }
     }
 }
@@ -11027,7 +11162,7 @@ fn tui_submit_at(
 fn refuse_empty_preset_schema(declarations: &[ParamDecl]) -> Result<(), CliError> {
     if declarations.is_empty() {
         Err(CliError::Usage(Message::new(
-            "cannot save a preset because the entry has no form fields",
+            "cannot save a preset because the entry has no parameters",
         )))
     } else {
         Ok(())
@@ -11053,6 +11188,7 @@ fn tui_submit_run(
         values,
         active_locale(),
         &run_services,
+        &Cell::new(None),
     )
 }
 
@@ -11066,6 +11202,7 @@ fn tui_submit_run_with_services(
     values: &SubmittedValues,
     locale: Locale,
     run_services: &crate::run::RunServices<'_>,
+    run_exit: &Cell<Option<i32>>,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -11073,11 +11210,13 @@ fn tui_submit_run_with_services(
     let extra_args = split_editable_arguments(&tui_value(values, "_skit_args"))?;
     let runner = tui_nonempty_owned(values, "_skit_runner");
     let runner_was_picked = tui_flag(values, "_skit_runner_picked")?;
-    let result = crate::run::run_with_services(
+    let dry_run = tui_flag(values, "_skit_dry_run")?;
+    let result = tui_launch(
         service,
         store,
         state_dir,
         config_dir,
+        &entry,
         RunArgs {
             selector: selector.to_owned(),
             values: run_values,
@@ -11085,59 +11224,212 @@ fn tui_submit_run_with_services(
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
             runner: runner.clone(),
             runner_was_picked,
-            dry_run: tui_flag(values, "_skit_dry_run")?,
+            dry_run,
             no_input: true,
             plain: true,
             raw: false,
             forget_args: false,
             extra_args,
         },
+        locale,
         run_services,
     );
     let exit = match result {
         Ok(exit) => exit,
         Err(error) => {
-            if let Some(message) =
-                selected_prompt_runner_preflight_message(&entry, runner.as_deref(), &error, locale)
-            {
+            let Some(message) = tui_missing_program(&entry, &error, locale) else {
+                return Err(error.into());
+            };
+            // The selected agent was remembered before the launch failed, so the detail pane
+            // needs the refreshed surface.
+            if entry.meta.kind.as_str() == "prompt" && runner.is_some() {
                 return tui_complete_at(
                     service,
                     state_dir,
                     config_dir,
                     run_services.now_utc(),
                     &message,
+                    StatusKind::Error,
                 );
             }
-            return Err(error.into());
+            return Ok(UiAction::SetStatus {
+                kind: StatusKind::Error,
+                message,
+            });
         }
     };
-    if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
-        Ok(UiAction::Quit)
+    tui_after_run(
+        service,
+        state_dir,
+        config_dir,
+        run_services.now_utc(),
+        &entry,
+        exit,
+        locale,
+        (!dry_run).then(|| run_services.output()),
+        run_exit,
+    )
+}
+
+/// The status line of a run from the interface that cannot start because a program is missing.
+///
+/// The line names the program and the next step, as version 0.4 names the interpreter that is
+/// not installed (`src/skit/langs/launch.py:466`). The step depends on what can replace the
+/// program: an interpreter pin in Entry settings, or another agent for a prompt. Any other error
+/// gives `None`.
+fn tui_missing_program(entry: &Entry, error: &RunError, locale: Locale) -> Option<String> {
+    let RunError::Launch(LaunchError::ProgramNotFound { name }) = error else {
+        return None;
+    };
+    let template = if entry.meta.kind.as_str() == "prompt" {
+        "{} is not on PATH. Install it, or choose another agent."
+    } else if pinnable_interpreter(entry.meta.kind.as_str()) {
+        "{} is not on PATH. Install it, or set the interpreter in Entry settings."
     } else {
-        tui_complete_at(
+        "{} is not on PATH. Install it, then run again."
+    };
+    Some(format_text(locale, template, &[name]))
+}
+
+/// Run one entry from the interface, framed for the terminal that the run uses.
+///
+/// Version 0.4 prints `── Run <name> ──` before the command line (`src/skit/tui.py:829`,
+/// `:1068-1072`). The header goes out with the first line of the run, so a run that cannot start
+/// leaves no header behind. A run that fails prints a ✗ line with its exit code after the
+/// output of the script.
+#[allow(clippy::too_many_arguments)]
+fn tui_launch(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    entry: &Entry,
+    args: RunArgs,
+    locale: Locale,
+    run_services: &crate::run::RunServices<'_>,
+) -> Result<i32, RunError> {
+    // A dry run prints the command and launches nothing, so it has no run to frame.
+    if args.dry_run {
+        return crate::run::run_with_services(
             service,
+            store,
             state_dir,
             config_dir,
-            run_services.now_utc(),
-            &format_text(locale, "Run finished with exit status {}", &[&exit]),
+            args,
+            run_services,
+        );
+    }
+    let header = format_text(locale, "Run {}", &[&entry.meta.name]);
+    let output = RunHeaderOutput::new(run_services.output(), format!("\n── {header} ──\n"));
+    let framed = run_services.with_output(&output);
+    let exit = crate::run::run_with_services(service, store, state_dir, config_dir, args, &framed)?;
+    if exit != 0 {
+        output.failure(&format_text(
+            locale,
+            "✗ {} exited with code {}",
+            &[&entry.meta.name, &exit],
+        ));
+    }
+    Ok(exit)
+}
+
+/// Decide what the interface does after a run that started.
+///
+/// The terminal keeps one result line for every run: `tui_launch` prints the `✗` line of a run
+/// that failed, and this prints the `✓` line of a run that succeeded, as version 0.4 prints one
+/// (`src/skit/tui.py:845`). A dry run gives no `output`, because nothing ran. With
+/// `after_run = "exit"` the session then ends, and the process returns the exit code of the run.
+/// Otherwise the interface comes back with the outcome as a status.
+#[allow(clippy::too_many_arguments)]
+fn tui_after_run(
+    service: &LibraryService<FileStore>,
+    state_dir: &Path,
+    config_dir: &Path,
+    now: time::OffsetDateTime,
+    entry: &Entry,
+    exit: i32,
+    locale: Locale,
+    output: Option<&dyn HostOutput>,
+    run_exit: &Cell<Option<i32>>,
+) -> Result<UiAction, CliError> {
+    let ends_session = FileConfigStore::new(config_dir).get("after_run")? == "exit";
+    if exit == 0
+        && let Some(output) = output
+    {
+        output.success(&format_text(locale, "✓ {} finished", &[&entry.meta.name]));
+    }
+    if ends_session {
+        run_exit.set(Some(exit));
+        return Ok(UiAction::Quit);
+    }
+    let (message, kind) = if exit == 0 {
+        (
+            format_text(locale, "{} finished", &[&entry.meta.name]),
+            StatusKind::Success,
         )
+    } else {
+        (
+            format_text(locale, "{} exited with code {}", &[&entry.meta.name, &exit]),
+            StatusKind::Error,
+        )
+    };
+    tui_complete_at(service, state_dir, config_dir, now, &message, kind)
+}
+
+/// Print a run header before the first line that a run writes.
+#[derive(Debug)]
+struct RunHeaderOutput<'a> {
+    inner: &'a dyn HostOutput,
+    header: String,
+    printed: Cell<bool>,
+}
+
+impl<'a> RunHeaderOutput<'a> {
+    fn new(inner: &'a dyn HostOutput, header: String) -> Self {
+        Self {
+            inner,
+            header,
+            printed: Cell::new(false),
+        }
+    }
+
+    fn header(&self) {
+        if !self.printed.replace(true) {
+            self.inner.stdout(&self.header);
+        }
     }
 }
 
-fn selected_prompt_runner_preflight_message(
-    entry: &Entry,
-    runner: Option<&str>,
-    error: &RunError,
-    locale: Locale,
-) -> Option<String> {
-    if entry.meta.kind.as_str() != "prompt"
-        || runner.is_none()
-        || !matches!(error, RunError::Launch(LaunchError::ProgramNotFound { .. }))
-    {
-        return None;
+impl HostOutput for RunHeaderOutput<'_> {
+    fn success(&self, message: &str) {
+        self.header();
+        self.inner.success(message);
     }
-    let detail = error.message().localize(locale);
-    Some(format_text(locale, "Error: {}", &[&detail]))
+
+    fn detail(&self, message: &str) {
+        self.header();
+        self.inner.detail(message);
+    }
+
+    fn plain(&self, message: &str) {
+        self.header();
+        self.inner.plain(message);
+    }
+
+    fn stdout(&self, message: &str) {
+        self.header();
+        self.inner.stdout(message);
+    }
+
+    fn diagnostic(&self, message: &str) {
+        self.header();
+        self.inner.diagnostic(message);
+    }
+
+    fn failure(&self, message: &str) {
+        self.header();
+        self.inner.failure(message);
+    }
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -11614,6 +11906,7 @@ fn tui_complete(
         &resolve_config_dir()?,
         time::OffsetDateTime::now_utc(),
         message,
+        StatusKind::Success,
     )
 }
 
@@ -11623,6 +11916,7 @@ fn tui_complete_at(
     config_dir: &Path,
     now: time::OffsetDateTime,
     message: &str,
+    kind: StatusKind,
 ) -> Result<UiAction, CliError> {
     // The same projection the screen opened with. Handing back the entry list alone leaves the
     // detail pane with no facts for anything a mutation touched — a freshly added entry showed its
@@ -11634,6 +11928,7 @@ fn tui_complete_at(
         surface: Some(surface),
         rerunnable: Some(rerunnable),
         message: message.to_owned(),
+        kind,
     })
 }
 
@@ -11780,9 +12075,17 @@ fn finalize_external_edit_error(error: FinalizeExternalCopyEditError) -> CliErro
     }
 }
 
+/// Resolve an add source, or refuse a missing one with the version 0.4 sentence.
+///
+/// Version 0.4 asks `Path.exists()` and refuses with `File not found: <path>`
+/// (`src/skit/cli.py:418-422`). `exists()` also answers no for a path through a regular file, so
+/// that path is missing too. Any other failure keeps the reason from the operating system.
 fn resolve_add_source(path: &Path) -> Result<PathBuf, CliError> {
     fs::canonicalize(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ) {
             CliError::Failure(Message::new("File not found: {}").with(path.display()))
         } else {
             source_error("resolve", path, error)

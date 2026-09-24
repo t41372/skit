@@ -48,6 +48,7 @@ pub struct AgentReviewSnapshot {
     library: AgentReviewNode,
     help: AgentReviewNode,
     confirm_remove: AgentReviewNode,
+    confirm_discard: AgentReviewNode,
     run: AgentReviewNode,
     path_suggestions: AgentReviewNode,
     run_modal: AgentReviewNode,
@@ -66,6 +67,7 @@ pub struct AgentReviewSnapshot {
     footer: AgentReviewNode,
     clicks: AgentReviewNode,
     top_level_click: AgentReviewNode,
+    pointer: AgentReviewNode,
     local_actions: AgentReviewNode,
 }
 
@@ -78,6 +80,7 @@ impl AgentReviewSnapshot {
         library: AgentReviewNode,
         help: AgentReviewNode,
         confirm_remove: AgentReviewNode,
+        confirm_discard: AgentReviewNode,
         run: AgentReviewNode,
         path_suggestions: AgentReviewNode,
         run_modal: AgentReviewNode,
@@ -96,6 +99,7 @@ impl AgentReviewSnapshot {
         footer: AgentReviewNode,
         clicks: AgentReviewNode,
         top_level_click: AgentReviewNode,
+        pointer: AgentReviewNode,
         local_actions: AgentReviewNode,
     ) -> Self {
         Self {
@@ -106,6 +110,7 @@ impl AgentReviewSnapshot {
             library,
             help,
             confirm_remove,
+            confirm_discard,
             run,
             path_suggestions,
             run_modal,
@@ -124,6 +129,7 @@ impl AgentReviewSnapshot {
             footer,
             clicks,
             top_level_click,
+            pointer,
             local_actions,
         }
     }
@@ -708,6 +714,7 @@ mod tests {
                 "add_geometry",
                 "add_overlay",
                 "clicks",
+                "confirm_discard",
                 "confirm_remove",
                 "file_picker_source",
                 "footer",
@@ -717,6 +724,7 @@ mod tests {
                 "library",
                 "local_actions",
                 "path_suggestions",
+                "pointer",
                 "preferences",
                 "quit_armed_at",
                 "quit_toast",

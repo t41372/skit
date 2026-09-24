@@ -144,6 +144,11 @@ impl HealthScreenSession {
         self.footer.advertised()
     }
 
+    /// Each visible footer chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.footer.pointer_targets()
+    }
+
     /// Render the complete actionable Health report.
     pub(crate) fn render(
         &mut self,
@@ -536,6 +541,11 @@ impl RunnerEditorSession {
         self.footer.advertised()
     }
 
+    /// Each visible footer chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.footer.pointer_targets()
+    }
+
     /// Render the shared editor as a modal overlay.
     pub(crate) fn render(
         &mut self,
@@ -890,7 +900,7 @@ fn health_issue_label(issue: &HealthIssue, locale: Locale) -> String {
         }
         HealthIssueKind::DriftedForm => text(
             locale,
-            "form definitions are out of sync (open Entry settings → Resync)",
+            "parameter definitions are out of sync (open Entry settings → Resync)",
         )
         .into_owned(),
         HealthIssueKind::MissingNeeds { tools } => format_text(

@@ -8,6 +8,7 @@ mod picker;
 mod preferences;
 mod run;
 mod settings;
+mod status;
 
 pub use add::*;
 pub use management::*;
@@ -27,13 +28,15 @@ pub use skit_form::field::{
     ArgumentDialect, ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue,
     ReadOnlyReason, TypedValue,
 };
+pub use status::{StatusKind, TRANSIENT_STATUS_TIME};
 
 pub use settings::{
     ADD_PARAMETER_KEY, DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPOLATE_KEY,
     INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX,
     PROMPT_CANDIDATES_KEY, PYTHON_KEY, RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect,
-    SettingsError, SettingsInputs, SettingsItem, SettingsNote, SettingsSection, SettingsSectionId,
-    SettingsView, TEMPLATE_KEY, WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
+    SettingsError, SettingsInputs, SettingsItem, SettingsNote, SettingsResyncPreview,
+    SettingsSection, SettingsSectionId, SettingsView, SourceParameters, TEMPLATE_KEY,
+    WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 
@@ -660,11 +663,24 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         false,
         false,
     ),
+    // A generic form is a small dialog, such as Rename. Enter submits it, as Enter runs the launch
+    // form. A multi-line field keeps Enter for a new line, and `Ctrl+S` submits from there.
+    command_spec!(
+        UiCommand::Submit,
+        CommandContext::Form,
+        &[
+            PLAIN_ENTER,
+            control_binding!(UiKey::Character('s'), "Ctrl+S", "^S"),
+        ],
+        "Submit",
+        true,
+        false,
+    ),
     command_spec!(
         UiCommand::Back,
         CommandContext::Form,
         &[PLAIN_ESCAPE],
-        "Back",
+        "Cancel",
         true,
         false,
     ),
@@ -674,7 +690,6 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         &[
             plain_binding!(UiKey::Tab, "Tab", "Tab"),
             plain_binding!(UiKey::Down, "Down", "↓"),
-            PLAIN_ENTER,
         ],
         "Next field",
         true,
@@ -697,14 +712,6 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         &[plain_binding!(UiKey::Backspace, "Backspace", "⌫")],
         "Backspace",
         false,
-        false,
-    ),
-    command_spec!(
-        UiCommand::Submit,
-        CommandContext::Form,
-        &[control_binding!(UiKey::Character('s'), "Ctrl+S", "^S")],
-        "Submit",
-        true,
         false,
     ),
     command_spec!(
@@ -830,12 +837,15 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
+    // Version 0.4 puts this chip under the capped list of detected variables
+    // (`src/skit/tui_settings.py:702-717`), which is below the fold of a normal terminal. The
+    // footer carries it too, and only while the list is capped.
     command_spec!(
         UiCommand::ChooseSettingsVariables,
         CommandContext::Settings,
         &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
         "Choose variables…",
-        false,
+        true,
         false,
     ),
     command_spec!(
@@ -946,6 +956,8 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
+    // The dialog draws this command as its `Esc Keep` chip, so the label is the chip's word, as
+    // version 0.4 names it (`src/skit/tui.py:126`).
     command_spec!(
         UiCommand::CloseModal,
         CommandContext::ConfirmRemove,
@@ -953,7 +965,7 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
             PLAIN_ESCAPE,
             plain_binding!(UiKey::Character('n'), "n", "n"),
         ],
-        "Cancel",
+        "Keep",
         true,
         false,
     ),
@@ -1443,6 +1455,9 @@ pub enum Action {
         surface: LibrarySurface,
         /// Entry identities that have a recorded launch to repeat.
         rerunnable: Vec<Slug>,
+        /// Localized receipt for a refresh that the user asked for, shown as a success.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     /// Replace the entry identities that have a recorded launch to repeat.
     ReplaceRerunnable(Vec<Slug>),
@@ -1634,9 +1649,18 @@ pub enum Action {
         rerunnable: Option<Vec<Slug>>,
         /// User-visible completion message.
         message: String,
+        /// The outcome that the message reports.
+        #[serde(default, skip_serializing_if = "StatusKind::is_info")]
+        kind: StatusKind,
     },
     /// Set a host-generated status line.
-    SetStatus(String),
+    SetStatus {
+        /// The outcome that the message reports.
+        #[serde(default, skip_serializing_if = "StatusKind::is_info")]
+        kind: StatusKind,
+        /// Localized status text.
+        message: String,
+    },
     /// Clear the status line.
     ClearStatus,
     /// Ask the host adapter to exit.
@@ -1701,6 +1725,14 @@ pub enum Effect {
     Add(Vec<AddEffect>),
     /// Rebuild the registry and collect a fresh typed Health snapshot.
     HealthRebuild,
+    /// Read one entry's parameter definitions from its script again, and write nothing.
+    ///
+    /// The host answers with [`SettingsAction::ResyncPreviewed`], so entry settings shows what
+    /// the resync will change before the save keeps it.
+    PreviewSettingsResync {
+        /// Stable entry selector.
+        selector: String,
+    },
     /// Persist one validated prompt runner for its exact workflow owner.
     SaveRunner {
         /// Compare-and-swap save request.
@@ -1735,6 +1767,9 @@ pub struct LibraryState {
     visible: Vec<usize>,
     rerunnable: BTreeSet<Slug>,
     status: Option<String>,
+    /// The outcome that `status` reports. It is `Info` when no status shows.
+    #[serde(default, skip_serializing_if = "StatusKind::is_info")]
+    status_kind: StatusKind,
     workflow: WorkflowState,
     modal: Option<ModalState>,
     detail_pane: DetailPaneMode,
@@ -1809,9 +1844,9 @@ impl LibraryState {
             Action::FinishSearch => self.input_mode = InputMode::Browse,
             Action::Input(character) => match self.input_mode {
                 InputMode::Search => {
-                    let selected = self.selected_slug().cloned();
-                    self.query.push(character);
-                    self.recompute_visible(selected.as_ref());
+                    let mut query = self.query.clone();
+                    query.push(character);
+                    self.set_query(query);
                 }
                 InputMode::Form => {
                     self.append_form_input(&character.to_string());
@@ -1820,36 +1855,30 @@ impl LibraryState {
             },
             Action::Paste(value) => match self.input_mode {
                 InputMode::Search => {
-                    let selected = self.selected_slug().cloned();
-                    self.query.push_str(&value);
-                    self.recompute_visible(selected.as_ref());
+                    let mut query = self.query.clone();
+                    query.push_str(&value);
+                    self.set_query(query);
                 }
                 InputMode::Form => self.append_form_input(&value),
                 InputMode::Browse => {}
             },
             Action::SetSearchQuery(value) => {
                 if self.input_mode == InputMode::Search {
-                    let selected = self.selected_slug().cloned();
-                    self.query = value;
-                    self.recompute_visible(selected.as_ref());
+                    self.set_query(value);
                 }
             }
             Action::Backspace => match self.input_mode {
                 InputMode::Search => {
-                    let selected = self.selected_slug().cloned();
-                    self.query.pop();
-                    self.recompute_visible(selected.as_ref());
+                    let mut query = self.query.clone();
+                    query.pop();
+                    self.set_query(query);
                 }
                 InputMode::Form => {
                     self.backspace_form_input();
                 }
                 InputMode::Browse => {}
             },
-            Action::ClearSearch => {
-                let selected = self.selected_slug().cloned();
-                self.query.clear();
-                self.recompute_visible(selected.as_ref());
-            }
+            Action::ClearSearch => self.set_query(String::new()),
             Action::Replace { scan, rerunnable } => {
                 let selected = self.selected_slug().cloned();
                 self.entries = scan.entries;
@@ -1861,11 +1890,15 @@ impl LibraryState {
             Action::ReplaceSurface {
                 surface,
                 rerunnable,
+                message,
             } => {
                 let selected = self.selected_slug().cloned();
                 self.replace_surface(surface);
                 self.rerunnable = rerunnable.into_iter().collect();
                 self.recompute_visible(selected.as_ref());
+                if let Some(message) = message {
+                    self.set_status(StatusKind::Success, message);
+                }
             }
             Action::ReplaceRerunnable(selectors) => {
                 self.rerunnable = selectors.into_iter().collect();
@@ -2173,7 +2206,7 @@ impl LibraryState {
                         if let Some(message) = cancel_status {
                             self.workflow.return_to_library();
                             self.input_mode = InputMode::Browse;
-                            self.status = Some(message);
+                            self.set_status(StatusKind::Warning, message);
                         }
                     }
                 }
@@ -2211,7 +2244,7 @@ impl LibraryState {
                     RunnerEditorOwner::Preferences => return Effect::None,
                 }
                 self.modal = None;
-                self.status = Some(message);
+                self.set_status(StatusKind::Success, message);
             }
             Action::RunnerEditorSaveFailed { owner, message } => {
                 if let Some(ModalState::RunnerEditor {
@@ -2242,13 +2275,20 @@ impl LibraryState {
                     // Version 0.4 explains the refusal and writes nothing
                     // (`src/skit/tui_settings.py:517-523`, `:939-941`).
                     SettingsEffect::Refused(error) => {
-                        self.status = Some(error.message().to_owned());
+                        self.set_status(StatusKind::Error, error.message().to_owned());
                     }
                     SettingsEffect::Save => {
                         return Effect::Submit {
                             purpose: FormPurpose::Settings,
                             selector: Some(view.selector.clone()),
                             values: view.submitted_values(),
+                        };
+                    }
+                    // A read with no write. The answer comes back as
+                    // `SettingsAction::ResyncPreviewed` and changes only this screen.
+                    SettingsEffect::PreviewResync => {
+                        return Effect::PreviewSettingsResync {
+                            selector: view.selector.clone(),
                         };
                     }
                     // The runner editor is a modal this reducer owns, exactly as the launch form
@@ -2272,7 +2312,7 @@ impl LibraryState {
                     };
                     let effect = view.update(action);
                     if let Some(message) = installed_message {
-                        self.status = Some(message);
+                        self.set_status(StatusKind::Success, message);
                     }
                     match effect {
                         PreferencesEffect::None => {}
@@ -2310,7 +2350,7 @@ impl LibraryState {
                 if accent.is_some() {
                     self.accent = accent;
                 }
-                self.status = Some(message);
+                self.set_status(StatusKind::Success, message);
                 self.workflow.return_to_library();
                 self.modal = None;
                 self.input_mode = InputMode::Browse;
@@ -2349,7 +2389,7 @@ impl LibraryState {
             } => {
                 if let Screen::Run(form) = &mut self.workflow.active {
                     form.refresh_presets(name, presets);
-                    self.status = Some(message);
+                    self.set_status(StatusKind::Success, message);
                 }
                 self.modal = None;
             }
@@ -2363,11 +2403,23 @@ impl LibraryState {
                 }
             }
             Action::SelectFieldOption { field, value } => {
+                let mut preset_applied = false;
                 if let Screen::Run(form) = &mut self.workflow.active {
                     if field < form.fields.len() {
                         form.focused = field;
                     }
+                    preset_applied = form.is_preset_option(field, &value);
                     form.select_option(field, &value);
+                }
+                // A preset choice writes every parameter field at once, so the change can be far
+                // from the picker. Version 0.4 applied it silently (`src/skit/tui_form.py:761-779`).
+                if preset_applied {
+                    let message = if value.is_empty() {
+                        "Last values restored."
+                    } else {
+                        "Preset applied."
+                    };
+                    self.set_status(StatusKind::Success, message.to_owned());
                 }
             }
             Action::ResetRunField(index) => {
@@ -2415,7 +2467,7 @@ impl LibraryState {
                 self.replace_surface(surface);
                 self.rerunnable = rerunnable.into_iter().collect();
                 self.recompute_visible(Some(&slug));
-                self.status = Some(message);
+                self.set_status(StatusKind::Success, message);
                 self.workflow.return_to_library();
                 self.modal = None;
                 self.input_mode = InputMode::Browse;
@@ -2429,6 +2481,7 @@ impl LibraryState {
                 surface,
                 rerunnable,
                 message,
+                kind,
             } => {
                 // The whole surface, not the entry list alone. The detail pane's facts live beside
                 // the scan, and an entry that arrives without them shows a pane with its name and
@@ -2442,13 +2495,13 @@ impl LibraryState {
                 if let Some(rerunnable) = rerunnable {
                     self.rerunnable = rerunnable.into_iter().collect();
                 }
-                self.status = Some(message);
+                self.set_status(kind, message);
                 self.workflow.return_to_library();
                 self.modal = None;
                 self.input_mode = InputMode::Browse;
             }
-            Action::SetStatus(message) => self.status = Some(message),
-            Action::ClearStatus => self.status = None,
+            Action::SetStatus { kind, message } => self.set_status(kind, message),
+            Action::ClearStatus => self.clear_status(),
             Action::Quit => return Effect::Quit,
         }
         Effect::None
@@ -2591,10 +2644,12 @@ impl LibraryState {
             | UiCommand::End
             | UiCommand::Backspace
             | UiCommand::ClearSearch
-            | UiCommand::FocusNext
-            | UiCommand::FocusPrevious
             | UiCommand::Back
             | UiCommand::CloseModal => true,
+            // A one-field dialog, such as Rename, has no other field to move to.
+            UiCommand::FocusNext | UiCommand::FocusPrevious => {
+                self.form().is_none_or(|form| form.fields.len() > 1)
+            }
             UiCommand::DiscardChanges | UiCommand::KeepEditing => {
                 matches!(self.modal, Some(ModalState::ConfirmDiscardChanges))
             }
@@ -2692,6 +2747,24 @@ impl LibraryState {
     #[must_use]
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
+    }
+
+    /// Return the outcome that the current status line reports.
+    ///
+    /// The kind is `Info` when no status shows.
+    #[must_use]
+    pub const fn status_kind(&self) -> StatusKind {
+        self.status_kind
+    }
+
+    fn set_status(&mut self, kind: StatusKind, message: String) {
+        self.status = Some(message);
+        self.status_kind = kind;
+    }
+
+    fn clear_status(&mut self) {
+        self.status = None;
+        self.status_kind = StatusKind::Info;
     }
 
     /// Iterate over entries surviving the current filter.
@@ -2931,23 +3004,21 @@ impl LibraryState {
         }
     }
 
+    /// Replace the search text.
+    ///
+    /// A changed query puts the selection on its best match, so Enter opens the entry at the top
+    /// of the list. Version 0.4 does the same: each change rebuilds the table, and the cursor
+    /// returns to the first row (`src/skit/tui.py:398-412`, `:614-619`).
+    fn set_query(&mut self, query: String) {
+        if self.query == query {
+            return;
+        }
+        self.query = query;
+        self.recompute_visible(None);
+    }
+
     fn recompute_visible(&mut self, preferred: Option<&Slug>) {
-        let pattern = Pattern::new(
-            &self.query,
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
-        let mut matcher = Matcher::new(MatcherConfig::DEFAULT);
-        let mut utf32 = Vec::new();
-        self.visible = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                fuzzy_matches(entry, &pattern, &mut matcher, &mut utf32).then_some(index)
-            })
-            .collect();
+        self.visible = ranked_matches(&self.entries, &self.query);
         self.selected = if self.visible.is_empty() {
             None
         } else {
@@ -2994,12 +3065,49 @@ fn moved_focus(current: usize, field_count: usize, delta: isize) -> usize {
     }
 }
 
-fn fuzzy_matches(
+/// Return the indexes of the entries that match `query`, the best match first.
+///
+/// The filter is the version 0.4 case-insensitive subsequence match over the name and the
+/// description (`src/skit/tui.py:85-95`), and also over the slug and the kind. Version 0.4 keeps
+/// the matches in recency order, so a weak match in a description can stand above the entry that
+/// the query names. This order puts an entry whose name starts with the query first, then the
+/// higher match score, then the order of `entries`, which is the recency order.
+fn ranked_matches(entries: &[EntrySummary], query: &str) -> Vec<usize> {
+    let pattern = Pattern::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+    );
+    let prefix = query.trim().to_lowercase();
+    let mut matcher = Matcher::new(MatcherConfig::DEFAULT);
+    let mut utf32 = Vec::new();
+    let mut ranked = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let score = match_score(entry, &pattern, &mut matcher, &mut utf32)?;
+            let names_query = !prefix.is_empty() && entry.name.to_lowercase().starts_with(&prefix);
+            Some((index, names_query, score))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    ranked.into_iter().map(|(index, _, _)| index).collect()
+}
+
+/// Return the best score of `entry` for `pattern`, or `None` when no searched text matches.
+fn match_score(
     entry: &EntrySummary,
     pattern: &Pattern,
     matcher: &mut Matcher,
     utf32: &mut Vec<char>,
-) -> bool {
+) -> Option<u32> {
     let historical = format!("{} {}", entry.name, entry.description);
     [
         historical.as_str(),
@@ -3007,9 +3115,6 @@ fn fuzzy_matches(
         entry.kind.as_str(),
     ]
     .into_iter()
-    .any(|candidate| {
-        pattern
-            .score(Utf32Str::new(candidate, utf32), matcher)
-            .is_some()
-    })
+    .filter_map(|candidate| pattern.score(Utf32Str::new(candidate, utf32), matcher))
+    .max()
 }

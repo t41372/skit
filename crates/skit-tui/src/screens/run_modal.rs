@@ -110,6 +110,13 @@ impl RunModalSession {
         }
     }
 
+    /// Each footer chip of the open file picker, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.file
+            .as_ref()
+            .map_or_else(Vec::new, |file| file.pointer_targets(&self.file_geometry))
+    }
+
     #[cfg(test)]
     pub(crate) fn perturb_agent_review_state(&mut self) {
         self.token_view_height = self.token_view_height.saturating_add(1);

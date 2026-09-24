@@ -134,7 +134,7 @@ impl PathMap {
             | Action::RunPresetSaved { .. }
             | Action::AddCompleted { .. }
             | Action::Complete { .. }
-            | Action::SetStatus(_)
+            | Action::SetStatus { .. }
             | Action::ClearStatus => StatusProjectionCause::Replaced,
             _ => StatusProjectionCause::None,
         };
@@ -864,7 +864,7 @@ fn add_session_stage(fields: &Value) -> Result<Option<skit_ui::AddStage>, String
 /// each fact that does not depend on the raw characters: where the ends are, that the cursor is
 /// inside the value, and the order of two cursors. Two values of the same length keep every
 /// cursor.
-pub(super) fn derived_cursor(cursor: usize, raw: usize, stable: usize) -> usize {
+pub(crate) fn derived_cursor(cursor: usize, raw: usize, stable: usize) -> usize {
     if cursor >= raw {
         return stable;
     }

@@ -1,11 +1,48 @@
 //! Shared terminal pointer geometry.
 
 use ratatui_core::layout::Rect;
-use ratatui_crossterm::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui_crossterm::crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
 use ratatui_textarea::{CursorMove, TextArea as RichTextArea};
 use tui_input::{Input, InputRequest};
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
+
+/// The last cell that the pointer reported, for the hover look of chips and buttons.
+///
+/// Mouse capture reports every move, so the cell follows the pointer. The terminal reports no
+/// leave event: a lost focus clears the cell instead.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PointerPosition {
+    cell: Option<(u16, u16)>,
+}
+
+impl PointerPosition {
+    /// Follow one terminal event. Return whether the cell changed.
+    pub(crate) fn follow(&mut self, event: &Event) -> bool {
+        let next = match event {
+            Event::Mouse(mouse) => Some((mouse.column, mouse.row)),
+            Event::FocusLost => None,
+            Event::FocusGained | Event::Key(_) | Event::Paste(_) | Event::Resize(_, _) => {
+                return false;
+            }
+        };
+        std::mem::replace(&mut self.cell, next) != next
+    }
+
+    /// Report whether the pointer rests on `rect`.
+    pub(crate) fn is_over(self, rect: Rect) -> bool {
+        self.cell
+            .is_some_and(|(column, row)| contains(rect, column, row))
+    }
+
+    /// The cell, or null, for the canonical session snapshot.
+    pub(crate) fn snapshot(self) -> serde_json::Value {
+        self.cell.map_or(
+            serde_json::Value::Null,
+            |(column, row)| serde_json::json!({"column": column, "row": row}),
+        )
+    }
+}
 
 /// A typed hit map. The last rendered region is the topmost region.
 #[derive(Clone, Debug)]

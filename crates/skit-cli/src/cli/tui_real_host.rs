@@ -20,6 +20,8 @@ pub(super) use observation::{
     ArtifactLeakOracleFact, HostObservation, LeakOracleFacts, ModifiedLeakOraclePair,
     RendererDraftFact, RendererReviewNameFact, SourceIdentityLeakOraclePair,
 };
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(super) use projection_cause::derived_cursor;
 pub(super) use seed::{
     WalkerDirectoryRoot, WalkerDirectorySeed, WalkerExternalReferenceSeed, WalkerExternalSeed,
     WalkerFilePickerTree, WalkerFormSeed, WalkerLastRunSeed, WalkerSeedSpec,

@@ -20,7 +20,7 @@
     [{"text": "              │                                                                      │              ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "              │                                                                      │              ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "              │                                                                      │              ", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "              │                          Remove     ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Keep ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "                           │              ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "              │                         y Remove  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Esc Keep ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "                         │              ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "              │                                                                      │              ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "              └──────────────────────────────────────────────────────────────────────┘              ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}],

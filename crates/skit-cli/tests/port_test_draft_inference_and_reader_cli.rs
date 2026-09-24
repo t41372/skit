@@ -598,7 +598,7 @@ fn test_docopt_python_manage_prints_no_flip_note() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    assert!(!combined(&output).contains("The run form now asks")); // no false "form set aside"
+    assert!(!combined(&output).contains("The launch menu now asks")); // no false "form set aside"
 }
 
 #[test]
@@ -644,7 +644,7 @@ fn test_dynamic_getopts_manage_prints_no_flip_note() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    assert!(!combined(&output).contains("The run form now asks"));
+    assert!(!combined(&output).contains("The launch menu now asks"));
 }
 
 // ==========================================================================

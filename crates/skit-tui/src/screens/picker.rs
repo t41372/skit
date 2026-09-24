@@ -147,6 +147,16 @@ impl PromptCandidatePickerSession {
         self.click.cancel();
     }
 
+    /// Each visible footer chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self, geometry: &ChoicePickerGeometry) -> Vec<(Rect, bool)> {
+        geometry
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.target, ChoicePickerHit::Done | ChoicePickerHit::Cancel))
+            .map(|hit| (hit.area, self.click.pressed() == Some(&hit.target)))
+            .collect()
+    }
+
     pub(crate) fn agent_review_snapshot(
         &self,
     ) -> Result<AgentReviewNode, AgentReviewSnapshotError> {
@@ -860,6 +870,26 @@ impl FilePickerSession {
 
     pub(crate) fn cancel_click(&mut self) {
         self.click.cancel();
+    }
+
+    /// Each visible footer chip, and whether a primary press holds it.
+    ///
+    /// The footer chips are the only targets with these actions, so the action names the chip.
+    pub(crate) fn pointer_targets(&self, geometry: &FilePickerGeometry) -> Vec<(Rect, bool)> {
+        geometry
+            .hits
+            .iter()
+            .filter(|hit| {
+                matches!(
+                    hit.target,
+                    FilePickerHit::Accept
+                        | FilePickerHit::Cancel
+                        | FilePickerHit::Up
+                        | FilePickerHit::Hidden
+                )
+            })
+            .map(|hit| (hit.area, self.click.pressed() == Some(&hit.target)))
+            .collect()
     }
 
     pub(crate) fn agent_review_snapshot(
@@ -1615,7 +1645,21 @@ fn render_file_footer(
             format!("[Backspace] {}", text(locale, "Back")),
             FilePickerHit::Up,
         ),
-        ("[Ctrl+H] .".to_owned(), FilePickerHit::Hidden),
+        // The chip says what Ctrl+H does next, in words: a lone "." named nothing.
+        (
+            format!(
+                "[Ctrl+H] {}",
+                text(
+                    locale,
+                    if session.contract.show_hidden() {
+                        "Hide hidden files"
+                    } else {
+                        "Show hidden files"
+                    },
+                )
+            ),
+            FilePickerHit::Hidden,
+        ),
     ];
     let (positioned, rows, content_width) =
         scrollable_picker_footer(items, area, &mut session.footer_scroll);

@@ -1200,8 +1200,26 @@ pub fn render_settings(
     session.body_editables.clear();
     for (index, item) in items.iter().enumerate() {
         match &item.item {
+            // The lines that come right after a control explain it, so they scroll with it. A
+            // keyboard move that brings the control into view brings its explanation too. The
+            // resync report needs this: it appears under its control, and the chord that asks for
+            // it moves the keyboard to that control.
             Item::Control { key, .. } => {
-                session.spans.insert(key.clone(), (item.start, item.height));
+                let end = items
+                    .iter()
+                    .skip(index.saturating_add(1))
+                    .take_while(|later| matches!(later.item, Item::Copy(_)))
+                    .last()
+                    .unwrap_or(item);
+                session.spans.insert(
+                    key.clone(),
+                    (
+                        item.start,
+                        end.start
+                            .saturating_add(end.height)
+                            .saturating_sub(item.start),
+                    ),
+                );
             }
             // A section is a scroll target too, so a deep link can put one under the eye even when
             // it has nothing to edit (`src/skit/tui_settings.py:876-882`). The span covers the
@@ -1909,7 +1927,7 @@ mod tests {
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("{needle} is not on screen:\n{frame}"))
         };
-        let heading = row_of("Parameters (the run form's fields)");
+        let heading = row_of("Parameters (fields in the launch menu)");
         // The row reads out its name, its type and its default in one line, exactly as v0.4 does.
         let managed_row = row_of("GREETING  str 'world'");
         let offer = row_of("Detected but not yet managed — tick to manage:");
@@ -2010,7 +2028,7 @@ mod tests {
                 assert!(compact.contains(label), "missing {label}: {frame}");
             }
             for source in [
-                "Form label:",
+                "Label in the launch menu:",
                 "secret (never saved to disk)",
                 "env variable to read it from (optional)",
             ] {
@@ -2050,7 +2068,7 @@ mod tests {
         view.sections = vec![SettingsSection::new(
             SettingsSectionId::Presets,
             vec![SettingsItem::note(
-                "None yet — press Ctrl+S inside the run form to save one.",
+                "None yet — press Ctrl+S in the launch menu to save one.",
             )],
         )];
         let mut session = SettingsScreenSession::default();
@@ -2062,7 +2080,7 @@ mod tests {
 
         assert_eq!(geometry.first_visible, 2, "the copy must be top-clipped");
         assert!(
-            frame.contains("run form to save"),
+            frame.contains("menu to save one."),
             "the surviving later copy row is missing:\n{frame}"
         );
         assert!(
@@ -2283,7 +2301,7 @@ mod tests {
         let (terminal, _) = draw(&mut session, &empty, DEMO_WIDTH, DEMO_HEIGHT);
         let frame = rendered(terminal.backend().buffer());
         assert!(
-            frame.contains("None yet — press Ctrl+S inside the run form to save one."),
+            frame.contains("None yet — press Ctrl+S in the launch menu to save one."),
             "the deep link did not reach the presets:\n{frame}"
         );
 
@@ -3930,7 +3948,7 @@ mod tests {
                 let cell = &terminal.backend().buffer()[(39, row)];
                 cell.symbol() == "█" && cell.fg == Color::Rgb(0x4A, 0x41, 0x3C)
             }),
-            "the overflow scrollbar lost its indigo thumb"
+            "the overflow scrollbar lost its version 0.4 thumb color"
         );
     }
 

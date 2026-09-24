@@ -43,7 +43,9 @@ the same actions, deterministic behavior.
 
 `skit run` passes the launched process's own exit code through untouched — even
 125–127 (docker convention: 1–124 always belong to your script). A script killed
-by signal N reports `128+N`, matching POSIX shells. `skit doctor`'s exit code
+by signal N reports `128+N`, matching POSIX shells. A run that exits with a code
+other than 0 also prints `Run exited with code N` on stderr, so a pipe that reads
+stdout gets only the output of the script. `skit doctor`'s exit code
 reflects uv availability only (0 = present or not needed, 1 = required but
 missing); per-entry warnings never change it.
 
@@ -84,7 +86,7 @@ apply to the chosen lane.
 | `--runner NAME` | prompt: override the pinned runner for this run |
 | `--dry-run` | print the exact command, run nothing |
 | `--no-input` | never prompt; a required value with no source fails with 125 |
-| `--plain` | line prompts instead of the TUI mini-form |
+| `--plain` | line prompts instead of the inline launch menu |
 | `--raw` | run the stored copy as-is: no injection, no remembered args; refused for prompt/command (exit 2) and incompatible with `--set`/`-p`/`--save-preset` |
 | `--forget-args` | erase the remembered `--` tail before this run |
 

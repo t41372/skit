@@ -578,8 +578,9 @@ fn a_scrolled_run_form_keeps_a_positive_hit_for_its_focused_row() {
         Some(0),
         "a wheel scroll must not move focus"
     );
+    // The named navigation chips take one more footer row, so this form scrolls by two rows.
     assert_eq!(
-        after.first_visible, 1,
+        after.first_visible, 2,
         "the wheel stops at the last scrollable row of this form"
     );
     let rect = hit_rect(&after, HitTarget::FocusField(0));

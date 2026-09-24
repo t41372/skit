@@ -35,9 +35,10 @@ use skit_application::path_completion::{
 use skit_domain::parameters::ParameterType;
 use skit_i18n::{Locale, format_text, text};
 use skit_ui::{
-    Action, AddAction, AddWorkflowState, ChoicePresentation, FormControl, FormField, FormView,
-    InputMode, LibraryState, ModalState, RunDegradationNotice, RunField, RunFieldRole, RunFormView,
-    RunTokenError, RunValidationError, RunnerEditorOwner, Screen, UiBinding, UiCommand,
+    Action, AddAction, AddWorkflowState, ChoicePresentation, FormControl, FormField, FormPurpose,
+    FormView, InputMode, LibraryState, ModalState, RunDegradationNotice, RunField, RunFieldRole,
+    RunFormView, RunTokenError, RunValidationError, RunnerEditorOwner, Screen, UiBinding,
+    UiCommand,
 };
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
@@ -58,8 +59,9 @@ use crate::{
     },
     map_event,
     pointer::{
-        ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, HitMap, TextAreaGeometry,
-        TextAreaViewport, display_cursor, display_scroll, is_primary_down, secret_display,
+        ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, HitMap, PointerPosition,
+        TextAreaGeometry, TextAreaViewport, display_cursor, display_scroll, is_primary_down,
+        secret_display,
     },
     rowclip::{RowClip, bounded_textarea_lines, editor_cursor_virtual_row},
     run_field_command_action,
@@ -68,7 +70,9 @@ use crate::{
     screens::management::{
         HealthEventHandling, HealthScreenSession, RunnerEditorEventHandling, RunnerEditorSession,
     },
-    screens::modal::{ConfirmRemoveEvent, ConfirmRemoveSession, HelpScreenSession},
+    screens::modal::{
+        ConfirmDiscardSession, ConfirmRemoveEvent, ConfirmRemoveSession, HelpScreenSession,
+    },
     screens::picker::{
         ChoicePickerGeometry, FilePickerEvent, FilePickerGeometry, FilePickerSession,
         MemoryFilePickerSource, PromptCandidatePickerEvent, PromptCandidatePickerSession,
@@ -460,6 +464,19 @@ mod agent_review_tests {
         assert_field_changed(&baseline, &session, "confirm_remove");
 
         let mut session = baseline.try_fork().unwrap();
+        session.confirm_discard.perturb_agent_review_state();
+        assert_field_changed(&baseline, &session, "confirm_discard");
+
+        let mut session = baseline.try_fork().unwrap();
+        assert!(session.pointer.follow(&Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        })));
+        assert_field_changed(&baseline, &session, "pointer");
+
+        let mut session = baseline.try_fork().unwrap();
         session.run.visible_height = 1;
         assert_field_changed(&baseline, &session, "run");
 
@@ -566,6 +583,30 @@ mod agent_review_tests {
             outcome: LocalActionOutcome::Consumed,
         });
         assert_field_changed(&baseline, &session, "local_actions");
+    }
+
+    // Ways this can fail: the notice ends but no frame drops it, the loop stops polling while
+    // the notice shows, or a notice inside its time is dropped.
+    #[test]
+    fn an_ended_quit_notice_asks_for_a_frame_and_stops_the_poll() {
+        let mut session = TuiSession::default();
+        assert!(!session.has_timed_notice());
+        assert!(!session.refresh_background());
+
+        session
+            .quit_toast
+            .show("Press Ctrl+C again to quit", 60_000);
+        assert!(session.has_timed_notice());
+        assert!(
+            !session.refresh_background(),
+            "a notice inside its time stays"
+        );
+        assert!(session.has_timed_notice());
+
+        session.quit_toast.show("Press Ctrl+C again to quit", -1);
+        assert!(session.refresh_background());
+        assert!(!session.has_timed_notice());
+        assert!(!session.refresh_background());
     }
 
     #[test]
@@ -944,6 +985,7 @@ pub struct TuiSession {
     library: LibraryScreenSession,
     help: HelpScreenSession,
     confirm_remove: ConfirmRemoveSession,
+    confirm_discard: ConfirmDiscardSession,
     run: RunWidgetSession,
     path_suggestions: PathSuggestionSession,
     run_modal: RunModalSession,
@@ -962,6 +1004,8 @@ pub struct TuiSession {
     footer: FooterSession,
     clicks: HitMap<TopLevelClickTarget>,
     top_level_click: ClickTracker<TopLevelClickTarget>,
+    /// The cell under the pointer, for the hover look of chips and buttons.
+    pointer: PointerPosition,
     local_actions: LocalActionInventory,
     /// The color choices of every frame this session draws.
     appearance: Appearance,
@@ -1583,6 +1627,7 @@ impl TuiSession {
             library,
             help,
             confirm_remove,
+            confirm_discard,
             run,
             path_suggestions,
             run_modal,
@@ -1601,6 +1646,7 @@ impl TuiSession {
             footer,
             clicks,
             top_level_click,
+            pointer,
             local_actions,
             appearance: _,
         } = self;
@@ -1631,6 +1677,7 @@ impl TuiSession {
             library.agent_review_snapshot()?,
             help.agent_review_snapshot(),
             confirm_remove.agent_review_snapshot(),
+            confirm_discard.agent_review_snapshot(),
             run.agent_review_snapshot()?,
             path_suggestions.agent_review_snapshot()?,
             run_modal.agent_review_snapshot()?,
@@ -1649,6 +1696,7 @@ impl TuiSession {
             footer.agent_review_snapshot(),
             top_level_hit_map_snapshot(clicks)?,
             top_level_click_snapshot(top_level_click)?,
+            snapshot_node("pointer", [("cell", pointer.snapshot())]),
             crate::agent_review::local_action_inventory(local_actions)?,
         ))
     }
@@ -1669,6 +1717,7 @@ impl TuiSession {
             library: self.library.clone(),
             help: self.help.clone(),
             confirm_remove: self.confirm_remove.clone(),
+            confirm_discard: self.confirm_discard.clone(),
             run: self.run.clone(),
             path_suggestions: self.path_suggestions.try_fork()?,
             run_modal: self.run_modal.clone(),
@@ -1687,6 +1736,7 @@ impl TuiSession {
             footer: self.footer.clone(),
             clicks: self.clicks.clone(),
             top_level_click: self.top_level_click.clone(),
+            pointer: self.pointer,
             local_actions: self.local_actions.clone(),
             appearance: self.appearance,
         })
@@ -1875,14 +1925,111 @@ impl TuiSession {
     }
 
     /// Draw every later frame with `appearance`.
-    pub(crate) const fn set_appearance(&mut self, appearance: Appearance) {
+    pub const fn set_appearance(&mut self, appearance: Appearance) {
         self.appearance = appearance;
     }
 
     /// Apply completed background work before the next draw.
+    ///
+    /// The quit notice counts too: its time can end while no key arrives, and the frame must
+    /// then drop it.
     #[must_use]
     pub fn refresh_background(&mut self) -> bool {
-        self.path_suggestions.refresh()
+        let notice = self.quit_toast.occupied();
+        self.quit_toast.clear_if_expired();
+        let notice_ended = notice && !self.quit_toast.occupied();
+        self.path_suggestions.refresh() || notice_ended
+    }
+
+    /// Report whether a notice with a time limit shows, so the terminal must wake up to clear it.
+    #[must_use]
+    pub(crate) const fn has_timed_notice(&self) -> bool {
+        self.quit_toast.occupied()
+    }
+
+    /// Follow the pointer for the hover look of chips and buttons.
+    ///
+    /// Return whether the chip or button under the pointer changed, so the frame must be drawn
+    /// again. A move inside one chip, or over no chip at all, needs no new frame.
+    #[must_use]
+    pub fn track_pointer(&mut self, event: &Event, state: &LibraryState) -> bool {
+        let before = self.hovered_target(state);
+        if !self.pointer.follow(event) {
+            return false;
+        }
+        before != self.hovered_target(state)
+    }
+
+    /// Every chip and button of the frame, and whether a primary press holds it.
+    ///
+    /// The list covers the shared footer, the chips of a run field, the action footers of Health
+    /// and the runner editor, the buttons and agent chips of Preferences, the chips of both
+    /// confirmation dialogs, the buttons and footer chips of Add, and the footer chips of the file
+    /// picker and of the prompt variable picker.
+    fn pointer_targets(&self, state: &LibraryState) -> Vec<(Rect, bool)> {
+        let mut targets = self
+            .clicks
+            .regions()
+            .iter()
+            .filter(|(_, target)| {
+                matches!(
+                    target,
+                    TopLevelClickTarget::Command(_) | TopLevelClickTarget::RunFieldCommand(..)
+                )
+            })
+            .map(|(rect, target)| (*rect, self.top_level_click.pressed() == Some(target)))
+            .collect::<Vec<_>>();
+        match (state.modal(), state.screen()) {
+            (Some(ModalState::ConfirmRemove { .. }), _) => {
+                targets.extend(self.confirm_remove.pointer_targets());
+            }
+            (Some(ModalState::RunnerEditor { .. }), _) => {
+                targets.extend(self.runner_editor.pointer_targets());
+            }
+            (Some(ModalState::RunFilePicker { .. }), _) => {
+                targets.extend(self.run_modal.pointer_targets());
+            }
+            (None, Screen::Health(_)) => targets.extend(self.health.pointer_targets()),
+            (None, Screen::Preferences(view)) => {
+                targets.extend(self.preferences.pointer_targets(view));
+            }
+            (None, Screen::Add(_)) => match &self.add_overlay {
+                Some(AddOverlay::File { session, geometry }) => {
+                    targets.extend(session.pointer_targets(geometry));
+                }
+                Some(AddOverlay::Prompt { session, geometry }) => {
+                    targets.extend(session.pointer_targets(geometry));
+                }
+                None => targets.extend(self.add.pointer_targets(&self.add_geometry, self.pointer)),
+            },
+            (None, Screen::Settings(_)) => {
+                if let Some((session, geometry)) = &self.settings_prompt_overlay {
+                    targets.extend(session.pointer_targets(geometry));
+                }
+            }
+            _ => {}
+        }
+        targets
+    }
+
+    fn hovered_target(&self, state: &LibraryState) -> Option<Rect> {
+        self.pointer_targets(state)
+            .into_iter()
+            .rev()
+            .map(|(rect, _)| rect)
+            .find(|rect| self.pointer.is_over(*rect))
+    }
+
+    /// Draw the hover and pressed looks over the frame that was just rendered.
+    pub(crate) fn paint_pointer_feedback(&self, buffer: &mut Buffer, state: &LibraryState) {
+        let hovered = self.hovered_target(state);
+        for (rect, pressed) in self.pointer_targets(state) {
+            if pressed {
+                theme::patch_pressed(buffer, rect);
+            } else if hovered == Some(rect) {
+                theme::patch_hover(buffer, rect);
+            }
+        }
     }
 
     /// Report whether the terminal must poll for path-completion progress.
@@ -2027,6 +2174,11 @@ impl TuiSession {
                 ConfirmRemoveEvent::Ignored => {}
             }
         }
+        if matches!(state.modal(), Some(ModalState::ConfirmDiscardChanges))
+            && let Some(handling) = self.confirm_discard.handle_event(&event)
+        {
+            return handling;
+        }
         if let Some(
             modal @ (ModalState::RunPresetName { .. }
             | ModalState::RunTokenMenu { .. }
@@ -2147,6 +2299,12 @@ impl TuiSession {
                 } else {
                     skit_ui::SettingsAction::FocusPrevious
                 }))
+            }
+            // The picker is this frontend's own overlay, so the footer chip opens it here, exactly
+            // as `Ctrl+O` and the inline chip do.
+            (UiCommand::ChooseSettingsVariables, Screen::Settings(view)) => {
+                self.open_settings_prompt_picker(view);
+                EventHandling::Consumed
             }
             (_, _) => {
                 EventHandling::Action(command_action(command, state.command_context(), geometry))
@@ -2350,6 +2508,13 @@ impl TuiSession {
     pub(crate) fn begin_render(&mut self, state: &LibraryState, locale: Locale) {
         self.quit_toast.clear_if_expired();
         self.clicks.clear();
+        // A confirmation opens with the focus on its safe answer every time.
+        if !matches!(state.modal(), Some(ModalState::ConfirmRemove { .. })) {
+            self.confirm_remove.reset();
+        }
+        if !matches!(state.modal(), Some(ModalState::ConfirmDiscardChanges)) {
+            self.confirm_discard.reset();
+        }
         self.search.sync(state.query());
         if let Screen::Run(form) = state.screen() {
             self.run.sync(form);
@@ -2545,9 +2710,42 @@ impl TuiSession {
     ) -> ViewGeometry {
         self.form.sync(form);
         self.form.clicks.clear();
+        // Rename asks for one name, so it is a small dialog in the middle of the screen, not a
+        // whole screen for one field (C8 of the 2026-11 audit). The dialog repeats the promise
+        // that Entry settings gives beside the same name.
+        let note = (form.purpose == FormPurpose::Rename).then(|| {
+            text(
+                locale,
+                "Renaming keeps everything — remembered values, presets, the stored copy.",
+            )
+        });
+        let (panel, note_height) = note
+            .as_deref()
+            .map_or((area, 0), |note| form_dialog_area(area, form, note));
+        if panel != area {
+            frame.render_widget(ratatui_widgets::clear::Clear, panel);
+        }
         let block = panel_block(crate::form_title(locale, form), Panel::Form);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = block.inner(panel);
+        frame.render_widget(block, panel);
+        let fields_height = inner.height.saturating_sub(note_height);
+        let note_area = Rect {
+            y: inner.y.saturating_add(fields_height),
+            height: inner.height.saturating_sub(fields_height),
+            ..inner
+        };
+        let inner = Rect {
+            height: fields_height,
+            ..inner
+        };
+        if let (Some(note), false) = (note, note_area.is_empty()) {
+            frame.render_widget(
+                Paragraph::new(note.into_owned())
+                    .wrap(Wrap { trim: false })
+                    .style(theme::hint()),
+                note_area,
+            );
+        }
         self.form.prepare_layout(form, inner);
         self.form.editables = vec![None; self.form.controls.len()];
         self.form.textarea_editables = vec![None; self.form.controls.len()];
@@ -2611,6 +2809,15 @@ impl TuiSession {
         self.help.render(frame, area, locale)
     }
 
+    pub(crate) fn render_confirm_discard(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        locale: Locale,
+    ) -> ViewGeometry {
+        self.confirm_discard.render(frame, area, locale)
+    }
+
     pub(crate) fn render_confirm_remove(
         &mut self,
         frame: &mut Frame,
@@ -2652,6 +2859,10 @@ impl TuiSession {
         };
         let layout = run_layout(form, locale, content.width);
         self.run.prepare_layout(&layout, form.focused(), content);
+        let preset_index = form
+            .fields()
+            .iter()
+            .position(|field| matches!(field.role, RunFieldRole::Preset));
         self.run.editables = vec![None; self.run.controls.len()];
         self.run.textarea_editables = vec![None; self.run.controls.len()];
         self.run.select_areas = vec![None; self.run.controls.len()];
@@ -2694,9 +2905,36 @@ impl TuiSession {
                             frame,
                             RowClip::new(item.height, clipped_top, visible),
                             *index,
+                            preset_index,
                             locale,
                             &mut hits,
                         );
+                        // A refused value marks the border of its box, so the eye finds the
+                        // field before it reads the ✗ line under it.
+                        let refused = form
+                            .fields()
+                            .get(*index)
+                            .is_some_and(|field| field.validation_error.is_some());
+                        let boxed = matches!(
+                            self.run.controls.get(*index),
+                            Some(
+                                WidgetControl::Input { .. }
+                                    | WidgetControl::TextArea { .. }
+                                    | WidgetControl::Choice {
+                                        presentation: ChoicePresentation::Picker,
+                                        ..
+                                    }
+                            )
+                        );
+                        if refused && boxed {
+                            theme::patch_invalid_border(
+                                frame.buffer_mut(),
+                                visible,
+                                clipped_top == 0,
+                                clipped_top.saturating_add(usize::from(visible.height))
+                                    >= item.height,
+                            );
+                        }
                     }
                 }
                 RunRenderItem::Spacer => {}
@@ -2711,7 +2949,7 @@ impl TuiSession {
             inner,
             &mut scrollbar,
         );
-        self.render_open_dropdowns(frame);
+        self.render_open_dropdowns(frame, preset_index, locale);
         hits.retain(|hit| {
             self.run
                 .dropdown_regions
@@ -2899,6 +3137,7 @@ impl TuiSession {
         frame: &mut Frame,
         clip: RowClip,
         index: usize,
+        preset_index: Option<usize>,
         locale: Locale,
         hits: &mut Vec<HitRegion>,
     ) {
@@ -2968,7 +3207,8 @@ impl TuiSession {
                 ..
             } => {
                 let placeholder = text(locale, "Select");
-                let region = Select::new(options, state)
+                let labels = choice_labels(options, preset_index == Some(index), locale);
+                let region = Select::new(&labels, state)
                     .label("")
                     .placeholder(&placeholder)
                     .style(select_style)
@@ -3059,7 +3299,12 @@ impl TuiSession {
         }
     }
 
-    fn render_open_dropdowns(&mut self, frame: &mut Frame) {
+    fn render_open_dropdowns(
+        &mut self,
+        frame: &mut Frame,
+        preset_index: Option<usize>,
+        locale: Locale,
+    ) {
         let screen = frame.area();
         for (index, control) in self.run.controls.iter().enumerate() {
             let WidgetControl::Choice {
@@ -3076,7 +3321,8 @@ impl TuiSession {
                     self.run.dropdown_regions[index].clear();
                     continue;
                 };
-                let regions = Select::new(options, state)
+                let labels = choice_labels(options, preset_index == Some(index), locale);
+                let regions = Select::new(&labels, state)
                     .style(theme::select_style())
                     .render_dropdown(frame, anchor, screen);
                 self.run.dropdown_regions[index] = regions;
@@ -3519,7 +3765,10 @@ impl TuiSession {
                 let response = state.handle_event(&Event::Key(key));
                 if response.is_none() {
                     return match key.code {
-                        KeyCode::Enter | KeyCode::Down => self.move_form_focus(true),
+                        // Enter submits the dialog, as the footer says (A11 of the 2026-11 audit:
+                        // Enter in the Rename box only moved the focus).
+                        KeyCode::Enter => EventHandling::Action(Action::Submit),
+                        KeyCode::Down => self.move_form_focus(true),
                         KeyCode::Up => self.move_form_focus(false),
                         KeyCode::PageUp | KeyCode::PageDown => {
                             let _ = self.form.scroll.handle_key(&key, self.form.visible_height);
@@ -4536,6 +4785,31 @@ fn form_control_height(field: &FormField) -> usize {
     }
 }
 
+/// The widest Rename dialog. It keeps a margin around the dialog on a wide terminal.
+const FORM_DIALOG_WIDTH: u16 = 64;
+
+/// Place a form dialog in the middle of `area`, and return it with the height of its note.
+///
+/// The dialog is as tall as its border, its fields, and the wrapped note. On a short terminal the
+/// note gives its rows to the fields first.
+fn form_dialog_area(area: Rect, form: &FormView, note: &str) -> (Rect, u16) {
+    let width = area.width.min(FORM_DIALOG_WIDTH);
+    let fields = form.fields.iter().map(form_control_height).sum::<usize>();
+    let chrome = u16::try_from(fields).unwrap_or(u16::MAX).saturating_add(2);
+    let note_lines = Paragraph::new(note)
+        .wrap(Wrap { trim: false })
+        .line_count(width.saturating_sub(2).max(1));
+    let note_height = u16::try_from(note_lines)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(chrome));
+    let height = chrome.saturating_add(note_height).min(area.height);
+    let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+    let y = area
+        .y
+        .saturating_add(area.height.saturating_sub(height) / 2);
+    (Rect::new(x, y, width, height), note_height)
+}
+
 fn widget_control(field: &RunField) -> WidgetControl {
     match &field.control {
         FormControl::Text(control) if control.multiline && !control.secret => {
@@ -4958,7 +5232,7 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
                     Span::styled(
                         text(
                             locale,
-                            "none yet — fill the form and press Ctrl+S to save one",
+                            "none yet — fill in the fields and press Ctrl+S to save one",
                         )
                         .into_owned(),
                         theme::hint(),
@@ -5158,10 +5432,13 @@ fn run_field_notes(field: &RunField, locale: Locale) -> Vec<RunCopy> {
         });
     }
     if let Some(error) = field.validation_error {
-        notes.push(run_copy(
-            run_validation_message(field, error, locale),
-            theme::status(Status::Danger),
-        ));
+        // The ✗ glyph marks the line as an error before the words do, as a status line does.
+        notes.push(RunCopy {
+            line: Line::from(theme::status_spans(
+                format!("✗ {}", run_validation_message(field, error, locale)),
+                Status::Danger,
+            )),
+        });
     }
     notes
 }
@@ -5313,6 +5590,23 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
 }
 
 /// The run form's scroll affordance colour.
+/// The text of each option of a run-form picker.
+///
+/// The empty option of the preset picker means "no preset": it restores the last values. Version
+/// 0.4 labels it `↩ last values` (`src/skit/tui_form.py:747`). Every other option shows its value.
+fn choice_labels(options: &[String], preset: bool, locale: Locale) -> Vec<String> {
+    options
+        .iter()
+        .map(|option| {
+            if preset && option.is_empty() {
+                text(locale, "↩ last values").into_owned()
+            } else {
+                option.clone()
+            }
+        })
+        .collect()
+}
+
 fn run_scrollbar_style() -> Style {
     theme::scrollbar()
 }
@@ -5783,7 +6077,7 @@ mod textarea_band_tests {
         session.run.dropdown_regions.push(Vec::new());
         let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
         terminal
-            .draw(|frame| session.render_open_dropdowns(frame))
+            .draw(|frame| session.render_open_dropdowns(frame, None, Locale::En))
             .unwrap();
         assert!(
             session.run.dropdown_regions[0].is_empty(),
@@ -6867,6 +7161,7 @@ mod textarea_band_tests {
                     frame,
                     RowClip::new(1, 0, Rect::new(0, 0, 24, 1)),
                     0,
+                    None,
                     Locale::En,
                     &mut Vec::new(),
                 );
@@ -7140,22 +7435,46 @@ mod textarea_band_tests {
                 geometry = session.render_form(frame, frame.area(), &form, Locale::En);
             })
             .unwrap();
-        assert_eq!(
-            session
-                .advertised_command_bindings(&library, UiCommand::FocusNext)
-                .iter()
-                .map(|binding| binding.key)
-                .collect::<Vec<_>>(),
-            [skit_ui::UiKey::Tab]
-        );
-        assert_eq!(
-            session
-                .advertised_command_bindings(&library, UiCommand::FocusPrevious)
-                .iter()
-                .map(|binding| binding.key)
-                .collect::<Vec<_>>(),
-            [skit_ui::UiKey::BackTab]
-        );
+        // A one-field form has no other field, so it advertises no field keys.
+        for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
+            assert!(
+                session
+                    .advertised_command_bindings(&library, command)
+                    .is_empty(),
+                "{command:?} is advertised for a single field"
+            );
+        }
+        // With a second field, the focused editor keeps Up and Down for its own lines.
+        let mut two_fields = form.clone();
+        two_fields
+            .fields
+            .push(FormField::text("name", "Name", "value"));
+        let mut two_library = LibraryState::default();
+        two_library.update(Action::Present(Screen::Form(two_fields.clone())));
+        let mut two_session = TuiSession::default();
+        terminal
+            .draw(|frame| {
+                let _ = two_session.render_form(frame, frame.area(), &two_fields, Locale::En);
+            })
+            .unwrap();
+        for (command, expected) in [
+            (UiCommand::FocusNext, skit_ui::UiKey::Tab),
+            (UiCommand::FocusPrevious, skit_ui::UiKey::BackTab),
+        ] {
+            assert_eq!(
+                two_session
+                    .advertised_command_bindings(&two_library, command)
+                    .iter()
+                    .map(|binding| binding.key)
+                    .collect::<Vec<_>>(),
+                [expected]
+            );
+        }
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
         for code in [KeyCode::Up, KeyCode::Up, KeyCode::Home] {
             assert_eq!(
                 session.handle_event(

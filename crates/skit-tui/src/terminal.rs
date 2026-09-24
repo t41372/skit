@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
@@ -21,10 +21,12 @@ use skit_application::path_completion::PathCompletionProvider;
 use skit_domain::Slug;
 use skit_i18n::{Locale, Localize, Message, detect_locale};
 use skit_ui::{
-    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, SubmittedValues,
+    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, StatusKind,
+    SubmittedValues,
 };
 use thiserror::Error;
 
+use crate::status_clock::StatusClock;
 use crate::{Appearance, EventHandling, TuiSession, ViewGeometry, render_with_session};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,6 +179,8 @@ fn dispatch_event(
     geometry: &ViewGeometry,
 ) -> TerminalDispatch {
     let resized = matches!(event, event::Event::Resize(_, _));
+    // A move of the pointer onto or off a chip changes only its look, so it asks for a frame.
+    let hover_changed = session.track_pointer(&event, state);
     match session.handle_event(event, state, geometry) {
         EventHandling::Action(action) => TerminalDispatch {
             action: Some(action),
@@ -188,7 +192,7 @@ fn dispatch_event(
         },
         EventHandling::Ignored => TerminalDispatch {
             action: None,
-            redraw: resized,
+            redraw: resized || hover_changed,
         },
     }
 }
@@ -405,19 +409,26 @@ where
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
+    let mut status = StatusClock::default();
     let outcome = loop {
         redraw = request_redraw(redraw, session.refresh_background());
+        redraw = request_redraw(redraw, tick_status(&mut status, &mut state));
         if redraw {
             terminal.draw(|frame| {
                 geometry = render_with_session(frame, &state, locale, &mut session);
             })?;
             redraw = false;
         }
-        let Some(event) =
-            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
-        else {
+        let wait = status.event_wait(
+            terminal_event_wait(
+                session.has_pending_path_completion() || session.has_timed_notice(),
+            ),
+            Instant::now(),
+        );
+        let Some(event) = read_terminal_event(wait)? else {
             continue;
         };
+        redraw = request_redraw(redraw, status.acknowledge(&mut state, &event));
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
         redraw = request_redraw(redraw, dispatched.redraw);
         if let Some(action) = dispatched.action {
@@ -561,11 +572,12 @@ fn add_workflow_outcome(action: &Action) -> Option<AddWorkflowOutcome> {
 /// host uses the same action, so a walk answers the refusal as the product answers it.
 #[must_use]
 pub fn preflight_refusal_status(error: &impl Localize, locale: Locale) -> Action {
-    Action::SetStatus(
-        Message::new("Error: {}")
+    Action::SetStatus {
+        kind: StatusKind::Error,
+        message: Message::new("Error: {}")
             .nested(error.message())
             .localize(locale),
-    )
+    }
 }
 
 /// Return the status action that the hosted terminal shows when the host fails one effect.
@@ -574,7 +586,19 @@ pub fn preflight_refusal_status(error: &impl Localize, locale: Locale) -> Action
 /// action, so a walk survives every host failure that the product survives.
 #[must_use]
 pub fn host_failure_status(error: &impl Localize, locale: Locale) -> Action {
-    Action::SetStatus(error.message().localize(locale))
+    Action::SetStatus {
+        kind: StatusKind::Error,
+        message: error.message().localize(locale),
+    }
+}
+
+/// Start the time of a status that the last change showed, and clear one whose time ended.
+///
+/// Return whether the state changed, so the loop draws again.
+fn tick_status(status: &mut StatusClock, state: &mut LibraryState) -> bool {
+    let now = Instant::now();
+    status.observe(state, now);
+    status.expire(state, now)
 }
 
 fn action_locale(action: &Action) -> Option<Locale> {
@@ -729,19 +753,26 @@ where
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
+    let mut status = StatusClock::default();
     let values = loop {
         redraw = request_redraw(redraw, session.refresh_background());
+        redraw = request_redraw(redraw, tick_status(&mut status, &mut state));
         if redraw {
             terminal.draw(|frame| {
                 geometry = render_with_session(frame, &state, locale, &mut session);
             })?;
             redraw = false;
         }
-        let Some(event) =
-            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
-        else {
+        let wait = status.event_wait(
+            terminal_event_wait(
+                session.has_pending_path_completion() || session.has_timed_notice(),
+            ),
+            Instant::now(),
+        );
+        let Some(event) = read_terminal_event(wait)? else {
             continue;
         };
+        redraw = request_redraw(redraw, status.acknowledge(&mut state, &event));
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
         redraw = request_redraw(redraw, dispatched.redraw);
         if let Some(action) = dispatched.action {
@@ -1107,15 +1138,24 @@ mod tests {
     fn host_errors_use_the_terminal_locale() {
         assert_eq!(
             host_failure_status(&HostError, Locale::ZhCn),
-            Action::SetStatus("找不到条目：demo".to_owned())
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "找不到条目：demo".to_owned(),
+            }
         );
         assert_eq!(
             host_failure_status(&HostError, Locale::ZhTw),
-            Action::SetStatus("找不到項目：demo".to_owned())
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "找不到項目：demo".to_owned(),
+            }
         );
         assert_eq!(
             preflight_refusal_status(&HostError, Locale::ZhTw),
-            Action::SetStatus("錯誤：找不到項目：demo".to_owned())
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "錯誤：找不到項目：demo".to_owned(),
+            }
         );
     }
 
@@ -1135,6 +1175,7 @@ mod tests {
             Locale::ZhCn,
         ));
         assert_eq!(state.status(), Some("错误：找不到条目：demo"));
+        assert_eq!(state.status_kind(), StatusKind::Error);
     }
 
     #[test]
@@ -1189,6 +1230,7 @@ mod tests {
         assert!(!drain_host_effects(&mut state, &mut host, effect, &mut locale).unwrap());
         assert!(matches!(state.screen(), Screen::Form(_)));
         assert_eq!(state.status(), Some("entry not found: demo"));
+        assert_eq!(state.status_kind(), StatusKind::Error);
     }
 
     #[test]

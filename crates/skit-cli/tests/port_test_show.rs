@@ -674,7 +674,7 @@ fn test_show_human_no_fields_exe() {
     ]);
     assert!(added.status.success(), "{}", combined(&added));
     let output = lib.show_human("tool");
-    assert!(output.contains("No form fields"));
+    assert!(output.contains("No parameters to fill in"));
 }
 
 #[test]

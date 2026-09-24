@@ -339,13 +339,14 @@ fn add_long_problem_note_reaches_its_wrapped_sentinel() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
+    // The report of a source path sits under the path box, so the wheel scrolls down to it.
     for _ in 0..40 {
         if last.contains("ADD-END") {
             break;
         }
         let _ = session.handle_event(
             Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollUp,
+                kind: MouseEventKind::ScrollDown,
                 column: geometry.body.x,
                 row: geometry.body.y,
                 modifiers: KeyModifiers::NONE,

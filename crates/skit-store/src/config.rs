@@ -881,7 +881,7 @@ fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
         "editor" => Ok(value.trim().to_owned()),
         "form" if matches!(value, "tui" | "plain") => Ok(value.to_owned()),
         "form" => Err(ConfigError::Usage(
-            Message::new("Unknown form style: {}. Choose from: tui, plain").with(value),
+            Message::new("Unknown launch menu style: {}. Choose from: tui, plain").with(value),
         )),
         "after_run" if matches!(value, "exit" | "stay") => Ok(value.to_owned()),
         "after_run" => Err(ConfigError::Usage(
@@ -1930,14 +1930,88 @@ fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Err
 #[cfg(test)]
 mod tests {
     use super::{
-        PromptRunnerIssue, atomic_write_bytes, container_runner_row, legacy_value_descriptor,
-        remove_malformed_runner_container, rename_path, replace_existing_backup, runner_array_mut,
-        runner_rows_from_document, table_mut,
+        FileConfigStore, PromptRunnerIssue, atomic_write_bytes, container_runner_row,
+        legacy_value_descriptor, remove_malformed_runner_container, rename_path,
+        replace_existing_backup, runner_array_mut, runner_rows_from_document, table_mut,
     };
     use skit_i18n::Locale;
     use std::{fs, io};
     use tempfile::TempDir;
     use toml::{Table, Value};
+
+    /// A stored row describes itself with the status set, in every locale.
+    ///
+    /// Version 0.4 keeps this set apart from the `runner add` refusal set
+    /// (`src/skit/config.py:592-624` and `src/skit/cli.py:3358-3378`). Failure modes: a row
+    /// tells the person to type `skit runner add` for a row that is already in the file; a locale
+    /// falls back to English.
+    #[test]
+    fn a_stored_row_states_its_status_with_the_row_set_in_every_locale() {
+        let directory = TempDir::new().unwrap();
+        fs::write(
+            directory.path().join("config.toml"),
+            concat!(
+                "[prompt]\n",
+                "runners_seeded = true\n",
+                "[[prompt.runners]]\nname = \"empty\"\nargv = []\n",
+                "[[prompt.runners]]\nname = \"noslot\"\nargv = [\"agent\"]\n",
+                "[[prompt.runners]]\nname = \"bin\"\nargv = [\"{{prompt}}\"]\n",
+                "[[prompt.runners]]\nname = \"stray\"\nargv = [\"agent\", \"{{other}}\"]\n",
+            ),
+        )
+        .unwrap();
+        let rows = FileConfigStore::new(directory.path())
+            .runner_rows()
+            .unwrap();
+        let expected: [(&str, [&str; 3]); 4] = [
+            (
+                "empty",
+                [
+                    "Type the agent's command, e.g. mycli run {{prompt}}",
+                    "请输入 agent 的命令,例如 mycli run {{prompt}}",
+                    "請輸入 agent 的命令,例如 mycli run {{prompt}}",
+                ],
+            ),
+            (
+                "prompt-slot-count",
+                [
+                    "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+                    "命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词会放在那里。",
+                    "命令必須恰好包含一個 {{prompt}} 槽位——渲染後的提示詞會放在那裡。",
+                ],
+            ),
+            (
+                "prompt-in-binary",
+                [
+                    "{{prompt}} can't be the command itself — the first word must be the program to run.",
+                    "{{prompt}} 不能是命令本身——第一个词必须是要运行的程序。",
+                    "{{prompt}} 不能是命令本身——第一個詞必須是要執行的程式。",
+                ],
+            ),
+            (
+                "stray-hole",
+                [
+                    "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+                    "执行器命令只接受 {{prompt}} 槽位——单大括号是字面文字,其他 {{占位符}} 不支持。",
+                    "執行器命令只接受 {{prompt}} 槽位——單大括號是字面文字,其他 {{佔位符}} 不支援。",
+                ],
+            ),
+        ];
+        assert_eq!(rows.len(), expected.len(), "{rows:?}");
+        for (row, (code, statuses)) in rows.iter().zip(expected) {
+            assert_eq!(row.reason.as_deref(), Some(code));
+            for (locale, status) in [Locale::En, Locale::ZhCn, Locale::ZhTw]
+                .into_iter()
+                .zip(statuses)
+            {
+                assert_eq!(
+                    row.localized_reason(locale).as_deref(),
+                    Some(status),
+                    "{code} {locale:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn raw_runner_issue_messages_keep_their_stable_machine_and_human_meanings() {

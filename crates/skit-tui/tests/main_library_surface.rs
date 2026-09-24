@@ -467,6 +467,37 @@ fn library_activity_health_and_complete_detail_match_latest_main() {
     );
 }
 
+/// Each line of a description is its own row of the detail pane.
+///
+/// Failure modes: the break is dropped and two lines run together; a Windows `\r\n` leaves a
+/// carriage return in the row; a blank line between two paragraphs disappears.
+#[test]
+fn a_multi_line_description_draws_each_line_on_its_own_row() {
+    for description in [
+        "Say hello from Ruby.\nSecond line\n\nAfter a blank line",
+        "Say hello from Ruby.\r\nSecond line\r\n\r\nAfter a blank line",
+    ] {
+        let view = state(vec![entry(
+            "greeter",
+            "Greeter",
+            "command",
+            StorageMode::Reference,
+            description,
+            None,
+        )]);
+        let terminal = draw(&view, 200, 30, Locale::En);
+        let rows = lines(terminal.backend().buffer());
+        let rendered = rows.join("\n");
+        let (first, _) = line_with(&rows, "Say hello from Ruby.");
+        let (second, second_row) = line_with(&rows, "Second line");
+        let (third, _) = line_with(&rows, "After a blank line");
+        assert_eq!(second, first + 1, "{rendered}");
+        assert_eq!(third, second + 2, "{rendered}");
+        assert!(!rendered.contains("Ruby.Second"), "{rendered}");
+        assert!(!second_row.contains('\r'), "{rendered}");
+    }
+}
+
 #[test]
 fn library_detail_keeps_template_runner_states_drift_and_empty_onboarding_visible() {
     let command = entry(
@@ -502,7 +533,7 @@ fn library_detail_keeps_template_runner_states_drift_and_empty_onboarding_visibl
     assert!(rendered.contains("Not run yet"), "{rendered}");
     assert!(
         rendered
-            .contains("⚠ The script changed — skit checks the form against it before every run."),
+            .contains("⚠ The script changed — skit checks the parameter definitions against it before every run."),
         "{rendered}"
     );
 
@@ -1611,6 +1642,9 @@ fn filtering_the_library_clamps_the_viewport_to_the_shorter_list() {
     // past the tail of the short one, so the render must clamp it before it draws.
     view.update(Action::BeginSearch);
     view.update(Action::SetSearchQuery("Entry 1".to_owned()));
+    // A changed query selects its best match. End moves the selection back to the tail, so the
+    // only way to show it is the clamped offset.
+    view.update(Action::End);
     let (terminal, filtered) = draw_with_session(&view, &mut session, 46, 12);
     assert_eq!(
         view.visible_entry_count(),

@@ -87,10 +87,64 @@ fn every_catalog_row_has_two_complete_translations() {
     }
 }
 
+/// Report whether `english` holds the word "form" or "forms" as a whole word.
+///
+/// A word such as "platform" or "format" holds the letters, but not the word.
+fn names_a_form(english: &str) -> bool {
+    english
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("form") || word.eq_ignore_ascii_case("forms"))
+}
+
+// Ways this can fail: a row still calls the screen where a person fills the parameters "the run
+// form" or "a form", in English or in Chinese, so the product names one screen two ways. The
+// owner decided on 2026-11-08 that the product calls it the launch menu, as the README does.
+#[test]
+fn every_catalog_row_calls_the_parameter_screen_the_launch_menu() {
+    assert!(names_a_form("the run form asks"));
+    assert!(names_a_form("Form label:"));
+    assert!(!names_a_form("Label in the launch menu:"));
+    assert!(!names_a_form("this platform's limit"));
+    assert!(!names_a_form("format"));
+    let mut offenders = Vec::new();
+    for row in catalog() {
+        if names_a_form(row.english) {
+            offenders.push(format!("en: {}", row.english));
+        }
+        if row.zh_cn.contains("表单") {
+            offenders.push(format!("zh-CN: {}", row.zh_cn));
+        }
+        if row.zh_tw.contains("表單") {
+            offenders.push(format!("zh-TW: {}", row.zh_tw));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "say launch menu (启动菜单, 啟動選單) or parameter definitions:\n{}",
+        offenders.join("\n")
+    );
+    for (english, simplified, traditional) in [
+        ("Launch menu", "启动菜单", "啟動選單"),
+        (
+            "Parameters (fields in the launch menu)",
+            "参数（启动菜单里的字段）",
+            "參數（啟動選單裡的欄位）",
+        ),
+        (
+            "Inline launch menu — opens in place, fully clickable",
+            "内嵌启动菜单——就地展开、可戳可点",
+            "內嵌啟動選單——就地展開、可戳可點",
+        ),
+    ] {
+        assert_eq!(text(Locale::ZhCn, english), simplified);
+        assert_eq!(text(Locale::ZhTw, english), traditional);
+    }
+}
+
 #[test]
 fn settings_parameter_editor_keeps_the_version_04_chinese_labels() {
     for (source, simplified, traditional) in [
-        ("Form label:", "字段提示：", "欄位提示："),
+        ("Label in the launch menu:", "字段提示：", "欄位提示："),
         (
             "secret (never saved to disk)",
             "机密（不会存盘）",
@@ -364,20 +418,22 @@ fn declared_parameter_receipt_matches_the_oracle_in_every_locale() {
     assert!(pseudo.contains("width"), "{pseudo}");
 }
 
+// The note names the launch menu since the owner decision of 2026-11-08, so it no longer
+// matches the version 0.4 sentence (`src/skit/cli.py`), which said "run form".
 #[test]
-fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
-    let template = "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).";
+fn managed_parameter_flip_note_names_the_launch_menu_in_every_locale() {
+    let template = "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments ({}) until you remove the managed parameters (--unmanage).";
     assert_eq!(
         format_text(Locale::En, template, &[&"getopts"]),
-        "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage)."
+        "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments (getopts) until you remove the managed parameters (--unmanage)."
     );
     assert_eq!(
         format_text(Locale::ZhCn, template, &[&"getopts"]),
-        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（getopts）会先搁置，直到它们被移除（--unmanage）为止。"
+        "启动菜单现在改问这些管理的参数；脚本自己的命令行参数（getopts）先不显示，等你移除这些管理的参数（--unmanage）后才会回来。"
     );
     assert_eq!(
         format_text(Locale::ZhTw, template, &[&"getopts"]),
-        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（getopts）會先擱置，直到它們被移除（--unmanage）為止。"
+        "啟動選單現在改問這些管理的參數；腳本自己的命令列參數（getopts）先不顯示，等你移除這些管理的參數（--unmanage）後才會回來。"
     );
     let pseudo = format_text(Locale::Pseudo, template, &[&"getopts"]);
     assert!(pseudo.contains("getopts"), "{pseudo}");
@@ -631,23 +687,23 @@ fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
     let pseudo = format_text(Locale::Pseudo, plural, &[&"a, b", &4]);
     assert!(pseudo.contains("möré"), "{pseudo}");
 
-    let heading = "Prompt placeholders (the run form asks for them):";
+    let heading = "Prompt placeholders (the launch menu asks for them):";
     assert_eq!(
         text(Locale::ZhCn, heading),
-        "提示词的占位符(运行表单会询问):"
+        "提示词的占位符(启动菜单会询问):"
     );
     assert_eq!(
         text(Locale::ZhTw, heading),
-        "提示詞的佔位符(執行表單會詢問):"
+        "提示詞的佔位符(啟動選單會詢問):"
     );
-    let command_heading = "Command template placeholders (the run form asks for them):";
+    let command_heading = "Command template placeholders (the launch menu asks for them):";
     assert_eq!(
         text(Locale::ZhCn, command_heading),
-        "命令模板的占位符（运行表单会询问）："
+        "命令模板的占位符（启动菜单会询问）："
     );
     assert_eq!(
         text(Locale::ZhTw, command_heading),
-        "命令範本的佔位符（執行表單會詢問）："
+        "命令範本的佔位符（啟動選單會詢問）："
     );
     let environment = "Declared environment variables (set on the run):";
     assert_eq!(
@@ -687,10 +743,10 @@ fn add_onboarding_controls_and_source_facts_are_fully_localized() {
     assert_eq!(
         format_text(
             Locale::ZhTw,
-            "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
+            "✓ skit read this script's own arguments ({} field). Running it opens the launch menu — nothing to memorize.",
             &[&1],
         ),
-        "✓ skit 已讀取這支腳本自己的參數（1 個欄位）。執行時會開啟表單，無需記憶指令。"
+        "✓ skit 看懂了這支腳本自己的參數（共 1 項）。執行時會打開啟動選單——不用背任何指令。"
     );
     assert_eq!(
         format_text(

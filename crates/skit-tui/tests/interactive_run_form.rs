@@ -508,7 +508,7 @@ fn run_surface_renders_main_banners_field_affordances_feedback_and_errors() {
     for expected in [
         "The stored field moved in the source.",
         "This script has subcommands skit can't model",
-        "none yet — fill the form and press Ctrl+S to save one",
+        "none yet — fill in the fields and press Ctrl+S to save one",
         "Count",
         "required",
         "whole number",
@@ -537,6 +537,48 @@ fn run_surface_renders_main_banners_field_affordances_feedback_and_errors() {
             "missing run-form icon: {icon}"
         );
     }
+}
+
+/// A refused box makes its own border red. A panel with no column in its border shows no box,
+/// so the border of the panel keeps its color.
+///
+/// Failure modes: a refused box with no column makes the panel border next to it red; the
+/// drawing of that box panics; the box border is not red when the panel has space for the box.
+#[test]
+fn a_refused_box_with_no_column_keeps_the_panel_border_color() {
+    let mut name = ParamDecl::new("name");
+    name.required = true;
+    let mut state = state_with_form(RunFormView::from_declarations(
+        "refused",
+        "Refused",
+        &[name],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    ));
+    assert_eq!(state.update(Action::Submit), Effect::None);
+    assert!(
+        state.run_form().unwrap().fields()[0]
+            .validation_error
+            .is_some()
+    );
+    let red_sides = |width: u16| {
+        let (terminal, _) = draw(&mut TuiSession::default(), &state, width, 120);
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.fg == Color::Red && cell.symbol() == "│")
+            .count()
+    };
+
+    // Thirty terminal columns give the box space, so its sides are red.
+    assert!(red_sides(30) > 0);
+    // Two terminal columns leave no column in the panel border, so no side is red.
+    assert_eq!(red_sides(2), 0);
 }
 
 #[test]
@@ -1426,12 +1468,9 @@ fn generic_form_shortcut_focus_and_page_keys_keep_distinct_meanings() {
         state
     };
 
+    // Enter submits a generic form from any single-line field, as Enter runs the launch form.
     for (code, focused, expected) in [
-        (
-            KeyCode::Enter,
-            0,
-            EventHandling::Action(Action::FocusField(1)),
-        ),
+        (KeyCode::Enter, 0, EventHandling::Action(Action::Submit)),
         (
             KeyCode::Down,
             0,
@@ -3162,7 +3201,7 @@ fn a_first_run_chip_wraps_intact_after_a_long_cjk_label() {
 
 #[test]
 fn preset_empty_state_appears_only_for_parameter_forms_without_saved_presets() {
-    let hint = "none yet — fill the form and press Ctrl+S to save one";
+    let hint = "none yet — fill in the fields and press Ctrl+S to save one";
 
     let no_parameters = RunFormView::from_declarations(
         "empty",

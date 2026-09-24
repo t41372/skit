@@ -210,13 +210,19 @@ fn expect_add_action(action: Action) -> AddAction {
 #[test]
 #[should_panic(expected = "the writing editor must retain the authored draft")]
 fn authored_draft_source_extraction_refuses_other_actions() {
-    let _ = expect_authored_draft_source(Action::SetStatus("not a draft".to_owned()));
+    let _ = expect_authored_draft_source(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "not a draft".to_owned(),
+    });
 }
 
 #[test]
 #[should_panic(expected = "the response must be an Add action")]
 fn c2_add_action_extraction_refuses_other_actions() {
-    let _ = expect_add_action(Action::SetStatus("not Add".to_owned()));
+    let _ = expect_add_action(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "not Add".to_owned(),
+    });
 }
 
 fn safe_profile(value: &str) -> SafeProfileId {

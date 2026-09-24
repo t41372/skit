@@ -246,7 +246,7 @@ pub struct PreferencesSnapshot {
     pub editor: String,
     /// Effective environment fallback when present.
     pub editor_fallback: Option<String>,
-    /// Interactive form preference.
+    /// Launch menu preference.
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,
@@ -277,7 +277,7 @@ pub struct PreferencesDraft {
     pub editor: String,
     /// Effective editor fallback.
     pub editor_fallback: Option<String>,
-    /// Interactive form preference.
+    /// Launch menu preference.
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,

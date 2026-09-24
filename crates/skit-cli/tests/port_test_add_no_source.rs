@@ -874,7 +874,7 @@ fn test_ans_choice4_reports_params_and_stores_description() {
     assert_eq!(entry["description"], "a fine command");
     assert!(
         output.contains(
-            "Detected parameters: a, b (the run form asks for them; your last values are remembered)"
+            "Detected parameters: a, b (the launch menu asks for them; your last values are remembered)"
         ),
         "{output}"
     );

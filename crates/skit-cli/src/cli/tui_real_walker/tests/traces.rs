@@ -647,7 +647,10 @@ fn real_frontend_switches_locale_only_when_it_consumes_preferences_saved() {
 
     assert_eq!(
         frontend
-            .reduce(Action::SetStatus("host failure".to_owned()))
+            .reduce(Action::SetStatus {
+                kind: skit_ui::StatusKind::Error,
+                message: "host failure".to_owned(),
+            })
             .unwrap(),
         Effect::None
     );
@@ -676,6 +679,38 @@ fn real_frontend_switches_locale_only_when_it_consumes_preferences_saved() {
         );
         assert_eq!(frontend.locale, expected, "{tag}");
     }
+}
+
+/// The walker draws what a user gets with no `theme` setting: the terminal theme, which never
+/// paints a fixed 24-bit color. The corpus frontend replaces the session, so it must keep the
+/// theme too.
+#[test]
+fn real_frontends_draw_the_default_theme() {
+    let rgb = |frame: &StyledFrameSnapshot| {
+        frame
+            .cells
+            .iter()
+            .filter(|cell| {
+                [cell.foreground, cell.background].iter().any(|color| {
+                    matches!(color, skit_tui_walker_support::ColorSnapshot::Rgb { .. })
+                })
+            })
+            .count()
+    };
+    let factory = smoke_factory();
+    let host = RealWalkerHost::spawn(factory.seed).unwrap();
+    let state = host.initial_state().unwrap();
+    let mut real = RealFrontend::new(state.clone(), factory.locale, factory.size).unwrap();
+    let mut corpus =
+        CorpusFrontend::new(state, factory.locale, factory.size, host.file_picker_tree()).unwrap();
+    let real = real.observe_frontend().unwrap();
+    let corpus = corpus.inner.observe_frontend().unwrap();
+    assert_eq!(
+        (rgb(&real.styled_frame), rgb(&corpus.styled_frame)),
+        (0, 0),
+        "cells with a fixed 24-bit color (real, corpus)"
+    );
+    host.close().unwrap();
 }
 
 #[test]

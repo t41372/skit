@@ -81,7 +81,7 @@ const MODELED_SH: &[u8] =
 // The exact renderer strings this module asserts on (skit-tui/src/screens/add.rs).
 const READER_NOTICE: &str = "skit read this script's own arguments";
 const SELF_PARSE_NOTICE: &str = "parses its own arguments";
-const TICK_PROMPT: &str = "Tick the ones the run form should ask for:";
+const TICK_PROMPT: &str = "Tick the ones the launch menu should ask for:";
 // The settings-gate reader note (skit-ui/src/settings.rs:1194).
 const READER_DRIVEN_NOTE: &str = "comes from its own command-line arguments";
 
@@ -683,7 +683,6 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
         permissions: SourcePermissions::default(),
         content_hash: None,
     }]);
-    let _ = present.reduce(AddAction::SelectDraft(0));
     let mut session = AddScreenSession::default();
     let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
     let mut geometry = AddScreenGeometry::default();
@@ -754,4 +753,82 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
     assert!(effects.is_empty());
     assert_eq!(present.stage(), AddStage::ConfirmDraftDelete);
     assert_eq!(present.source().listed_drafts().len(), 1); // no delete before confirmation
+}
+
+/// The first pick of a kept draft puts it in the path box. A second pick of the same draft, by
+/// Enter or by a click, continues with it, and the footer names that key `Enter Continue`.
+#[test]
+fn a_second_pick_of_a_kept_draft_continues_with_it() {
+    let mut workflow = AddWorkflowState::new(vec![DraftSummary {
+        path: PathBuf::from("/data/drafts/skit-new-again.py"),
+        modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
+        content_hash: None,
+    }]);
+    let mut session = AddScreenSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let mut geometry = AddScreenGeometry::default();
+    let mut draw = |workflow: &AddWorkflowState,
+                    session: &mut AddScreenSession,
+                    geometry: &mut AddScreenGeometry| {
+        terminal
+            .draw(|frame| {
+                *geometry = render_add(frame, frame.area(), workflow, session, Locale::En);
+            })
+            .unwrap();
+        rendered(terminal.backend().buffer())
+    };
+    let _ = draw(&workflow, &mut session, &mut geometry);
+    while session.focused() != Some(&AddControlId::Draft(0)) {
+        let event = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &workflow,
+            &geometry,
+        );
+        if let Some(AddScreenEvent::Action(action)) = event {
+            let _ = workflow.reduce(action);
+        }
+    }
+    let text = draw(&workflow, &mut session, &mut geometry);
+    assert!(text.contains("[Enter] Select"), "{text}");
+    let enter = || Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        session.handle_event(enter(), &workflow, &geometry),
+        Some(AddScreenEvent::Action(AddAction::SelectDraft(0)))
+    );
+    let _ = workflow.reduce(AddAction::SelectDraft(0));
+    let text = draw(&workflow, &mut session, &mut geometry);
+    assert!(text.contains("[Enter] Continue"), "{text}");
+    assert_eq!(
+        session.handle_event(enter(), &workflow, &geometry),
+        Some(AddScreenEvent::Action(AddAction::Continue))
+    );
+    let row = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::Draft(0))
+        .expect("the draft row is clickable")
+        .area;
+    assert_eq!(
+        session.handle_event(
+            left_mouse(MouseEventKind::Down(MouseButton::Left), row.x, row.y),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            left_mouse(MouseEventKind::Up(MouseButton::Left), row.x, row.y),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Action(AddAction::Continue))
+    );
+    let effects = workflow.reduce(AddAction::Continue);
+    assert!(matches!(
+        effects.as_slice(),
+        [AddEffect::InspectSource { path, .. }] if path == &PathBuf::from("/data/drafts/skit-new-again.py")
+    ));
 }

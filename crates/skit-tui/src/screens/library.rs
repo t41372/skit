@@ -479,7 +479,7 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
     if let Some(runner) = facts.and_then(|facts| facts.prompt_runner.as_ref()) {
         let runner = match runner {
             LibraryPromptRunner::PickOnRunForm => {
-                text(locale, "Runner picked on the run form").into_owned()
+                text(locale, "Runner picked in the launch menu").into_owned()
             }
             LibraryPromptRunner::Configured(name) => format_text(locale, "Runs with {}", &[name]),
             LibraryPromptRunner::Missing(name) => {
@@ -492,14 +492,22 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
         )));
     }
     lines.push(Line::default());
-    lines.push(if entry.description.is_empty() {
-        Line::from(Span::styled(
+    if entry.description.is_empty() {
+        lines.push(Line::from(Span::styled(
             text(locale, "(no description — add one in Entry settings)"),
             theme::muted(),
-        ))
+        )));
     } else {
-        Line::from(entry.description.clone())
-    });
+        // Entry settings edits the description in a multi-line box, so it can hold line breaks.
+        // One `Line` is one row of text, and a line break inside it is lost, so each line of the
+        // description is its own `Line`. The paragraph still wraps a line that is too long.
+        lines.extend(
+            entry
+                .description
+                .lines()
+                .map(|line| Line::from(line.to_owned())),
+        );
+    }
     lines.push(Line::default());
     if let Some(facts) = facts {
         append_state_lines(&mut lines, facts, locale);
@@ -588,7 +596,7 @@ fn append_state_lines(lines: &mut Vec<Line<'static>>, facts: &LibraryEntryDetail
             Span::styled(
                 text(
                     locale,
-                    "The script changed — skit checks the form against it before every run.",
+                    "The script changed — skit checks the parameter definitions against it before every run.",
                 ),
                 theme::status(Status::Warning),
             ),

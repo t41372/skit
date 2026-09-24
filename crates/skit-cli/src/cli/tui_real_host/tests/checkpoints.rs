@@ -804,7 +804,7 @@ fn typed_action_projection_executes_all_seventy_two_outer_variants() {
         json!({"add_completed": {"surface": surface, "rerunnable": [], "slug": "created", "message": "added"}}),
         json!("add_cancelled"),
         json!({"complete": {"surface": null, "rerunnable": null, "message": "complete"}}),
-        json!({"set_status": "status"}),
+        json!({"set_status": {"message": "status"}}),
         json!("clear_status"),
         json!("quit"),
     ];
@@ -921,12 +921,20 @@ fn typed_nested_action_projection_executes_every_recorded_variant() {
         json!({"action": "focus_next"}),
         json!({"action": "focus_previous"}),
         json!({"action": "resync"}),
+        json!({
+            "action": "resync_previewed",
+            "selector": "entry",
+            "preview": {
+                "parameters": {"managed": [], "candidates": [], "reader_fields": 0},
+                "warnings": [],
+            },
+        }),
         json!({"action": "set_prompt_candidates", "selected": ["value"]}),
         json!({"action": "save"}),
         json!({"action": "close"}),
         json!({"action": "new_runner"}),
     ];
-    assert_eq!(settings.len(), 9);
+    assert_eq!(settings.len(), 10);
 
     for nested in add.drain(..) {
         host.path_map
@@ -997,12 +1005,13 @@ fn typed_effect_projection_executes_all_outer_and_recorded_nested_variants() {
         json!({"save_run_preset": {"selector": "entry", "name": "preset", "values": {}, "secret_names": []}}),
         json!({"add": ["cancel"]}),
         json!("health_rebuild"),
+        json!({"preview_settings_resync": {"selector": "entry"}}),
         json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": {"editor": "add"}}}),
         json!({"preferences": "none"}),
         json!({"edit": {"selector": "entry"}}),
         json!({"remove": {"selector": "entry"}}),
     ];
-    assert_eq!(outer.len(), 14);
+    assert_eq!(outer.len(), 15);
     for raw in outer {
         let mut effect: Effect = deserialize_canonical(raw, "Effect fixture").unwrap();
         host.path_map.project_typed_effect(&mut effect).unwrap();

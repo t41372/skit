@@ -158,15 +158,15 @@ fn test_execute_maps_a_drifted_js_definition_to_drift() {
     for (locale, expected) in [
         (
             "en",
-            "The script and its form definitions don't match anymore: WIDTH. Run `skit params mismatch --resync` to fix it.",
+            "The script and its parameter definitions no longer match: WIDTH. Run `skit params mismatch --resync` to fix it.",
         ),
         (
             "zh-CN",
-            "脚本内容和表单定义对不上了：WIDTH。运行 `skit params mismatch --resync` 即可修复。",
+            "脚本内容和参数定义对不上了：WIDTH。运行 `skit params mismatch --resync` 即可修复。",
         ),
         (
             "zh-TW",
-            "腳本內容和表單定義對不上了：WIDTH。執行 `skit params mismatch --resync` 即可修復。",
+            "腳本內容和參數定義對不上了：WIDTH。執行 `skit params mismatch --resync` 即可修復。",
         ),
     ] {
         let sandbox = Sandbox::new();

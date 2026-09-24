@@ -1087,9 +1087,11 @@ fn c2_real_prompt_suffixes_preserve_kind_and_reducer_replay() {
             .strip_suffix(".prompt.md")
             .or_else(|| name.strip_suffix(".prompt"))
             .unwrap();
+        // A new prompt draft takes its name from its first words. A body with no word keeps
+        // the name that the file stem gives, so the projection of a derived name stays tested.
         assert_real_draft_transition_projects_and_replays(
             name,
-            b"Hello {{name}}\n",
+            b"---\n",
             "review",
             "/workflow/active/add/review/name",
             raw_name,

@@ -12,8 +12,8 @@ description: config.toml 与每个 `skit config` 键。
 | --- | --- | --- |
 | `lang` | 语言标签，或 `auto` | 界面语言 |
 | `editor` | 一条命令（允许带参数） | `skit edit` 与 `Ctrl+E` 使用的编辑器 |
-| `form` | `tui` / `plain` | 交互样式：内联小表单，或纯文本逐行提问 |
-| `after_run` | `exit` / `stay` | 菜单启动的运行结束后：退出 skit（默认），或作为工作台返回菜单 |
+| `form` | `tui` / `plain` | 启动菜单样式：内嵌的启动菜单，或纯文本逐行提问 |
+| `after_run` | `exit` / `stay` | 菜单启动的运行打印出结果行（`✓ <名称> 已完成` 或 `✗ <名称> 以退出码 N 结束`）后：退出 skit 并返回这次运行的退出码（默认），或作为工作台返回菜单，结果显示在状态行 |
 | `shell.bash_path` | 一个路径 | Windows：当 `PATH` 上没有 bash 时，用来运行 shell 条目的 bash（设置时会校验其存在） |
 | `js.runner` | `deno` / `bun` / `node`，为空表示自动 | 强制指定 JS 运行时，而不是取先找到的 |
 | `mirror` | `on` / `off` | 镜像总开关 —— `off` 会保留已保存的 URL |

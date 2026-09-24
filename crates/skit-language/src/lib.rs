@@ -11,7 +11,7 @@ mod semantic;
 mod source_text;
 mod uv_edit;
 
-pub use description::suggest_description;
+pub use description::{suggest_description, suggest_prompt_name};
 pub use prompt_text::{PromptEncodingError, decode_prompt};
 pub use semantic::{
     BindingIdentity, CliSurface, DegradationReason, DynamicCliSurface, ParseFailure, ParseOutcome,

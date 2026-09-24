@@ -1,9 +1,9 @@
 //! Completeness guard for Python `tests/test_tui_responsive.py` at `main@206f9ef`.
 //!
-//! Seventeen contracts have executable terminal-geometry equivalents. Four Rust-only contracts
-//! cover frontend adapter invariants. Two Python contracts assert widget structures that do not
-//! exist in the Ratatui frontend and stay architecture-closed rather than being represented by a
-//! weaker test of a different widget.
+//! Sixteen contracts have executable terminal-geometry equivalents. Five Rust-only contracts
+//! cover frontend adapter invariants and one contract that version 0.5 changes on purpose. Two
+//! Python contracts assert widget structures that do not exist in the Ratatui frontend and stay
+//! architecture-closed rather than being represented by a weaker test of a different widget.
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -14,7 +14,6 @@ const TARGET: &str = "crates/skit-tui/tests/port_test_tui_responsive.rs";
 const EXECUTABLE: &[&str] = &[
     "test_breakpoint_tiers_are_the_documented_contract",
     "test_chip_glues_every_blank_so_the_pill_is_one_word",
-    "test_nav_chip_is_exactly_the_two_key_only_pills",
     "test_width_tier_boundary_flips_side_by_side_to_stacked",
     "test_narrow_short_hides_detail_and_tab_pin_survives_resizes",
     "test_tiny_narrow_tab_still_brings_the_pane_back",
@@ -36,7 +35,15 @@ const RUST_ADDITIVE: &[&str] = &[
     "test_footer_minimum_structure_is_monotonic_and_keeps_status_out_of_hits",
     "test_root_hit_rectangles_stay_inside_every_boundary_viewport",
     "compact_confirm_remove_keeps_central_keyboard_paths_at_tiny_boundaries",
+    "test_nav_chip_is_exactly_the_two_named_pills",
 ];
+
+/// Python contracts that version 0.5 changes on purpose. Each reason names the record in
+/// `docs/behavior-changes.md` and the Rust test that pins the new contract.
+const DELIBERATELY_CHANGED: &[(&str, &str)] = &[(
+    "test_nav_chip_is_exactly_the_two_key_only_pills",
+    "Version 0.5 names the two navigation pills \"Next field\" and \"Previous field\" on every footer, as the runner editor already did (docs/behavior-changes.md, \"Footer chips name their navigation keys and both quit keys\"). test_nav_chip_is_exactly_the_two_named_pills pins the two pills, their keys, and one click target each.",
+)];
 
 const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
     (
@@ -71,9 +78,13 @@ fn test_names(source: &str) -> Vec<String> {
 
 #[test]
 fn every_executable_responsive_contract_has_exactly_one_rust_oracle() {
-    assert_eq!(EXECUTABLE.len(), 17);
+    assert_eq!(EXECUTABLE.len(), 16);
     assert_eq!(ARCHITECTURE_CLOSED.len(), 2);
-    assert_eq!(EXECUTABLE.len() + ARCHITECTURE_CLOSED.len(), 19);
+    assert_eq!(DELIBERATELY_CHANGED.len(), 1);
+    assert_eq!(
+        EXECUTABLE.len() + ARCHITECTURE_CLOSED.len() + DELIBERATELY_CHANGED.len(),
+        19
+    );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -115,5 +126,12 @@ fn textual_only_responsive_contracts_are_not_impersonated() {
             "{name} is architecture-closed ({reason}); do not add a weaker same-named stand-in"
         );
         assert!(!reason.trim().is_empty());
+    }
+    for (name, reason) in DELIBERATELY_CHANGED {
+        assert!(
+            !actual.contains(*name),
+            "{name} changed on purpose ({reason}); its old name must not pin the new contract"
+        );
+        assert!(reason.contains("docs/behavior-changes.md"));
     }
 }

@@ -2,6 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+use skit_i18n::{Localize, Message};
+
 use super::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterInvariant, ParameterType,
     ParameterValue, coerce_default,
@@ -305,7 +308,11 @@ impl SourceEditRequest {
 }
 
 /// One recoverable source edit problem.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// It is serializable because the settings screen shows a resync report before the save, and the
+/// screen state is serializable.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "warning")]
 pub enum SourceEditWarning {
     /// A syntax error prevented the requested refresh.
     ResyncSkipped,
@@ -353,6 +360,53 @@ impl SourceEditWarning {
             Self::NotManaged { .. } => "not-managed",
             Self::EnvSourceNotManaged { .. } => "env-source-not-managed",
             Self::EnvSourceNotSecret { .. } => "env-source-not-secret",
+        }
+    }
+
+    /// Return the catalog template of the sentence a person reads.
+    ///
+    /// A frontend that translates later keeps the template and [`Self::name`], which is the one
+    /// value every template takes, instead of a finished string.
+    #[must_use]
+    pub fn template(&self) -> &'static str {
+        self.message().template()
+    }
+}
+
+/// The sentence a person reads for each warning.
+///
+/// The command line and the settings screen show the same sentence for the same warning, so the
+/// set lives here, next to the warnings (version 0.4 `render_warning`, `src/skit/analysis.py:195-220`).
+impl Localize for SourceEditWarning {
+    fn message(&self) -> Message {
+        match self {
+            Self::ResyncSkipped => Message::new(
+                "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
+            ),
+            Self::ResyncDropped { name } => {
+                Message::new("Dropped {}: it no longer exists in the script.").with(name)
+            }
+            Self::ResyncRebound { name } => Message::new(
+                "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
+            )
+            .with(name),
+            Self::AlreadyManaged { name } => {
+                Message::new("{} is already managed; skipped.").with(name)
+            }
+            Self::NotCandidate { name } => {
+                Message::new("{} isn't a detectable parameter in the current script; skipped.")
+                    .with(name)
+            }
+            Self::NotManaged { name } => {
+                Message::new("{} isn't a managed parameter; skipped.").with(name)
+            }
+            Self::EnvSourceNotManaged { name } => {
+                Message::new("{} isn't a managed parameter; --env-source skipped.").with(name)
+            }
+            Self::EnvSourceNotSecret { name } => Message::new(
+                "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+            )
+            .with(name),
         }
     }
 }

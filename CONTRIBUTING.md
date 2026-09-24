@@ -132,8 +132,8 @@ npm run build
 (`docs/assets/demo-{en,zh-CN,zh-TW}.mp4`). It needs Docker. Regenerate the assets when TUI copy,
 layout, or colors change.
 
-The videos show what a person does: `skit add` in the shell, the review panel, the run form with
-the file picker, `e` in vim, and Entry settings, for two scripts. Do not remove a step to make a
+The videos show what a person does: `skit add` in the shell, the review panel, the launch menu
+with the file picker, `e` in vim, and Entry settings, for two scripts. Do not remove a step to make a
 recording pass; change the tape to the new keys. Do not put `--no-input` or other machine flags on
 camera. A hidden setup step can use them.
 
