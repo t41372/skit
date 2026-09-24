@@ -30,13 +30,19 @@ skit                 # 打開選單——選、填、跑
 
 你的 AI agent 也能用 skit：你從選單操作，agent 走確定性的 CLI 和 skill——AI 寫完的腳本存進去，之後隨時都能再拿出來用。
 
+<video src="https://github.com/user-attachments/assets/940baa98-6298-459c-9cc0-12b79223f342" controls></video>
+
 ### 介面
 
+| ![工具庫](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-TW.png) | ![啟動選單](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-TW.png) |
+|:--:|:--:|
+| **工具庫**——每個動作都在畫面上，滑鼠鍵盤皆可 | **啟動選單**——從腳本自己的參數生成 |
+| ![加入腳本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-TW.png) | ![腳本設定](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-TW.png) |
+| **加入腳本**——靜態偵測參數；哪些交給 skit 管理由你決定 | **腳本設定**——參數、機密、預設、依賴 |
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-TW.png" alt="skit 指令稿庫" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-TW.png" alt="skit 啟動表單" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-TW.png" alt="skit 加入流程" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-TW.png" alt="skit 設定" width="49%">
+  <img width="480" alt="只用滑鼠操作 skit——畫面上每個控制項都是可點擊的目標" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>完全滑鼠可操作性——畫面上每個按鍵提示，也都是可點的按鈕。</em>
 </p>
 
 ## 它做什麼
