@@ -1,5 +1,6 @@
 //! Crossterm lifecycle and blocking event loop.
 
+use std::cell::Cell;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
@@ -377,7 +378,18 @@ where
         }
     }
     claim_terminal()?;
-    let _restore = RestoreTerminal::new(restore_terminal);
+    // A host effect can end the session while skit has the terminal suspended, for example a run
+    // with `after_run = "exit"`. The suspend already restored every mode. `\x1b[?1049l` also
+    // restores the cursor that the claim saved, so a second restore moves the cursor back to the
+    // row where skit started, and the shell prompt then overwrites the output of the run.
+    let suspended = Cell::new(false);
+    let _restore = RestoreTerminal::new(|| {
+        if suspended.get() {
+            Ok(())
+        } else {
+            restore_terminal()
+        }
+    });
     let _colors = ColorOutputClaim::new();
     let backend = options
         .appearance
@@ -423,9 +435,13 @@ where
                         sequential_terminal_transition(
                             || leave_screen_modes(&mut io::stdout()),
                             disable_raw_mode,
-                        )
+                        )?;
+                        suspended.set(true);
+                        Ok(())
                     }
                     HostedTerminalTransition::Resume => {
+                        // A resume that fails part of the way still needs the full restore.
+                        suspended.set(false);
                         sequential_terminal_transition(enable_raw_mode, || {
                             enter_screen_modes(&mut io::stdout())
                         })?;

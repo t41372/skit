@@ -1943,6 +1943,43 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     assert_eq!(tree_snapshot(config.path()), config_before);
 }
 
+// A run from the Library with `after_run = "exit"` ends the session. The shell then writes its
+// prompt where skit left the cursor, so the cursor must stay below the output of the run.
+// `\x1b[?1049l` also restores the cursor that `\x1b[?1049h` saved, on the normal screen too
+// (xterm, xterm.js, vt100). The run already left the alternate screen, so a second exit sequence
+// moves the cursor back to the row where skit started, and the prompt overwrites the output.
+#[cfg(unix)]
+#[test]
+fn a_run_that_ends_the_session_leaves_the_cursor_below_its_output() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_entry(data.path(), false);
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Demo");
+    let form = tui.checkpoint();
+    tui.send(b"\r");
+    tui.wait_for_after(form, "Run Demo");
+    let run = tui.checkpoint();
+    tui.send(b"\r");
+    let (code, output) = tui.wait_for_exit_status_after(run);
+    assert_eq!(code, 0, "{output}");
+
+    let mut terminal = vt100::Parser::new(tui.rows, tui.columns, 0);
+    terminal.process(&tui.raw_after(0));
+    terminal.process(b"PROMPT$ ");
+    let screen = terminal.screen().contents();
+    let rows: Vec<&str> = screen.lines().collect();
+    let output_row = rows.iter().rposition(|row| row.trim() == "done");
+    let prompt_row = rows.iter().position(|row| row.starts_with("PROMPT$"));
+    assert!(
+        matches!((output_row, prompt_row), (Some(output), Some(prompt)) if prompt > output),
+        "the shell prompt must follow the run output: {screen}"
+    );
+}
+
 #[test]
 fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
     let data = TempDir::new().unwrap();
