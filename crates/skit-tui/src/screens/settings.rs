@@ -20,7 +20,7 @@ use std::{cmp::Ordering, collections::BTreeMap, fmt::Display, num::NonZeroUsize}
 use ratatui_core::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
     widgets::Widget,
@@ -47,10 +47,10 @@ use crate::{
     pointer::{ClickOutcome, ClickTracker, EditableGeometry, TextAreaGeometry, TextAreaViewport},
     rowclip::{RowClip, editor_cursor_virtual_row},
     session::{
-        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input_band,
+        TextAreaEventHandling, edit_textarea, new_textarea, render_line_input_band,
         render_textarea_band, textarea_control_height, textarea_text,
     },
-    theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
+    theme::{self, Panel, padded_panel},
     viewport::VirtualScrollState,
 };
 
@@ -851,8 +851,9 @@ impl SettingsScreenSession {
                 let mut state = CheckBoxState::new(field.value().as_text() == "true");
                 state.set_focused(focused);
                 CheckBox::new(label, &state)
-                    .style(checkbox_style())
+                    .style(theme::checkbox_style())
                     .render(area, frame.buffer_mut());
+                theme::patch_focus(frame.buffer_mut(), area, focused);
                 hits.push(SettingsHitRegion {
                     area,
                     target: SettingsControlId::Field(field.key.clone()),
@@ -885,7 +886,7 @@ impl SettingsScreenSession {
                         && let Some(content) = clip.row(1)
                     {
                         Paragraph::new(text(locale, &field.help))
-                            .style(Style::default().fg(Color::DarkGray))
+                            .style(theme::hint())
                             .render(
                                 Rect::new(
                                     content.x.saturating_add(1),
@@ -1169,7 +1170,7 @@ pub fn render_settings(
     // (`src/skit/tui_settings.py:869-871`).
     let block = padded_panel(
         format_text(locale, "Entry settings · {}", &[&view.title]),
-        BOX_INDIGO,
+        Panel::Settings,
     );
     let body = block.inner(area);
     frame.render_widget(block, area);
@@ -1237,14 +1238,13 @@ pub fn render_settings(
             Item::Spacer => {}
             Item::Heading { text, .. } => clip.paint_paragraph(
                 frame.buffer_mut(),
-                Paragraph::new(text.as_str())
-                    .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Paragraph::new(text.as_str()).style(theme::heading()),
             ),
             Item::Copy(value) => clip.paint_paragraph(
                 frame.buffer_mut(),
                 Paragraph::new(value.as_str())
                     .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(theme::hint()),
             ),
             Item::Control { key, label } => {
                 if let Some(field) = view.field(key) {
@@ -1266,8 +1266,8 @@ pub fn render_settings(
             Item::NewRunner(label) => {
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled("  Ctrl+N ", Style::default().fg(ACCENT)),
-                        Span::styled(label.as_str(), Style::default().fg(Color::White)),
+                        Span::styled("  Ctrl+N ", theme::key_hint()),
+                        Span::styled(label.as_str(), theme::text()),
                     ])),
                     rect,
                 );
@@ -1279,8 +1279,8 @@ pub fn render_settings(
             Item::ChoosePromptCandidates(label) => {
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled("  Ctrl+O ", Style::default().fg(ACCENT)),
-                        Span::styled(label.as_str(), Style::default().fg(Color::White)),
+                        Span::styled("  Ctrl+O ", theme::key_hint()),
+                        Span::styled(label.as_str(), theme::text()),
                     ])),
                     rect,
                 );
@@ -1314,7 +1314,7 @@ pub fn render_settings(
 
 /// The settings scroll affordance's colour, shared with the run form's.
 fn settings_scrollbar_style() -> Style {
-    Style::default().fg(BOX_INDIGO)
+    theme::scrollbar()
 }
 
 /// Lay every section out into virtual rows.
@@ -1469,7 +1469,7 @@ fn render_options(
         && !label.is_empty()
     {
         Paragraph::new(label)
-            .style(Style::default().fg(Color::White))
+            .style(theme::text())
             .render(row, buffer);
     }
     let first_option = clip.top().saturating_sub(label_rows);
@@ -1493,20 +1493,14 @@ fn render_options(
             (false, false) => "○",
         };
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                if highlighted { "▶ " } else { "  " },
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
+            Span::styled(if highlighted { "▶ " } else { "  " }, theme::marker()),
+            Span::styled(format!("{glyph} "), theme::marker()),
             Span::styled(
                 option_text(locale, option),
                 if highlighted {
-                    Style::default()
-                        .fg(SELECT_FG)
-                        .bg(SELECT_BG)
-                        .add_modifier(Modifier::BOLD)
+                    theme::selection().add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    theme::text()
                 },
             ),
         ]))
@@ -1541,9 +1535,9 @@ fn render_read_only(buffer: &mut Buffer, clip: RowClip, draw: &ControlDraw<'_>) 
                     } else {
                         format!("{label}: ")
                     },
-                    Style::default().fg(Color::DarkGray),
+                    theme::hint(),
                 ),
-                Span::styled(field.value().as_text(), Style::default().fg(Color::White)),
+                Span::styled(field.value().as_text(), theme::text()),
             ]))
             .render(row, buffer);
         } else if let Some(reason) = field.read_only_reason {
@@ -1554,7 +1548,7 @@ fn render_read_only(buffer: &mut Buffer, clip: RowClip, draw: &ControlDraw<'_>) 
                         .expect("the read-only paragraph offset fits Ratatui"),
                     0,
                 ))
-                .style(Style::default().fg(Color::DarkGray))
+                .style(theme::hint())
                 .render(row, buffer);
         }
     }
@@ -1658,11 +1652,12 @@ mod tests {
     };
 
     use super::{
-        ACCENT, ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, Locale, MouseEvent, MouseEventKind, Rect, SELECT_BG, SettingsControlId,
-        SettingsItem, SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession,
-        SettingsView, TypedValue, choice_key, is_selected, option_text, picked, render_settings,
+        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        Locale, MouseEvent, MouseEventKind, Rect, SettingsControlId, SettingsItem,
+        SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
+        TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
+    use crate::theme::{ACCENT, SELECT_BG};
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
     /// padding. Every geometry assertion here uses it, so a regression is one a viewer would see.
@@ -3933,7 +3928,7 @@ mod tests {
         assert!(
             (0..terminal.backend().buffer().area.height).any(|row| {
                 let cell = &terminal.backend().buffer()[(39, row)];
-                cell.symbol() == "█" && cell.fg == super::BOX_INDIGO
+                cell.symbol() == "█" && cell.fg == Color::Rgb(0x4A, 0x41, 0x3C)
             }),
             "the overflow scrollbar lost its indigo thumb"
         );

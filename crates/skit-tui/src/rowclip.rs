@@ -92,6 +92,7 @@ impl RowClip {
                 .borders(Borders::TOP.union(Borders::LEFT).union(Borders::RIGHT))
                 .border_style(border_style)
                 .title(title)
+                .title_style(crate::theme::border_title())
                 .render(top, buffer);
         }
 
@@ -142,6 +143,7 @@ impl RowClip {
                 .borders(Borders::TOP.union(Borders::LEFT).union(Borders::RIGHT))
                 .border_style(border_style)
                 .title(title)
+                .title_style(crate::theme::border_title())
                 .render(top, buffer);
         }
 

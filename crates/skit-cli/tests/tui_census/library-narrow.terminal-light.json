@@ -1,0 +1,19 @@
+{
+  "screen": "library-narrow",
+  "environment": "terminal-light",
+  "columns": 44,
+  "rows": [
+    [{"text": " Search                                     ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "╭", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " Library ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "─────────────────────────────────╮", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Name                   Kind               ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Alpha                  $ Command          ", "fg": "default", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Beta                   $ Command          ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Gamma                  $ Command          ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Eta                    ⬡ Python           ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "Zeta                   ✎ Prompt           ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": "╰──────────────────────────────────────────╯", "fg": "default", "bg": "default", "attrs": ["dim"]}],
+    [{"text": " Enter ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Run   ", "fg": "default", "bg": "default", "attrs": []}, {"text": " r ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Rerun   ", "fg": "default", "bg": "default", "attrs": []}, {"text": " p ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Entry settings  ↓", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": " e ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Edit source   ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Del ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Remove   ", "fg": "default", "bg": "default", "attrs": []}, {"text": " F2 ", "fg": "idx:5", "bg": "default", "attrs": ["bold", "inverse"]}, {"text": "Rename   ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "5/5 entries                                 ", "fg": "default", "bg": "default", "attrs": []}]
+  ]
+}

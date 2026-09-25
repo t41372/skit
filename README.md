@@ -30,13 +30,19 @@ Not a terminal person? That is fine — skit works like a GUI app that happens t
 
 Your AI agent gets the same library: you use it from a menu, agents use it through a deterministic CLI and a skill, so scripts get saved and reused.
 
+<video src="https://github.com/user-attachments/assets/c992e855-965f-45c6-a746-6ef8a7a8ad40" controls></video>
+
 ### The interface
 
+| ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The launch menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
+|:--:|:--:|
+| **The library** — every action on screen, mouse or keyboard | **The launch menu** — generated from the script's own parameters |
+| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Script settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
+| **Adding a script** — parameters detected statically; you choose which ones skit manages | **Script settings** — parameters, secrets, presets, dependencies |
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png" alt="skit library" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png" alt="skit run form" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png" alt="skit Add workflow" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png" alt="skit settings" width="49%">
+  <img width="480" alt="Driving skit with the mouse alone — every control on screen is a click target" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>Fully mouse operable — every key hint on screen is also a button.</em>
 </p>
 
 ## What it does

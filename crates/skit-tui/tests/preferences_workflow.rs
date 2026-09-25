@@ -3,8 +3,8 @@ use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesSnapshot,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+    PreferencesDraft, PreferencesSnapshot, ThemeChoice,
 };
 use skit_i18n::Locale;
 use skit_tui::{EventHandling, HitTarget, TuiSession, render_with_session};
@@ -55,6 +55,8 @@ fn preferences() -> PreferencesView {
         editor_fallback: Some("vim".to_owned()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
+        theme: ThemeChoice::Terminal,
+        accent: AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),

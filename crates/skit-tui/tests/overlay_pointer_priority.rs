@@ -8,7 +8,7 @@ use skit_application::{
     AgentScope, AgentTarget, SourcePermissions,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, ThemeChoice,
     },
     tokens::TokenContext,
 };
@@ -163,6 +163,8 @@ fn preferences() -> PreferencesView {
         editor_fallback: Some("vim".to_owned()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
+        theme: ThemeChoice::Terminal,
+        accent: skit_application::preferences::AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners: Vec::new(),

@@ -2,16 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use ratatui_core::{
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    terminal::Frame,
-};
+use ratatui_core::{layout::Rect, terminal::Frame};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::{
-    components::{ListPicker, ListPickerState, ListPickerStyle},
+    components::{ListPicker, ListPickerState},
     traits::ClickRegionRegistry,
 };
 use ratatui_widgets::{
@@ -40,6 +36,7 @@ use crate::{
         render_file_picker,
     },
     session::render_line_input,
+    theme::{self, Panel, Status},
 };
 
 /// Result that needs the parent run-input session's cursor state.
@@ -358,7 +355,7 @@ impl RunModalSession {
                     locale,
                     "The entry's working directory is missing — starting here instead.",
                 ))
-                .style(Style::default().fg(Color::Yellow)),
+                .style(theme::status(Status::Warning)),
                 notice,
             );
         }
@@ -415,7 +412,7 @@ impl RunModalSession {
                     "This overwrites the existing preset {}.",
                     &[&value.trim()],
                 ))
-                .style(Style::default().fg(Color::Yellow)),
+                .style(theme::status(Status::Warning)),
                 Rect::new(inner.x, inner.y.saturating_add(3), inner.width, 1),
             );
         }
@@ -443,7 +440,7 @@ impl RunModalSession {
             .map(|option| token_label(option, locale))
             .collect::<Vec<_>>();
         frame.render_widget(
-            ListPicker::new(&labels, &self.token).style(list_style()),
+            ListPicker::new(&labels, &self.token).style(theme::list_picker_style()),
             inner,
         );
         for visible in 0..self.token_view_height {
@@ -499,10 +496,14 @@ impl RunModalSession {
         self.environment_area = list;
         self.environment_list
             .ensure_visible(self.environment_view_height);
-        frame.render_widget(
-            ListPicker::new(visible, &self.environment_list).style(list_style()),
-            list,
-        );
+        // With no match the list stays empty, as version 0.4's option list does. The list widget
+        // would draw an English "No items" in gray.
+        if !visible.is_empty() {
+            frame.render_widget(
+                ListPicker::new(visible, &self.environment_list).style(theme::list_picker_style()),
+                list,
+            );
+        }
         for row in 0..self.environment_view_height {
             let index = usize::from(self.environment_list.scroll).saturating_add(row);
             if index >= visible.len() {
@@ -961,8 +962,9 @@ fn modal_block(title: &str) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(0xD9, 0x77, 0x57)))
+        .border_style(theme::panel_border(Panel::Dialog))
         .title(title)
+        .title_style(theme::border_title())
 }
 
 fn token_label(option: &RunTokenOption, locale: Locale) -> String {
@@ -982,21 +984,6 @@ fn token_label(option: &RunTokenOption, locale: Locale) -> String {
         RunTokenOption::Environment => {
             format!("{}  {{env:NAME}}", text(locale, "Environment variable…"))
         }
-    }
-}
-
-fn list_style() -> ListPickerStyle {
-    ListPickerStyle {
-        selected_style: Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(0xD9, 0x77, 0x57))
-            .add_modifier(Modifier::BOLD),
-        normal_style: Style::default().fg(Color::White),
-        indicator_style: Style::default().fg(Color::Rgb(0xD9, 0x77, 0x57)),
-        border_style: Style::default(),
-        indicator: "▶ ",
-        indicator_empty: "  ",
-        bordered: false,
     }
 }
 

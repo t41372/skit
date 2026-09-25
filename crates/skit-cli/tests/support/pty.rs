@@ -65,6 +65,47 @@ pub(crate) const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 /// The answer a real terminal gives: the cursor sits at the top-left corner.
 pub(crate) const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 
+/// The color questions a program asks to learn the terminal background: the default foreground
+/// (OSC 10), the default background (OSC 11), and the primary device attributes (DA1), which every
+/// terminal answers and which therefore marks the end of the other answers.
+const FOREGROUND_QUERY: &[u8] = b"\x1b]10;?";
+const BACKGROUND_QUERY: &[u8] = b"\x1b]11;?";
+const DEVICE_ATTRIBUTES_QUERY: &[u8] = b"\x1b[c";
+const DEVICE_ATTRIBUTES_REPLY: &[u8] = b"\x1b[?62;22c";
+
+/// The default colors a pseudo-terminal reports when a program asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalColors {
+    /// White text on black.
+    Dark,
+    /// Black text on white.
+    Light,
+    /// No answer to OSC 10 or OSC 11, only to DA1, like a terminal without color queries.
+    Unknown,
+    /// White text on black, answered only after [`LATE_REPLY`], like a slow remote link.
+    LateDark,
+}
+
+/// How long a [`TerminalColors::LateDark`] terminal waits before it answers.
+pub(crate) const LATE_REPLY: Duration = Duration::from_millis(1_500);
+
+impl TerminalColors {
+    fn reply(self, query: &[u8]) -> Option<&'static [u8]> {
+        match (self, query) {
+            (_, DEVICE_ATTRIBUTES_QUERY) => Some(DEVICE_ATTRIBUTES_REPLY),
+            (Self::Dark | Self::LateDark, FOREGROUND_QUERY) => {
+                Some(b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\")
+            }
+            (Self::Dark | Self::LateDark, BACKGROUND_QUERY) => {
+                Some(b"\x1b]11;rgb:0000/0000/0000\x1b\\")
+            }
+            (Self::Light, FOREGROUND_QUERY) => Some(b"\x1b]10;rgb:0000/0000/0000\x1b\\"),
+            (Self::Light, BACKGROUND_QUERY) => Some(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"),
+            _ => None,
+        }
+    }
+}
+
 /// How long a prompt or a cursor question may take to appear on a loaded CI host.
 const WAIT_BUDGET: Duration = Duration::from_secs(30);
 /// How long a finished exchange may take to end in the child's exit.
@@ -102,6 +143,12 @@ pub(crate) struct PtyChild {
     /// How far [`Self::expect`] has consumed the output.
     consumed: usize,
     answer: AnswerQueries,
+    /// The default colors this terminal reports, and how far the output is scanned for color
+    /// questions.
+    colors: TerminalColors,
+    color_queries_scanned: usize,
+    /// When a late terminal first saw a color question.
+    color_query_seen: Option<Instant>,
 }
 
 impl PtyChild {
@@ -111,13 +158,33 @@ impl PtyChild {
     /// harness owns the terminal. The master is kept until teardown: it owns the console the
     /// child is attached to (invariant 4).
     pub(crate) fn spawn(command: CommandBuilder, size: PtySize, answer: AnswerQueries) -> Self {
+        Self::spawn_with_typeahead(command, size, answer, &[])
+    }
+
+    /// Start the child with `keys` already waiting on its terminal, as keys that a person typed
+    /// before the program started.
+    ///
+    /// The terminal holds the keys before the child exists, so no scheduling delay of the test
+    /// thread can let the child read its terminal first.
+    pub(crate) fn spawn_with_typeahead(
+        command: CommandBuilder,
+        size: PtySize,
+        answer: AnswerQueries,
+        keys: &[u8],
+    ) -> Self {
         let pair = native_pty_system().openpty(size).unwrap();
+        let early_writer = (!keys.is_empty()).then(|| {
+            let mut writer = pair.master.take_writer().unwrap();
+            writer.write_all(keys).unwrap();
+            writer.flush().unwrap();
+            writer
+        });
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
 
         let master = pair.master;
         let mut reader = master.try_clone_reader().unwrap();
-        let writer = master.take_writer().unwrap();
+        let writer = early_writer.unwrap_or_else(|| master.take_writer().unwrap());
         let (sender, chunks) = mpsc::channel();
         thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
@@ -142,7 +209,22 @@ impl PtyChild {
             last_sent: Vec::new(),
             consumed: 0,
             answer,
+            colors: TerminalColors::Unknown,
+            color_queries_scanned: 0,
+            color_query_seen: None,
         }
+    }
+
+    /// Whether a late terminal has sent its color answers.
+    pub(crate) fn late_color_answers_sent(&self) -> bool {
+        self.colors == TerminalColors::LateDark
+            && self.color_query_seen.is_some()
+            && self.color_queries_scanned > 0
+    }
+
+    /// Report `colors` to every later color question. Call it before the first wait.
+    pub(crate) fn set_terminal_colors(&mut self, colors: TerminalColors) {
+        self.colors = colors;
     }
 
     /// Pull everything already buffered, answering any new cursor questions.
@@ -151,6 +233,46 @@ impl PtyChild {
             self.output.extend_from_slice(&chunk);
         }
         self.answer_new_cursor_queries();
+        self.answer_new_color_queries();
+    }
+
+    /// Answer each color question once, in the order the child asked (invariant 3).
+    ///
+    /// Both lanes answer: `AnswerQueries::Off` exists because a lane scripts its own cursor
+    /// reply, and no lane scripts a color reply. An unanswered color question makes the child
+    /// wait for its timeout and read the keys a test types meanwhile.
+    fn answer_new_color_queries(&mut self) {
+        let queries = [FOREGROUND_QUERY, BACKGROUND_QUERY, DEVICE_ATTRIBUTES_QUERY];
+        if self.colors == TerminalColors::LateDark {
+            let asked = queries.iter().any(|query| {
+                self.output[self.color_queries_scanned..]
+                    .windows(query.len())
+                    .any(|window| window == *query)
+            });
+            if !asked {
+                return;
+            }
+            let seen = *self.color_query_seen.get_or_insert_with(Instant::now);
+            if seen.elapsed() < LATE_REPLY {
+                return;
+            }
+        }
+        while let Some((at, query)) = queries
+            .iter()
+            .filter_map(|query| {
+                self.output[self.color_queries_scanned..]
+                    .windows(query.len())
+                    .position(|window| window == *query)
+                    .map(|offset| (self.color_queries_scanned + offset, *query))
+            })
+            .min_by_key(|(at, _)| *at)
+        {
+            if let Some(reply) = self.colors.reply(query) {
+                let _ = self.writer.write_all(reply);
+                let _ = self.writer.flush();
+            }
+            self.color_queries_scanned = at + query.len();
+        }
     }
 
     /// Answer every cursor question this terminal has not answered yet (invariant 3).
@@ -321,6 +443,7 @@ impl PtyChild {
                 Ok(chunk) => {
                     self.output.extend_from_slice(&chunk);
                     self.answer_new_cursor_queries();
+                    self.answer_new_color_queries();
                 }
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     return;

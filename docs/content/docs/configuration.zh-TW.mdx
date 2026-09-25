@@ -20,6 +20,8 @@ description: config.toml 與每個 `skit config` 鍵。
 | `mirror.pypi` | `tsinghua` / `aliyun` / `ustc` / 一個 URL / `off` | Python 套件索引 |
 | `mirror.github` | `nju` / 一個 `https://` 基礎 URL / `off` | Python 建置版本與 uv 執行檔 —— 必須使用 https，因為下載的執行檔會被執行 |
 | `mirror.npm` | `npmmirror` / 一個 URL / `off` | JS/TS 套件登錄庫 |
+| `theme` | `terminal` / `skit` | 介面配色：跟著終端機自己的配色（預設），或用 skit 固定的配色 |
+| `accent` | `auto` / `none` / `red` `green` `yellow` `blue` `magenta` `cyan`，每個也有 `bright-…` 版本 | `terminal` 配色的強調色：跟著背景走（預設）、不用顏色，或用你終端機配色裡的那個顏色 |
 
 說明：
 
@@ -27,5 +29,17 @@ description: config.toml 與每個 `skit config` 鍵。
   在總開關關閉時寫入某個軸，會在標準錯誤上給出警告。
 - 鏡像設定從不觸碰你的全域 uv 組態或 shell；它們以環境覆蓋層的方式
   作用於 skit 的子行程 —— 參見[環境變數](/zh-TW/docs/environment)。
+- `theme = terminal` 直接用終端機自己的顏色。文字維持終端機的預設顏色，
+  狀態靠粗體、暗淡和反白來區分，按鈕帶方括號（例如 `[放棄]`），取得焦點時反白；
+  邊框和選取標記只用一種強調色：深色背景用青色，淺色背景用洋紅。
+  為了知道背景是深是淺，skit 啟動時會問終端機一次；
+  透過 SSH 連線時不問，在 Windows 上只問 Windows Terminal；終端機沒回應就不用強調色。
+- `accent` 決定 `terminal` 配色下邊框、標記和按鍵的顏色。`auto` 在深色背景用青色、
+  淺色背景用洋紅；寫顏色名就用你終端機配色裡的那個顏色；`none` 就不上色。
+  只有 `auto` 需要問終端機背景色，所以設成別的值，啟動時也就不用問了。
+- `theme = skit` 保留 0.4 版那套固定的 skit 配色，不看 `accent`。配色和強調色
+  也都可以在「偏好設定」的「配色」裡切換。
+- 設定了 `NO_COLOR` 時，兩種配色都會拿掉所有顏色 —— 參見
+  [環境變數](/zh-TW/docs/environment)。
 - 提示詞執行器也儲存在這個檔案中（`[[prompt.runners]]`），但你應該透過
   `skit runner add` / `remove` / `list` 管理它們，而不是原始鍵。

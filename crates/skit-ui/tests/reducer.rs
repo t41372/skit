@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use skit_application::library_detail::LibrarySurface;
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
-    PreferencesError, PreferencesSnapshot,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+    PreferencesDraft, PreferencesError, PreferencesSnapshot, ThemeChoice,
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan, SourcePermissions};
 use skit_domain::parameters::ParamDecl;
@@ -75,6 +75,8 @@ fn preferences_view_with_runners(runners: Vec<RunnerRow>) -> PreferencesView {
         editor_fallback: Some("vim".to_owned()),
         form: InteractiveFormChoice::Tui,
         after_run: AfterRunChoice::Exit,
+        theme: ThemeChoice::Terminal,
+        accent: AccentChoice::Auto,
         javascript: JavascriptChoice::Automatic,
         bash_path: None,
         runners,
@@ -343,6 +345,8 @@ fn a_saved_preferences_transaction_returns_to_library_with_a_separate_locale_tag
         state.update(Action::PreferencesSaved {
             locale: "zh-TW".to_owned(),
             message: "偏好設定已儲存".to_owned(),
+            theme: None,
+            accent: None,
         }),
         Effect::None
     );

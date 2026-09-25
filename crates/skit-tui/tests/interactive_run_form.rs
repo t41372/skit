@@ -2965,9 +2965,9 @@ fn run_exact_fit_and_one_row_overflow_own_only_a_real_scrollbar_column() {
     assert!(
         (overflow_geometry.rows.y..overflow_geometry.rows.bottom()).any(|row| {
             let cell = &overflow.backend().buffer()[(overflow_geometry.rows.right(), row)];
-            matches!(cell.symbol(), "█" | "▲" | "▼") && cell.fg == Color::DarkGray
+            matches!(cell.symbol(), "█" | "▲" | "▼") && cell.fg == Color::Rgb(0x4A, 0x41, 0x3C)
         }),
-        "the scrollbar lost its muted visual role",
+        "the scrollbar lost its version 0.4 color (#4A413C)",
     );
 }
 

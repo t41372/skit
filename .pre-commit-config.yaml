@@ -14,6 +14,8 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
+        # CONTRIBUTING.md gives the hand-recorded mouse GIF a budget of 2 MB.
+        exclude: ^docs/assets/demo-mouse\.gif$
       - id: mixed-line-ending
         args: [--fix=lf]
         exclude: ^tests/corpus/

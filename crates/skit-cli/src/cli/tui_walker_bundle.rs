@@ -5280,6 +5280,8 @@ fn rows_with_preferences_saved(response_locale: &str, row_locale: &str) -> Vec<T
     cause["response"] = serde_json::to_value(skit_ui::Action::PreferencesSaved {
         locale: response_locale.to_owned(),
         message: "saved".to_owned(),
+        theme: None,
+        accent: None,
     })
     .unwrap();
     rows[2].cause = serde_json::from_value(cause).unwrap();

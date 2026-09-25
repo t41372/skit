@@ -36,8 +36,34 @@ const PYPI_PRESETS: &[(&str, &str)] = &[
 const GITHUB_PRESETS: &[(&str, &str)] = &[("nju", "https://mirror.nju.edu.cn/github-release")];
 const NPM_PRESETS: &[(&str, &str)] = &[("npmmirror", "https://registry.npmmirror.com")];
 
-/// Supported setting names in the v0.4 listing order.
-pub const CONFIG_KEYS: [&str; 10] = [
+/// The palette of the interactive interface when `config.toml` names none.
+const DEFAULT_THEME: &str = "terminal";
+
+/// The accent of the terminal theme when `config.toml` names none: the hue follows the
+/// terminal background.
+const DEFAULT_ACCENT: &str = "auto";
+
+/// Every `accent` value: `auto`, `none`, and the colors of the terminal's own palette that the
+/// terminal theme can draw a mark in. Black, white, and gray are not colors a mark can take.
+const ACCENT_CHOICES: [&str; 14] = [
+    "auto",
+    "none",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "bright-red",
+    "bright-green",
+    "bright-yellow",
+    "bright-blue",
+    "bright-magenta",
+    "bright-cyan",
+];
+
+/// Supported setting names in the v0.4 listing order, then the settings that version 0.5 adds.
+pub const CONFIG_KEYS: [&str; 12] = [
     "lang",
     "editor",
     "mirror",
@@ -48,6 +74,8 @@ pub const CONFIG_KEYS: [&str; 10] = [
     "after_run",
     "shell.bash_path",
     "js.runner",
+    "theme",
+    "accent",
 ];
 
 /// Stored mirror axes and their master switch.
@@ -394,6 +422,18 @@ impl FileConfigStore {
                 read_key(&document, "js.runner")
                     .filter(|value| matches!(value.as_str(), "deno" | "bun" | "node"))
                     .unwrap_or_default(),
+            ),
+            (
+                "theme".to_owned(),
+                read_key(&document, "theme")
+                    .filter(|value| matches!(value.as_str(), "terminal" | "skit"))
+                    .unwrap_or_else(|| DEFAULT_THEME.to_owned()),
+            ),
+            (
+                "accent".to_owned(),
+                read_key(&document, "accent")
+                    .filter(|value| ACCENT_CHOICES.contains(&value.as_str()))
+                    .unwrap_or_else(|| DEFAULT_ACCENT.to_owned()),
             ),
         ]);
         let mirror = mirror_from_document(&document);
@@ -848,6 +888,16 @@ fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
             Message::new("Unknown after-run behavior: {}. Choose from: exit, stay").with(value),
         )),
         "shell.bash_path" => Ok(value.trim().to_owned()),
+        "theme" if matches!(value, "terminal" | "skit") => Ok(value.to_owned()),
+        "theme" => Err(ConfigError::Usage(
+            Message::new("Unknown theme: {}. Choose from: terminal, skit").with(value),
+        )),
+        "accent" if ACCENT_CHOICES.contains(&value) => Ok(value.to_owned()),
+        "accent" => Err(ConfigError::Usage(
+            Message::new("Unknown accent: {}. Choose from: {}")
+                .with(value)
+                .with(ACCENT_CHOICES.join(", ")),
+        )),
         "js.runner" if value.trim().is_empty() => Ok(String::new()),
         "js.runner" if matches!(value, "deno" | "bun" | "node") => Ok(value.to_owned()),
         "js.runner" => Err(ConfigError::Usage(

@@ -1,3 +1,4 @@
+use ratatui_crossterm::crossterm::event as crossterm_event;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -6,7 +7,7 @@ use std::{
     io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{
@@ -462,6 +463,7 @@ enum Command {
     /// Read or set skit's settings (language, editor, mirror, form style, after-run).
     Config {
         /// Configuration key.
+        #[arg(add = ArgValueCandidates::new(config_key_candidates))]
         key: Option<String>,
         /// Replacement value.
         value: Option<String>,
@@ -714,6 +716,14 @@ pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
         |_| Vec::new(),
         |directory| entry_candidates_from(&FileStore::new(directory)),
     )
+}
+
+/// Every setting name that `skit config` reads and writes.
+pub(crate) fn config_key_candidates() -> Vec<CompletionCandidate> {
+    CONFIG_KEYS
+        .into_iter()
+        .map(CompletionCandidate::new)
+        .collect()
 }
 
 pub(crate) fn add_kind_candidates() -> Vec<CompletionCandidate> {
@@ -1476,8 +1486,14 @@ fn hosted_add(
     let locale = host.locale();
     let workflow = tui_add_workflow(service.repository(), &state_dir, config_dir)?
         .with_review_defaults(add_review_defaults(config_dir, &state_dir, options)?);
-    let slug = skit_tui::run_add_workflow(workflow, opening, |effect| host.serve(effect), locale)?
-        .ok_or(CliError::AddCancelled)?;
+    let slug = skit_tui::run_add_workflow(
+        workflow,
+        opening,
+        |effect| host.serve(effect),
+        locale,
+        tui_appearance(),
+    )?
+    .ok_or(CliError::AddCancelled)?;
     let entry = service.show(slug.as_str())?;
     print_add_summary(service.repository(), &entry)?;
     Ok(())
@@ -2255,6 +2271,7 @@ fn run_entry(
             forms.enhanced,
             |effect| host.serve(effect),
             locale,
+            tui_appearance(),
             path_completion_provider(),
         )?
         .ok_or(CliError::Aborted)?
@@ -8433,9 +8450,187 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
         |effect| host.preflight(effect),
         |effect| host.serve(effect),
         locale,
+        tui_appearance(),
         path_completion_provider(),
     )
     .map_err(CliError::from)
+}
+
+/// The color choices of a terminal session.
+///
+/// Version 0.4's interface counts `NO_COLOR` as set when the variable is present, even when it is
+/// empty (Textual 8.2.8 `app.py:614`). The line output keeps Rich's non-empty test in
+/// [`colour_is_welcome`]; both are version 0.4 behavior.
+fn tui_appearance() -> skit_tui::Appearance {
+    let no_color = env::var_os("NO_COLOR").is_some();
+    let theme = tui_theme();
+    let accent = tui_accent();
+    let appearance = skit_tui::Appearance::default()
+        .with_no_color(no_color)
+        .with_color_depth(tui_color_depth())
+        .with_theme(theme)
+        .with_accent(accent);
+    // Only `accent = auto` reads the background, so only it asks the terminal.
+    if theme == skit_tui::ThemeName::Terminal
+        && !no_color
+        && accent == skit_application::preferences::AccentChoice::Auto
+    {
+        appearance.with_background(terminal_background())
+    } else {
+        appearance
+    }
+}
+
+/// Ask the terminal whether its background is dark or light (OSC 10 and OSC 11).
+///
+/// Only the terminal theme uses the answer, to pick its accent. The question goes out only when
+/// both standard streams are a terminal, before the interface claims the terminal. A terminal that
+/// answers only the device-attributes question that follows leaves the background unknown, and the
+/// theme then uses no hue.
+///
+/// The answers arrive on the same input as the keys, so four rules keep them apart:
+/// - Keys that the user typed before the question stay for the interface: with input waiting,
+///   skit does not ask.
+/// - Over a remote login skit does not ask, because a slow link can deliver the answers after
+///   any timeout.
+/// - On Windows skit asks only Windows Terminal ([`console_answers_colors`]).
+/// - After a timeout, skit reads and drops input for [`LATE_ANSWER_WINDOW`], so a late answer
+///   cannot reach the interface as keys (crossterm would read `ESC ] 11 ; rgb:…` as one key per
+///   character).
+fn terminal_background() -> skit_tui::Background {
+    use std::io::IsTerminal as _;
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+        || env::var_os("SSH_CONNECTION").is_some()
+        || env::var_os("SSH_TTY").is_some()
+        || !console_answers_colors()
+    {
+        return skit_tui::Background::Unknown;
+    }
+    // Raw mode comes first: in line mode the terminal holds typed keys back until Enter, so the
+    // check could not see them.
+    let Some(_raw) =
+        RawModeGuard::enter().filter(|_| !crossterm_event::poll(Duration::ZERO).unwrap_or(true))
+    else {
+        return skit_tui::Background::Unknown;
+    };
+    let mut options = terminal_colorsaurus::QueryOptions::default();
+    options.timeout = COLOR_QUESTION_TIMEOUT;
+    match terminal_colorsaurus::theme_mode(options) {
+        Ok(terminal_colorsaurus::ThemeMode::Dark) => skit_tui::Background::Dark,
+        Ok(terminal_colorsaurus::ThemeMode::Light) => skit_tui::Background::Light,
+        Err(terminal_colorsaurus::Error::Timeout(_)) => {
+            drop_late_answers();
+            skit_tui::Background::Unknown
+        }
+        Err(_) => skit_tui::Background::Unknown,
+    }
+}
+
+/// Whether this Windows console answers the color question.
+///
+/// `terminal-colorsaurus` supports Windows Terminal 1.22 and later, which sets `WT_SESSION`.
+/// Another console can answer nothing, and the keys typed meanwhile are then lost, or it can
+/// answer late, and the console then turns the answer into keys.
+#[cfg(windows)]
+fn console_answers_colors() -> bool {
+    env::var_os("WT_SESSION").is_some()
+}
+
+/// Every Unix terminal gets the color question.
+#[cfg(not(windows))]
+const fn console_answers_colors() -> bool {
+    true
+}
+
+/// How long skit waits for the color answers. `terminal-colorsaurus` sizes its own default for a
+/// slow connection.
+const COLOR_QUESTION_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long skit drops input after the color question timed out.
+const LATE_ANSWER_WINDOW: Duration = Duration::from_secs(1);
+
+/// Read and drop every input event until [`LATE_ANSWER_WINDOW`] ends.
+fn drop_late_answers() {
+    let deadline = std::time::Instant::now() + LATE_ANSWER_WINDOW;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match crossterm_event::poll(left) {
+            Ok(true) => {
+                let _ = crossterm_event::read();
+            }
+            Ok(false) | Err(_) => break,
+        }
+    }
+}
+
+/// Raw mode for the color question, turned off again on every return.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Option<Self> {
+        ratatui_crossterm::crossterm::terminal::enable_raw_mode()
+            .ok()
+            .map(|()| Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = ratatui_crossterm::crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// The palette that the `theme` setting names. A setting that cannot be read keeps the default,
+/// the terminal theme.
+fn tui_theme() -> skit_tui::ThemeName {
+    let theme = resolve_config_dir()
+        .ok()
+        .and_then(|directory| FileConfigStore::new(directory).get("theme").ok());
+    match theme.as_deref() {
+        Some("skit") => skit_tui::ThemeName::Skit,
+        _ => skit_tui::ThemeName::Terminal,
+    }
+}
+
+/// The hue that the `accent` setting names. A setting that cannot be read keeps the default,
+/// `auto`.
+fn tui_accent() -> skit_application::preferences::AccentChoice {
+    let accent = resolve_config_dir()
+        .ok()
+        .and_then(|directory| FileConfigStore::new(directory).get("accent").ok());
+    skit_application::preferences::AccentChoice::from_config(accent.as_deref().unwrap_or_default())
+}
+
+/// The color depth of the terminal, decided as version 0.4 decides it.
+///
+/// This is Rich 15.0.0 `Console._detect_color_system` (`console.py:789-811`) for a terminal:
+/// `COLORTERM` of `truecolor` or `24bit` gives 24-bit color; otherwise the text after the last
+/// hyphen of `TERM` decides, where `256color` and `kitty` give 256 colors and anything else gives
+/// the 16 standard colors.
+#[cfg(not(windows))]
+fn tui_color_depth() -> skit_tui::ColorDepth {
+    let lowered = |name| {
+        env::var_os(name)
+            .map(|value| value.to_string_lossy().trim().to_lowercase())
+            .unwrap_or_default()
+    };
+    if matches!(lowered("COLORTERM").as_str(), "truecolor" | "24bit") {
+        return skit_tui::ColorDepth::TrueColor;
+    }
+    let term = lowered("TERM");
+    match term
+        .rsplit_once('-')
+        .map_or(term.as_str(), |(_, colors)| colors)
+    {
+        "256color" | "kitty" => skit_tui::ColorDepth::EightBit,
+        _ => skit_tui::ColorDepth::Standard,
+    }
+}
+
+/// On Windows, Rich asks the console, and Textual turns off the legacy console, so a console
+/// that runs skit's interface (virtual terminal processing) gets 24-bit color.
+#[cfg(windows)]
+fn tui_color_depth() -> skit_tui::ColorDepth {
+    skit_tui::ColorDepth::TrueColor
 }
 
 fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
@@ -9388,6 +9583,15 @@ fn tui_preferences_effect_at(
         | PreferencesEffect::RunnerStaged { .. } => Ok(UiAction::ClearStatus),
         PreferencesEffect::Save(change) => {
             let requested_language = change.settings.get("lang").cloned();
+            // The change set names the theme only when the save changed it.
+            let theme = change
+                .settings
+                .get("theme")
+                .map(|value| skit_application::preferences::ThemeChoice::from_config(value));
+            let accent = change
+                .settings
+                .get("accent")
+                .map(|value| skit_application::preferences::AccentChoice::from_config(value));
             if let Err(error) = change.validate_files(|path| preference_path_is_file(path, host)) {
                 return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
                     error,
@@ -9405,6 +9609,8 @@ fn tui_preferences_effect_at(
             Ok(UiAction::PreferencesSaved {
                 locale: locale.tag().to_owned(),
                 message: text(locale, "Preferences saved").into_owned(),
+                theme,
+                accent,
             })
         }
         PreferencesEffect::DiscoverAgentSkillTargets => Ok(UiAction::Preferences(
@@ -9969,6 +10175,8 @@ fn tui_preferences_view_with_context(
             "stay" => AfterRunChoice::Stay,
             _ => AfterRunChoice::Exit,
         },
+        theme: skit_application::preferences::ThemeChoice::from_config(&setting("theme")),
+        accent: skit_application::preferences::AccentChoice::from_config(&setting("accent")),
         javascript: match setting("js.runner").as_str() {
             "deno" => JavascriptChoice::Deno,
             "bun" => JavascriptChoice::Bun,

@@ -121,3 +121,84 @@ The change is an addition, not a removal: the free-text field the oracle produce
 Boolean value anyway, and the checkbox delivers the same `-On`/`-On:$false` flag with a discoverable
 control. `test_bool_default_is_carried` in `crates/skit-language/tests/port_test_powershell.rs`
 pins the kept behavior (`default == Some(Bool(true))`, not degraded).
+
+## The interface follows the terminal's colors by default
+
+Version 0.4 has one fixed palette, `CLAUDE_THEME` (`src/skit/theme.py:46-58`), with a terracotta
+accent (`:20`), near-white titles, and a warm selection bar. No setting changes it.
+
+Version 0.5 adds the `theme` setting with two values. The owner picked `terminal` as the default on
+2026-09-23 (`docs/design/terminal-palette.md`).
+
+- `terminal` draws text in the terminal's default foreground on its default background. Bold,
+  dim, and reverse video show the state. One accent hue marks focused borders, selection markers,
+  and footer keys: cyan on a dark background, magenta on a light background, and no hue when the
+  background is unknown. A status line colors only its ✓ ✗ ⚠ → glyph. A footer key is a reversed
+  keycap. An idle button shows brackets, as in `[Discard]`, and a focused button is reversed.
+- `skit` keeps the version 0.4 palette, with the parity restorations of the design, so nothing is
+  removed. `skit config theme skit` or the Preferences "Colors" section gives it back.
+
+A user who does not change the setting sees a different look after the upgrade. This is the
+deliberate change. Every state that the `skit` theme shows with a color, the `terminal` theme shows
+with an attribute. The census in `crates/skit-cli/tests/tui_palette_census.rs` checks every
+terminal-theme frame: no fixed color, no background without reverse video, and no hue on a letter
+or a digit.
+
+A downgrade is safe. Version 0.4 reads `config.toml` as a whole and keeps a key it does not know
+(`src/skit/config.py:91-103`).
+
+## `skit config theme` and `skit config accent` are new settings
+
+Version 0.4 refuses `skit config theme` and `skit config accent` with "Unknown setting" and exit
+code 2 (`src/skit/cli.py:5511-5515`). Version 0.5 reads and writes both keys with `--json`,
+deterministic exit codes, and shell completion, as product rule 4 asks. The `skit config` listing
+and its `--json` object have two more keys. An unknown value exits with code 2 and does not change
+`config.toml`. `crates/skit-cli/tests/theme_config.rs` pins this.
+
+- `theme` is `terminal` (default) or `skit`.
+- `accent` picks the one hue of the terminal theme: `auto` (default: cyan on a dark background,
+  magenta on a light one, none when the background is unknown), `none`, or one of `red`, `green`,
+  `yellow`, `blue`, `magenta`, `cyan`, and their `bright-` forms. A color name picks that color of
+  the terminal's own palette. Black, white, and gray are not choices, because the terminal theme
+  never draws a mark in them. The `skit` theme ignores the setting.
+
+The Preferences screen gets a "Colors" section with the same two choices, as product rule 4 asks
+in the other direction. The section comes after every version 0.4 control, so Tab visits the
+version 0.4 controls in the version 0.4 order. Shift+Tab from the first control now reaches the
+accent choice first, then the palette choice, before the last mirror control. A save writes
+`theme` or `accent` only when the value changed, so a save without a change keeps the version 0.4
+`config.toml` bytes.
+
+## skit asks the terminal for its background color
+
+Textual 8.2.8, the version 0.4 interface library, does not ask for the background color. It
+sends no OSC 10 or OSC 11 sequence: its only OSC sequences are 52 (clipboard) and 22 (pointer
+shape).
+
+Version 0.5 must know the background to pick the accent of the `terminal` theme. Before the
+interface starts, skit sends the OSC 10, OSC 11, and device-attributes questions through
+`terminal-colorsaurus` and waits up to 1 second. It asks only when all of these are true:
+
+- The theme is `terminal`, the accent is `auto`, and `NO_COLOR` is not set. Any other accent
+  names its hue, so skit has no question to ask.
+- Standard input and standard output are both a terminal.
+- `SSH_CONNECTION` and `SSH_TTY` are not set. A slow link can deliver the answer after any timeout,
+  and a late answer arrives on the same input as the keys.
+- On Windows, `WT_SESSION` is set. `terminal-colorsaurus` supports Windows Terminal 1.22 and later.
+  Another Windows console can answer nothing, or answer late and turn the answer into keys.
+- No input is waiting. Keys that the user typed before the question stay for the interface.
+
+A terminal that answers only the device-attributes question gives an unknown background at once,
+with no wait. When the question times out, skit reads and drops input for 1 more second, so a late
+answer cannot reach the interface as keys. A key typed in that second is lost. Without this rule, a
+late `ESC ] 11 ; rgb:…` answer opened an entry and typed the rest of the answer into its form; the
+test `a_late_color_answer_never_becomes_keys` pins the fix.
+
+## `NO_COLOR` in the terminal theme reverses the selection
+
+Under `NO_COLOR`, version 0.4 removes every color (Textual `NoColor`). The selected row keeps only
+bold, and every border has the default foreground. The `skit` theme keeps that result.
+
+The `terminal` theme shows the state with attributes before any filter, so under `NO_COLOR` its
+selected row is bold and reversed, and an idle border is dim. With the new default, a `NO_COLOR` user
+sees this look. It adds a visible state and removes none.

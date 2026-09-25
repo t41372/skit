@@ -12,7 +12,11 @@ description: skit 读取的每个变量，以及它为子进程设置的变量�
 | `SKIT_CONFIG_DIR` | 覆盖配置根目录 —— `config.toml` |
 | `SKIT_LANG` | 本进程的界面语言（`SKIT_LANG=zh-TW skit`） |
 | `VISUAL` / `EDITOR` | 当 `editor` 配置键未设置时使用的编辑器 |
-| `TERM` | `TERM=dumb` 把交互流程切换为纯文本逐行提问（屏幕阅读器、Emacs shell） |
+| `TERM` | `TERM=dumb` 把交互流程切换为纯文本逐行提问（屏幕阅读器、Emacs shell）。在 `skit` 配色下，后缀是 `256color` 或 `kitty` 时用 256 色，其他值用 16 色 |
+| `COLORTERM` | 值为 `truecolor` 或 `24bit` 时，`skit` 配色使用 24 位真彩色。Windows 上 `skit` 配色始终使用 24 位色 |
+| `NO_COLOR` | 去掉所有颜色，保留粗体、暗淡和反色。界面只要设置了这个变量就生效（空值也算）；逐行输出只在值非空时生效 |
+| `SSH_CONNECTION` / `SSH_TTY` | skit 不向终端询问背景色，所以 `terminal` 配色不用强调色 |
+| `WT_SESSION`（Windows） | Windows Terminal 会设置它。在 Windows 上，只有设置了它，skit 才向终端询问背景色 |
 | `PATHEXT`（Windows） | 在分类可执行文件时，决定哪些扩展名算作可运行 |
 
 优先级细节：

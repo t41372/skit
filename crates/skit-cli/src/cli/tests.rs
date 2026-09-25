@@ -4264,6 +4264,8 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         UiAction::PreferencesSaved {
             locale: "zh-TW".to_owned(),
             message: "偏好設定已儲存".to_owned(),
+            theme: None,
+            accent: None,
         }
     );
     assert_eq!(config.get("editor").unwrap(), "micro");
@@ -4278,6 +4280,8 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         UiAction::PreferencesSaved {
             locale: "zh-CN".to_owned(),
             message: "偏好设置已保存".to_owned(),
+            theme: None,
+            accent: None,
         }
     );
 

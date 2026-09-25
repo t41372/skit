@@ -18,6 +18,9 @@ IMAGE=skit-demo
 echo "==> building demo image (VHS + Rust skit + uv)…"
 docker build -f docs/assets/demo/Dockerfile -t "$IMAGE" .
 
+# The tape is mounted at /tape, not at /demo. The file picker shows the working directory on
+# camera, so /demo must hold only the demo scripts. A demo.tape in that list shows the recording
+# setup to the viewer.
 run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file in docs/assets/demo/
   docker run --rm -e "SKIT_LANG=$1" \
     -v "$PWD/docs/assets:/out" \
@@ -56,4 +59,9 @@ if [[ "$MODE" == "all" || "$MODE" == "shots" ]]; then
   shoot zh-TW zh    zh-TW
 fi
 
-echo "==> done."
+cat <<'EOF'
+==> done.
+
+    The mouse GIF (docs/assets/demo-mouse.gif) is not made here. VHS shows no pointer, so a
+    person records it by hand. See "Demo assets" in CONTRIBUTING.md.
+EOF

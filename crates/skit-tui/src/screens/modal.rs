@@ -2,7 +2,7 @@
 
 use ratatui_core::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
 };
@@ -10,9 +10,8 @@ use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::components::{
-    Button, ButtonState, ButtonStyle, ButtonVariant, DialogConfig, DialogFocusTarget, DialogState,
-    PopupDialog, ScrollableContentState, handle_scrollable_content_key,
-    handle_scrollable_content_mouse,
+    Button, ButtonState, ButtonVariant, DialogConfig, DialogFocusTarget, DialogState, PopupDialog,
+    ScrollableContentState, handle_scrollable_content_key, handle_scrollable_content_mouse,
 };
 use ratatui_interact::traits::{ContainerAction, EventResult};
 use ratatui_widgets::{
@@ -32,7 +31,7 @@ use crate::{
         scroll as snapshot_scroll,
     },
     pointer::{ClickOutcome, ClickTracker},
-    theme::{ACCENT, BOX_DIM, padded_panel},
+    theme::{self, Panel, padded_panel},
 };
 
 /// Result of one mature confirmation-dialog event.
@@ -203,8 +202,8 @@ impl ConfirmRemoveSession {
             .height_percent(38)
             .min_size(34, 7)
             .max_size(90, 12)
-            .border_color(ACCENT)
-            .focused_border_color(ACCENT)
+            .border_color(theme::panel_color(Panel::Dialog))
+            .focused_border_color(theme::panel_color(Panel::Dialog))
             .close_on_outside_click(false)
             .buttons(vec![
                 (text(locale, "Remove").into_owned(), ContainerAction::Submit),
@@ -234,7 +233,7 @@ impl ConfirmRemoveSession {
             frame.render_widget(Clear, area);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(ACCENT))
+                .border_style(theme::panel_border(Panel::Dialog))
                 .title(format!(" {} ", text(locale, "Confirm removal")));
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -255,9 +254,7 @@ impl ConfirmRemoveSession {
                     .wrap(Wrap { trim: false }),
                 message_area,
             );
-            let style = ButtonStyle::new(ButtonVariant::SingleLine)
-                .focused(Color::Black, ACCENT)
-                .unfocused(Color::White, BOX_DIM);
+            let style = theme::dialog_button_style();
             for (index, button_area) in button_areas {
                 let mut state = ButtonState::enabled();
                 state.set_focused(self.dialog.is_button_focused(index));
@@ -265,6 +262,7 @@ impl ConfirmRemoveSession {
                     .variant(ButtonVariant::SingleLine)
                     .style(style.clone())
                     .render_stateful(button_area, frame.buffer_mut());
+                theme::patch_button(frame.buffer_mut(), button_area, state.focused);
                 self.dialog
                     .click_regions
                     .register(button_area, DialogFocusTarget::Button(index));
@@ -279,12 +277,30 @@ impl ConfirmRemoveSession {
                     lines.push(Line::default());
                     lines.push(Line::from(Span::styled(
                         text(locale, "Your original file will not be deleted."),
-                        Style::default().add_modifier(Modifier::DIM),
+                        theme::muted(),
                     )));
                 }
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
             });
             popup.render(frame);
+            theme::patch_border_title(frame.buffer_mut(), popup_area);
+            // The dialog paints its buttons in fixed colors. The terminal theme keeps the
+            // terminal's colors and marks the state with attributes. The dialog sizes a click
+            // region as the label's bytes plus four cells but paints ` label ` from its left
+            // edge, so the mark covers the painted cells only.
+            for region in self.dialog.click_regions.regions() {
+                if let DialogFocusTarget::Button(index) = region.data {
+                    theme::patch_plain(frame.buffer_mut(), region.area);
+                    let painted = u16::try_from(config.buttons[index].0.width().saturating_add(2))
+                        .unwrap_or(u16::MAX)
+                        .min(region.area.width);
+                    theme::patch_button(
+                        frame.buffer_mut(),
+                        Rect::new(region.area.x, region.area.y, painted, 1),
+                        self.dialog.is_button_focused(index),
+                    );
+                }
+            }
         }
         self.config = Some(config);
         ViewGeometry::default()
@@ -559,7 +575,7 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     // Version 0.4 shows the question once, inside an untitled border
     // (`src/skit/tui_settings.py:42-65`). The header names the surface; the
     // panel itself must not repeat the body sentence as a title.
-    let block = padded_panel(String::new(), ACCENT);
+    let block = padded_panel(String::new(), Panel::Dialog);
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
 
@@ -581,9 +597,7 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     ])
     .spacing(1)
     .areas(actions);
-    let style = ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(Color::Black, ACCENT)
-        .unfocused(Color::White, BOX_DIM);
+    let style = theme::dialog_button_style();
     let discard_region = Button::new(&discard, &ButtonState::default())
         .variant(ButtonVariant::SingleLine)
         .style(style.clone())
@@ -592,6 +606,21 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
         .variant(ButtonVariant::SingleLine)
         .style(style)
         .render_stateful(keep_area, frame.buffer_mut());
+    // Each button paints ` label ` in the middle of an area two cells wider.
+    for (area, label) in [(discard_area, &discard), (keep_area, &keep)] {
+        let painted = u16::try_from(label.as_ref().width().saturating_add(2)).unwrap_or(u16::MAX);
+        let offset = area.width.saturating_sub(painted) / 2;
+        theme::patch_button(
+            frame.buffer_mut(),
+            Rect::new(
+                area.x.saturating_add(offset),
+                area.y,
+                painted.min(area.width),
+                1,
+            ),
+            false,
+        );
+    }
 
     ViewGeometry {
         rows: inner,

@@ -180,6 +180,8 @@ fn test_bare_config_json() {
         "after_run",
         "shell.bash_path",
         "js.runner",
+        "theme",
+        "accent",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -278,7 +280,9 @@ fn test_set_one_key_json_emits_final_pair() {
 #[test]
 fn test_unknown_key_exits_2() {
     let sandbox = Sandbox::new();
-    let result = sandbox.run(&["config", "theme"]);
+    // Version 0.4 used `theme` here. Version 0.5 adds `theme` as a setting (see
+    // docs/behavior-changes.md), so the test names a key that is still unknown.
+    let result = sandbox.run(&["config", "palette"]);
     assert_eq!(result.code, 2);
 }
 

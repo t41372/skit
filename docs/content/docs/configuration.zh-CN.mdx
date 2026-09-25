@@ -20,6 +20,8 @@ description: config.toml 与每个 `skit config` 键。
 | `mirror.pypi` | `tsinghua` / `aliyun` / `ustc` / 一个 URL / `off` | Python 软件包索引 |
 | `mirror.github` | `nju` / 一个 `https://` 基础 URL / `off` | Python 构建版本与 uv 二进制文件 —— 必须使用 https，因为下载的二进制文件会被执行 |
 | `mirror.npm` | `npmmirror` / 一个 URL / `off` | JS/TS 软件包注册表 |
+| `theme` | `terminal` / `skit` | 界面配色：跟随终端自己的配色（默认），或用 skit 固定的配色 |
+| `accent` | `auto` / `none` / `red` `green` `yellow` `blue` `magenta` `cyan`，每个也有 `bright-…` 版本 | `terminal` 配色的强调色：跟着背景走（默认）、不用颜色，或用你终端配色里的那个颜色 |
 
 说明：
 
@@ -27,5 +29,17 @@ description: config.toml 与每个 `skit config` 键。
   在总开关关闭时写入某个轴，会在标准错误上给出警告。
 - 镜像设置从不触碰你的全局 uv 配置或 shell；它们以环境覆盖层的方式
   作用于 skit 的子进程 —— 参见[环境变量](/zh-CN/docs/environment)。
+- `theme = terminal` 直接用终端自己的颜色。文字保持终端的默认颜色，
+  状态靠粗体、暗淡和反色来区分，按钮带方括号（如 `[放弃]`），获得焦点时反色；
+  边框和选中标记只用一种强调色：深色背景用青色，浅色背景用洋红。
+  为了知道背景是深是浅，skit 启动时会问终端一次；
+  通过 SSH 连接时不问，在 Windows 上只问 Windows Terminal；终端没回答就不用强调色。
+- `accent` 决定 `terminal` 配色下边框、标记和按键的颜色。`auto` 在深色背景用青色、
+  浅色背景用洋红；写颜色名就用你终端配色里的那个颜色；`none` 就不上色。
+  只有 `auto` 需要问终端背景色，所以设成别的值，启动时也就不用问了。
+- `theme = skit` 保留 0.4 版那套固定的 skit 配色，不看 `accent`。配色和强调色
+  也都可以在「偏好设置」的「配色」里切换。
+- 设置了 `NO_COLOR` 时，两种配色都会去掉所有颜色 —— 参见
+  [环境变量](/zh-CN/docs/environment)。
 - 提示词运行器也保存在这个文件中（`[[prompt.runners]]`），但你应该通过
   `skit runner add` / `remove` / `list` 管理它们，而不是原始键。

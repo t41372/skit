@@ -72,6 +72,129 @@ impl AfterRunChoice {
     }
 }
 
+/// The palette of the interactive interface.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    /// The terminal's own colors.
+    #[default]
+    Terminal,
+    /// The fixed skit palette of version 0.4.
+    Skit,
+}
+
+impl ThemeChoice {
+    /// The value that `config.toml` and `skit config theme` use.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Skit => "skit",
+        }
+    }
+
+    /// The choice that a stored value names. Every value except `skit` names the default, as
+    /// the store reads a stored value that it does not know.
+    #[must_use]
+    pub fn from_config(value: &str) -> Self {
+        if value == "skit" {
+            Self::Skit
+        } else {
+            Self::Terminal
+        }
+    }
+}
+
+/// The one hue of the terminal theme.
+///
+/// A color name picks that color of the terminal's own palette, so the hue follows the user's
+/// terminal colors. The `skit` theme ignores the choice.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccentChoice {
+    /// Cyan on a dark background, magenta on a light one, and no hue when the terminal does not
+    /// say. Only this choice asks the terminal for its colors.
+    #[default]
+    Auto,
+    /// No hue: marks use the default colors.
+    None,
+    /// ANSI red.
+    Red,
+    /// ANSI green.
+    Green,
+    /// ANSI yellow.
+    Yellow,
+    /// ANSI blue.
+    Blue,
+    /// ANSI magenta.
+    Magenta,
+    /// ANSI cyan.
+    Cyan,
+    /// ANSI bright red.
+    BrightRed,
+    /// ANSI bright green.
+    BrightGreen,
+    /// ANSI bright yellow.
+    BrightYellow,
+    /// ANSI bright blue.
+    BrightBlue,
+    /// ANSI bright magenta.
+    BrightMagenta,
+    /// ANSI bright cyan.
+    BrightCyan,
+}
+
+impl AccentChoice {
+    /// Every choice, in the order that `skit config` and Preferences name them.
+    pub const ALL: [Self; 14] = [
+        Self::Auto,
+        Self::None,
+        Self::Red,
+        Self::Green,
+        Self::Yellow,
+        Self::Blue,
+        Self::Magenta,
+        Self::Cyan,
+        Self::BrightRed,
+        Self::BrightGreen,
+        Self::BrightYellow,
+        Self::BrightBlue,
+        Self::BrightMagenta,
+        Self::BrightCyan,
+    ];
+
+    /// The value that `config.toml` and `skit config accent` use.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Blue => "blue",
+            Self::Magenta => "magenta",
+            Self::Cyan => "cyan",
+            Self::BrightRed => "bright-red",
+            Self::BrightGreen => "bright-green",
+            Self::BrightYellow => "bright-yellow",
+            Self::BrightBlue => "bright-blue",
+            Self::BrightMagenta => "bright-magenta",
+            Self::BrightCyan => "bright-cyan",
+        }
+    }
+
+    /// The choice that a stored value names. A value that names no choice names the default, as
+    /// the store reads a stored value that it does not know.
+    #[must_use]
+    pub fn from_config(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.as_str() == value)
+            .unwrap_or_default()
+    }
+}
+
 /// Preferred JavaScript and TypeScript runtime.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +250,10 @@ pub struct PreferencesSnapshot {
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,
+    /// Interface palette.
+    pub theme: ThemeChoice,
+    /// Hue of the terminal theme.
+    pub accent: AccentChoice,
     /// JavaScript runtime preference.
     pub javascript: JavascriptChoice,
     /// Windows bash path. `None` hides the Windows-only section.
@@ -154,6 +281,10 @@ pub struct PreferencesDraft {
     pub form: InteractiveFormChoice,
     /// Post-run preference.
     pub after_run: AfterRunChoice,
+    /// Interface palette.
+    pub theme: ThemeChoice,
+    /// Hue of the terminal theme.
+    pub accent: AccentChoice,
     /// JavaScript runtime preference.
     pub javascript: JavascriptChoice,
     /// Windows bash path. `None` hides the section.
@@ -182,6 +313,8 @@ struct PreferencesInitial {
     editor: String,
     form: InteractiveFormChoice,
     after_run: AfterRunChoice,
+    theme: ThemeChoice,
+    accent: AccentChoice,
     javascript: JavascriptChoice,
     bash_path: Option<String>,
     mirror_master: bool,
@@ -631,6 +764,8 @@ impl PreferencesDraft {
             editor: snapshot.editor.clone(),
             form: snapshot.form,
             after_run: snapshot.after_run,
+            theme: snapshot.theme,
+            accent: snapshot.accent,
             javascript: snapshot.javascript,
             bash_path: snapshot.bash_path.clone(),
             mirror_master,
@@ -650,6 +785,8 @@ impl PreferencesDraft {
             editor_fallback: snapshot.editor_fallback,
             form: snapshot.form,
             after_run: snapshot.after_run,
+            theme: snapshot.theme,
+            accent: snapshot.accent,
             javascript: snapshot.javascript,
             bash_path: snapshot.bash_path,
             runners: snapshot
@@ -901,6 +1038,8 @@ impl PreferencesDraft {
             || self.editor != self.initial.editor
             || self.form != self.initial.form
             || self.after_run != self.initial.after_run
+            || self.theme != self.initial.theme
+            || self.accent != self.initial.accent
             || self.javascript != self.initial.javascript
             || self.bash_path != self.initial.bash_path
             || self.mirror_master != self.initial.mirror_master
@@ -949,6 +1088,14 @@ impl PreferencesDraft {
         ]);
         if let Some(path) = bash_path {
             settings.insert("shell.bash_path".to_owned(), path.to_owned());
+        }
+        // Version 0.4 has no theme setting. A save writes it only when it changed, so a clean
+        // save keeps the historical bytes of `config.toml`.
+        if self.theme != self.initial.theme {
+            settings.insert("theme".to_owned(), self.theme.as_str().to_owned());
+        }
+        if self.accent != self.initial.accent {
+            settings.insert("accent".to_owned(), self.accent.as_str().to_owned());
         }
 
         let mirror_unchanged = self.mirror_master == self.initial.mirror_master

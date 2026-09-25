@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use skit_application::AgentTarget;
 use skit_application::preferences::{
-    AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, PreferencesChangeSet,
-    PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError, RunnerDraftRow,
-    github_preset_names, npm_preset_names, pypi_preset_names, runner_row_taken_by_its_key,
+    AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
+    PreferencesChangeSet, PreferencesDraft, PreferencesError, PreferencesField, RunnerDraftError,
+    RunnerDraftRow, ThemeChoice, github_preset_names, npm_preset_names, pypi_preset_names,
+    runner_row_taken_by_its_key,
 };
 use skit_application::runner_management::RunnerSaveRequest;
 
@@ -59,6 +60,8 @@ impl PreferencesDisplayText {
 pub enum PreferencesSectionId {
     /// Language choice and effective language.
     Language,
+    /// Interface palette.
+    Theme,
     /// Editor command and environment fallback.
     Editor,
     /// Terminal form presentation.
@@ -113,6 +116,10 @@ pub struct PreferencesSection {
 pub enum PreferencesControlId {
     /// Language picker.
     Language,
+    /// Interface palette choice.
+    Theme,
+    /// Hue of the terminal theme.
+    Accent,
     /// Editor command input.
     Editor,
     /// Interactive form choice.
@@ -224,6 +231,10 @@ pub enum PreferencesAction {
     SetInteractiveForm(InteractiveFormChoice),
     /// Replace the post-run choice.
     SetAfterRun(AfterRunChoice),
+    /// Replace the interface palette.
+    SetTheme(ThemeChoice),
+    /// Replace the hue of the terminal theme.
+    SetAccent(AccentChoice),
     /// Replace the JavaScript runtime.
     SetJavascript(JavascriptChoice),
     /// Replace the Windows bash path.
@@ -437,6 +448,8 @@ impl PreferencesView {
                 PreferencesAction::InstallAgentSkill,
             )),
             PreferencesControlId::Language
+            | PreferencesControlId::Theme
+            | PreferencesControlId::Accent
             | PreferencesControlId::Editor
             | PreferencesControlId::InteractiveForm
             | PreferencesControlId::AfterRun
@@ -646,6 +659,37 @@ impl PreferencesView {
                 text_control(&self.draft.npm_url, FormInputKind::Text, "npm registry URL"),
             ));
         }
+        // Version 0.5 adds the palette after every version 0.4 control, so the version 0.4
+        // focus order stays unchanged.
+        controls.push(control(
+            PreferencesControlId::Theme,
+            "",
+            "",
+            choice_control(
+                vec![
+                    option(
+                        "terminal",
+                        "Terminal colors — follow your terminal's palette",
+                    ),
+                    option("skit", "skit classic — the fixed skit palette"),
+                ],
+                self.draft.theme.as_str().to_owned(),
+                ChoicePresentation::Radio,
+            ),
+        ));
+        controls.push(control(
+            PreferencesControlId::Accent,
+            "Accent color",
+            "The color of borders, markers, and keys in Terminal colors. Red, green, and yellow also show errors, success, and warnings.",
+            choice_control(
+                AccentChoice::ALL
+                    .into_iter()
+                    .map(|choice| option(choice.as_str(), accent_label(choice)))
+                    .collect(),
+                self.draft.accent.as_str().to_owned(),
+                ChoicePresentation::Picker,
+            ),
+        ));
         controls
     }
 
@@ -753,6 +797,16 @@ impl PreferencesView {
                     ],
                 ),
             ),
+            section(
+                PreferencesSectionId::Theme,
+                "Colors",
+                "",
+                Vec::new(),
+                controls_for(
+                    &controls,
+                    &[PreferencesControlId::Theme, PreferencesControlId::Accent],
+                ),
+            ),
         ]);
         sections
     }
@@ -787,6 +841,14 @@ impl PreferencesView {
             PreferencesAction::SetAfterRun(value) => {
                 self.focused = PreferencesControlId::AfterRun;
                 self.draft.after_run = value;
+            }
+            PreferencesAction::SetTheme(value) => {
+                self.focused = PreferencesControlId::Theme;
+                self.draft.theme = value;
+            }
+            PreferencesAction::SetAccent(value) => {
+                self.focused = PreferencesControlId::Accent;
+                self.draft.accent = value;
             }
             PreferencesAction::SetJavascript(value) => {
                 self.focused = PreferencesControlId::Javascript;
@@ -1131,6 +1193,26 @@ fn choice_control(
     })
 }
 
+/// The Preferences label of an accent choice.
+const fn accent_label(choice: AccentChoice) -> &'static str {
+    match choice {
+        AccentChoice::Auto => "Automatic — cyan on a dark background, magenta on a light one",
+        AccentChoice::None => "None — no color",
+        AccentChoice::Red => "Red",
+        AccentChoice::Green => "Green",
+        AccentChoice::Yellow => "Yellow",
+        AccentChoice::Blue => "Blue",
+        AccentChoice::Magenta => "Magenta",
+        AccentChoice::Cyan => "Cyan",
+        AccentChoice::BrightRed => "Bright red",
+        AccentChoice::BrightGreen => "Bright green",
+        AccentChoice::BrightYellow => "Bright yellow",
+        AccentChoice::BrightBlue => "Bright blue",
+        AccentChoice::BrightMagenta => "Bright magenta",
+        AccentChoice::BrightCyan => "Bright cyan",
+    }
+}
+
 fn option(value: impl Into<String>, label: impl Into<String>) -> PreferencesOption {
     PreferencesOption {
         value: value.into(),
@@ -1202,7 +1284,7 @@ mod tests {
     use skit_application::preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
         PreferencesDraft, PreferencesError, PreferencesField, PreferencesSnapshot,
-        RunnerDraftError, RunnerDraftMarker,
+        RunnerDraftError, RunnerDraftMarker, ThemeChoice,
     };
     use skit_application::runner_management::{
         EditableArgvDialect, RunnerRow, RunnerRowIdentity, RunnerSaveRequest, RunnerSaveTarget,
@@ -1272,6 +1354,8 @@ mod tests {
             editor_fallback: Some("vim".to_owned()),
             form: InteractiveFormChoice::Tui,
             after_run: AfterRunChoice::Exit,
+            theme: ThemeChoice::Terminal,
+            accent: skit_application::preferences::AccentChoice::Auto,
             javascript: JavascriptChoice::Automatic,
             bash_path: windows.then(String::new),
             runners,
@@ -1322,6 +1406,8 @@ mod tests {
                 PreferencesControlId::PypiChoice,
                 PreferencesControlId::GithubChoice,
                 PreferencesControlId::NpmChoice,
+                PreferencesControlId::Theme,
+                PreferencesControlId::Accent,
             ]
         );
         assert_eq!(view.focused(), PreferencesControlId::Language);
@@ -1421,6 +1507,7 @@ mod tests {
                 PreferencesSectionId::Agents,
                 PreferencesSectionId::AgentSkill,
                 PreferencesSectionId::Mirrors,
+                PreferencesSectionId::Theme,
             ]
         );
         assert_eq!(sections[0].title.key, "Interface language");

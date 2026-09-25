@@ -1,0 +1,19 @@
+{
+  "screen": "library-narrow",
+  "environment": "truecolor",
+  "columns": 44,
+  "rows": [
+    [{"text": " Search                                     ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "╭", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": " Library ", "fg": "idx:15", "bg": "default", "attrs": ["bold"]}, {"text": "─────────────────────────────────╮", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Name                   Kind               ", "fg": "idx:15", "bg": "default", "attrs": ["bold"]}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Alpha                  $ Command          ", "fg": "#eeeeee", "bg": "#5a2d1e", "attrs": ["bold"]}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Beta                   $ Command          ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Gamma                  $ Command          ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Eta                    ⬡ Python           ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}, {"text": "Zeta                   ✎ Prompt           ", "fg": "default", "bg": "default", "attrs": []}, {"text": "│", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": "╰──────────────────────────────────────────╯", "fg": "#3d7b46", "bg": "default", "attrs": []}],
+    [{"text": " Enter Run ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " r Rerun ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " p Entry settings ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": " ↓", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": " e Edit source ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " Del Remove ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "  ", "fg": "default", "bg": "default", "attrs": []}, {"text": " F2 Rename ", "fg": "#d97757", "bg": "#2a211c", "attrs": ["bold"]}, {"text": "  ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "5/5 entries                                 ", "fg": "default", "bg": "default", "attrs": []}]
+  ]
+}

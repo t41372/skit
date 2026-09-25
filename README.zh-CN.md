@@ -30,13 +30,19 @@ skit                 # 打开菜单——选、填、跑
 
 你的 AI agent 也能用 skit：你从菜单操作，agent 走确定性的 CLI 和 skill—— AI 写完脚本存进去，之后也能轻松调用。
 
+<video src="https://github.com/user-attachments/assets/5eda5387-8f2b-45d7-aadd-ad334ede7f58" controls></video>
+
 ### 界面
 
+| ![工具库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-CN.png) | ![启动菜单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-CN.png) |
+|:--:|:--:|
+| **工具库**——每个操作都在屏幕上，鼠标键盘都行 | **启动菜单**——根据脚本自己的参数生成 |
+| ![添加脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-CN.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-CN.png) |
+| **添加脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **脚本设置**——参数、机密、预设、依赖 |
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-CN.png" alt="skit 脚本库" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-CN.png" alt="skit 启动表单" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-CN.png" alt="skit 添加流程" width="49%">
-  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-CN.png" alt="skit 设置" width="49%">
+  <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可以点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>完全支持鼠标操作——画面上每个按键提示，也都是可以点的按钮。</em>
 </p>
 
 ## 它做什么

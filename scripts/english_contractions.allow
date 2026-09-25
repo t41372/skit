@@ -67,7 +67,8 @@ A	1	crates/skit-cli/tests/i18n_cli.rs	"shell entries don't take package dependen
 A	1	crates/skit-cli/tests/port_test_add_feedback_contracts.rs	assert!(!flat.contains("isn't a script or an executable"), "{flat}");	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/tests/port_test_add_feedback_contracts.rs	assert!(flat.contains("isn't a script or an executable"), "{flat}");	exact owner for frozen user-visible copy
 A	4	crates/skit-cli/tests/port_test_add_no_source.rs	"What is mystery.xyz? skit can't tell from the name.",	exact owner for frozen user-visible copy
-A	3	crates/skit-cli/tests/port_test_add_no_source.rs	output.contains("What is mystery.xyz? skit can't tell from the name."),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_no_source.rs	"What is mystery.xyz? skit can't tell from the name."	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_add_no_source.rs	output.contains("What is mystery.xyz? skit can't tell from the name."),	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/tests/port_test_add_no_source.rs	output.contains("isn't a script or an executable"),	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/tests/port_test_add_validation_contracts.rs	"{file} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {flags}."	exact owner for frozen user-visible copy
 A	2	crates/skit-cli/tests/port_test_add_validation_contracts.rs	assert!(out.contains("isn't a Python version constraint"), "{out}");	exact owner for frozen user-visible copy

@@ -10,7 +10,7 @@ use std::{
 
 use ratatui_core::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
 };
@@ -53,7 +53,7 @@ use crate::{
     pointer::{ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry},
     rowclip::RowClip,
     session::render_line_input_band,
-    theme::{ACCENT, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
+    theme::{self, Panel, Status, panel_block},
     viewport::AlignmentSignature,
 };
 
@@ -1545,7 +1545,7 @@ pub fn render_add(
         AddStage::ConfirmDraftDelete => text(locale, "Confirm removal").into_owned(),
         AddStage::Complete | AddStage::Cancelled => text(locale, "Add").into_owned(),
     };
-    let body_block = panel_block(title, BOX_MAROON);
+    let body_block = panel_block(title, Panel::Add);
     let body = body_block.inner(chunks[0]);
     frame.render_widget(body_block, chunks[0]);
     let rows = build_rows(state, locale);
@@ -1738,16 +1738,13 @@ fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     if let Some(problem) = state.problem() {
         rows.insert(
             0,
-            RenderRow::Note(
-                problem_text(problem, locale),
-                Style::default().fg(Color::Red),
-            ),
+            RenderRow::Note(problem_text(problem, locale), theme::status(Status::Danger)),
         );
     }
     if let Some(notice) = state.notice() {
         rows.insert(
             usize::from(state.problem().is_some()),
-            RenderRow::Note(notice_text(notice, locale), Style::default().fg(ACCENT)),
+            RenderRow::Note(notice_text(notice, locale), theme::notice()),
         );
     }
     rows
@@ -1758,7 +1755,7 @@ fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     let mut rows = vec![
         RenderRow::Note(
             text(locale, "Path to a script, executable, or prompt:").into_owned(),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ),
         RenderRow::Input(
             AddTextField::SourcePath,
@@ -1790,7 +1787,7 @@ fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     if let Some(overflow) = NonZeroUsize::new(source.draft_overflow()) {
         rows.push(RenderRow::Note(
             format_text(locale, "…and {} more", &[&overflow.get()]),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
     }
     rows.extend([
@@ -1833,7 +1830,7 @@ fn kind_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
             },
             &[&picker.filename()],
         ),
-        Style::default().fg(ACCENT),
+        theme::notice(),
     )];
     rows.extend(picker.choices().iter().enumerate().map(|(index, kind)| {
         RenderRow::Button(
@@ -1862,7 +1859,7 @@ fn draft_display_name(draft: &skit_ui::DraftSummary) -> String {
 /// (`src/skit/tui_add.py:925`, `:963`), so the reader learns what the field takes without leaving
 /// the screen.
 fn hint(body: String) -> RenderRow {
-    RenderRow::Note(body, Style::default().add_modifier(Modifier::DIM))
+    RenderRow::Note(body, theme::muted())
 }
 
 /// Rows for the kept-draft delete confirmation.
@@ -1879,7 +1876,7 @@ fn confirm_draft_delete_rows(state: &AddWorkflowState, locale: Locale) -> Vec<Re
                 "Delete the draft \"{}\"? It is the only copy.",
                 &[&draft_display_name(draft)],
             ),
-            Style::default().fg(Color::Red),
+            theme::status(Status::Danger),
         ));
         rows.push(RenderRow::Button(
             AddControlId::DeleteDraft,
@@ -1938,7 +1935,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                     "The script declares its own dependencies (PEP 723):",
                 )
                 .into_owned(),
-                Style::default().add_modifier(Modifier::DIM),
+                theme::muted(),
             ));
             if !metadata.requires_python.is_empty() {
                 rows.push(hint(format!(
@@ -1982,7 +1979,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 },
                 &[&count.get()],
             ),
-            Style::default().fg(Color::Green),
+            theme::status(Status::Success),
         ));
     }
     if let (None, true) = (
@@ -1995,13 +1992,13 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
                 &[&review.onboarding().frameworks.join(", ")],
             ),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
     }
     if review.storage() == StorageMode::Copy && !review.candidates().is_empty() {
         rows.push(RenderRow::Note(
             text(locale, "Tick the ones the run form should ask for:").into_owned(),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
         for candidate in review.candidates() {
             let mut label = candidate.declaration.name.clone();
@@ -2027,7 +2024,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                         "⚠ looks like a loop accumulator — probably not a parameter",
                     )
                     .into_owned(),
-                    Style::default().fg(Color::Yellow),
+                    theme::status(Status::Warning),
                 ));
             }
         }
@@ -2046,7 +2043,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
                 &[&literals],
             ),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
     }
     if review.storage() == StorageMode::Reference && review.lane() == ReviewLane::Script {
@@ -2064,7 +2061,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 },
             )
             .into_owned(),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
         if matches!(review.dependency_surface(), DependencySurface::Npm) {
             rows.push(RenderRow::Note(
@@ -2073,7 +2070,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                     "npm dependencies apply to stored copies only, so none are recorded.",
                 )
                 .into_owned(),
-                Style::default().add_modifier(Modifier::DIM),
+                theme::muted(),
             ));
         }
     }
@@ -2084,7 +2081,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 "This script reads command-line arguments; the run form has an extra-arguments field for them.",
             )
             .into_owned(),
-            Style::default().add_modifier(Modifier::DIM),
+            theme::muted(),
         ));
     }
     if review.lane() == ReviewLane::Prompt {
@@ -2100,7 +2097,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                         "No {{name}} placeholders detected — the body travels to the agent as written.",
                     )
                     .into_owned(),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::muted(),
                 ));
             } else if review.prompt_is_flooded() {
                 rows.push(RenderRow::Note(
@@ -2109,12 +2106,12 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                         "Detected {} placeholders — probably not written for insertion. Tick only the ones you need, or untick the switch above.",
                         &[&review.prompt_candidates().len()],
                     ),
-                    Style::default().fg(Color::Yellow),
+                    theme::status(Status::Warning),
                 ));
             } else {
                 rows.push(RenderRow::Note(
                     text(locale, "Tick the ones the run form should ask for:").into_owned(),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::muted(),
                 ));
             }
             for candidate in review.prompt_preview() {
@@ -2186,17 +2183,11 @@ fn render_row(
             clip.paint_paragraph(
                 frame.buffer_mut(),
                 Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        if focused { "▶ " } else { "  " },
-                        Style::default().fg(ACCENT),
-                    ),
+                    Span::styled(if focused { "▶ " } else { "  " }, theme::marker()),
                     Span::styled(
                         label,
                         if focused {
-                            Style::default()
-                                .fg(SELECT_FG)
-                                .bg(SELECT_BG)
-                                .add_modifier(Modifier::BOLD)
+                            theme::selection().add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         },
@@ -2206,7 +2197,11 @@ fn render_row(
         }
         RenderRow::Check(id, label) => {
             if let Some(check) = session.checks.get(id) {
-                frame.render_widget(CheckBox::new(label, check), area);
+                frame.render_widget(
+                    CheckBox::new(label, check).style(theme::review_checkbox_style()),
+                    area,
+                );
+                theme::patch_focus(frame.buffer_mut(), area, check.focused);
             }
         }
         RenderRow::Select(select, label) => {
@@ -2216,27 +2211,33 @@ fn render_row(
                 AddSelectControl::Runner => &session.runner,
             };
             if clip.is_full() {
-                let select = Select::new(&options, select_state).label(label);
-                select.render_stateful(frame, area);
+                let region = Select::new(&options, select_state)
+                    .label(label)
+                    .style(theme::review_select_style())
+                    .render_stateful(frame, area);
+                theme::patch_idle_border(frame.buffer_mut(), region.area, select_state.focused);
+                // The widget draws its label in the border color, which is the accent when the
+                // select has the focus.
+                theme::patch_border_title(frame.buffer_mut(), region.area);
             } else {
-                let style = SelectStyle::default();
+                let style = theme::review_select_style();
                 let display = &options[select_state.selected_index.unwrap()];
-                let border = if select_state.focused {
-                    style.focused_border
-                } else {
-                    style.unfocused_border
-                };
+                let border = theme::select_border(
+                    if select_state.focused {
+                        style.focused_border
+                    } else {
+                        style.unfocused_border
+                    },
+                    select_state.focused,
+                );
                 clip.paint_bordered_paragraph(
                     frame.buffer_mut(),
                     Paragraph::new(Line::from(vec![
                         Span::styled(display, Style::default().fg(style.text_fg)),
-                        Span::styled(
-                            format!(" {}", style.dropdown_indicator),
-                            Style::default().fg(border),
-                        ),
+                        Span::styled(format!(" {}", style.dropdown_indicator), border),
                     ])),
                     Line::from(format!(" {label} ")),
-                    Style::default().fg(border),
+                    border,
                     0,
                 );
             }
@@ -2670,10 +2671,7 @@ fn render_footer(
             .y
             .saturating_add(u16::try_from(item.row.saturating_sub(offset)).unwrap_or(u16::MAX));
         let chip_area = Rect::new(area.x.saturating_add(item.x), y, item.width, 1);
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().add_modifier(Modifier::DIM)),
-            chip_area,
-        );
+        frame.render_widget(Paragraph::new(label).style(theme::muted()), chip_area);
         hits.push(AddHitRegion {
             area: chip_area,
             target: item.chip.target.clone(),
@@ -2695,7 +2693,7 @@ fn render_footer(
             "↕"
         };
         frame.render_widget(
-            Paragraph::new(indicator).style(Style::default().add_modifier(Modifier::DIM)),
+            Paragraph::new(indicator).style(theme::muted()),
             Rect::new(indicator_x, area.y, 1, 1),
         );
     }

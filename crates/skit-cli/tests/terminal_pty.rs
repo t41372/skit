@@ -5,14 +5,12 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write as _,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize};
 use skit_application::{
     CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
     SourcePermissions,
@@ -436,6 +434,8 @@ fn run_pty_configured(
 
 struct LiveTui {
     pty: PtyChild,
+    rows: u16,
+    columns: u16,
 }
 
 impl LiveTui {
@@ -505,6 +505,8 @@ impl LiveTui {
         command.env("USERPROFILE", home);
         Self {
             pty: PtyChild::spawn(command, size, AnswerQueries::On),
+            rows: size.rows,
+            columns: size.cols,
         }
     }
 
@@ -555,10 +557,22 @@ impl LiveTui {
         self.wait_for_after(0, needle)
     }
 
+    /// Wait until the output after `checkpoint` shows `needle`.
+    ///
+    /// The match reads both the text history and a screen replayed from only that output.
+    /// Ratatui moves the cursor over a default-style space instead of writing it, so the history
+    /// can lose the spaces of a phrase that the replayed screen still shows.
     fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
+        let (rows, columns) = (self.rows, self.columns);
         self.pty
             .wait_for_after_rendered(checkpoint, needle, |bytes| {
-                strip_terminal_control(&String::from_utf8_lossy(bytes))
+                let mut screen = vt100::Parser::new(rows, columns, 0);
+                screen.process(bytes);
+                format!(
+                    "{}\n{}",
+                    strip_terminal_control(&String::from_utf8_lossy(bytes)),
+                    screen.screen().contents()
+                )
             })
     }
 
@@ -1169,7 +1183,10 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     tui.wait_for("Library");
     let open = tui.checkpoint();
     tui.send_effect_key(b"\r");
-    let form = tui.wait_for_after(open, "Run p");
+    tui.wait_for_after(open, "Run p");
+    // The title can arrive before the rest of the frame, so wait for the field the assertion
+    // reads.
+    let form = tui.wait_for_after(open, MISSING_RUNNER);
     assert!(
         compact_terminal_text(&form).contains(MISSING_RUNNER),
         "the missing runner was not the form's resolved default: {form}"
@@ -1578,19 +1595,15 @@ fn a_path_add_from_a_terminal_opens_the_review_panel() {
 ///
 /// The child is stopped rather than driven: this reports the first screen, which is the claim.
 fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> String {
-    use std::io::Read as _;
-
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            // Tall enough to draw the whole review at once. The panel scrolls, so a shorter
-            // terminal keeps every control reachable but leaves the last ones below the fold, and
-            // this owner reads one drawn screen rather than scrolling for them.
-            rows: 32,
-            cols: 100,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
+    // Tall enough to draw the whole review at once. The panel scrolls, so a shorter terminal
+    // keeps every control reachable but leaves the last ones below the fold, and this owner
+    // reads one drawn screen rather than scrolling for them.
+    let size = PtySize {
+        rows: 32,
+        cols: 100,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(args);
     command.env("TERM", "xterm-256color");
@@ -1598,43 +1611,16 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
     command.env("SKIT_DATA_DIR", data.to_string_lossy().as_ref());
     command.env("SKIT_STATE_DIR", state.to_string_lossy().as_ref());
     command.env("SKIT_CONFIG_DIR", config.to_string_lossy().as_ref());
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let reader_capture = Arc::clone(&captured);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = thread::spawn(move || {
-        let mut buffer = vec![0_u8; 65_536];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => {
-                    let mut held = reader_capture.lock().unwrap();
-                    held.extend_from_slice(&buffer[..read]);
-                    if held.len() >= 400_000 {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
-    thread::sleep(Duration::from_millis(60));
-    let _ = writer.write_all(b"\x1b[1;1R");
-    let _ = writer.flush();
+    // The harness answers the cursor and color questions, so the interface draws at once.
+    let mut child = PtyChild::spawn(command, size, AnswerQueries::On);
+    child.wait_cursor_query_after(0);
     thread::sleep(Duration::from_millis(1_500));
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(writer);
-    drop(pair.master);
-    drop(drain);
-    pty::settle_buffer(&captured);
-    let raw = captured.lock().unwrap().clone();
-    String::from_utf8_lossy(&raw)
-        .chars()
-        .filter(|character| !character.is_control() || *character == '\n')
-        .collect()
+    child.settle();
+    // The screen replays the output with its cursor moves, so a phrase keeps the spaces that
+    // Ratatui skips over.
+    let screen = final_terminal_screen(&child.raw_after(0), size.rows, size.cols);
+    child.kill();
+    screen
 }
 
 // Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
@@ -1877,6 +1863,36 @@ fn the_terminal_library_shows_host_projected_detail_facts() {
     }
 }
 
+/// On Windows, only Windows Terminal (`WT_SESSION`) gets the color question. Another console can
+/// answer nothing, and skit then drops the first keys, or it can answer late, and the answer then
+/// arrives as keys (`docs/design/terminal-palette.md`, phase 5). This pseudo-console is not Windows
+/// Terminal, so the `q` sent after a short quiet time must end the session, and no color question
+/// may reach the terminal.
+#[cfg(windows)]
+#[test]
+fn a_windows_console_outside_windows_terminal_gets_no_color_question() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+    fs::write(config.path().join("config.toml"), "theme = \"terminal\"\n").unwrap();
+
+    let (code, output) = run_pty_configured(
+        &["tui"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"q"],
+        true,
+        |command| command.env_remove("WT_SESSION"),
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        !output.contains("\x1b]11;?") && !output.contains("\x1b]10;?"),
+        "{output:?}"
+    );
+}
+
 /// The Settings parameter summary must use the source's live default without changing any stored
 /// data merely because the user inspected it.
 // Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
@@ -1925,6 +1941,43 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     assert_eq!(fs::read(&metadata).unwrap(), metadata_before);
     assert_eq!(tree_snapshot(state.path()), state_before);
     assert_eq!(tree_snapshot(config.path()), config_before);
+}
+
+// A run from the Library with `after_run = "exit"` ends the session. The shell then writes its
+// prompt where skit left the cursor, so the cursor must stay below the output of the run.
+// `\x1b[?1049l` also restores the cursor that `\x1b[?1049h` saved, on the normal screen too
+// (xterm, xterm.js, vt100). The run already left the alternate screen, so a second exit sequence
+// moves the cursor back to the row where skit started, and the prompt overwrites the output.
+#[cfg(unix)]
+#[test]
+fn a_run_that_ends_the_session_leaves_the_cursor_below_its_output() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_entry(data.path(), false);
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Demo");
+    let form = tui.checkpoint();
+    tui.send(b"\r");
+    tui.wait_for_after(form, "Run Demo");
+    let run = tui.checkpoint();
+    tui.send(b"\r");
+    let (code, output) = tui.wait_for_exit_status_after(run);
+    assert_eq!(code, 0, "{output}");
+
+    let mut terminal = vt100::Parser::new(tui.rows, tui.columns, 0);
+    terminal.process(&tui.raw_after(0));
+    terminal.process(b"PROMPT$ ");
+    let screen = terminal.screen().contents();
+    let rows: Vec<&str> = screen.lines().collect();
+    let output_row = rows.iter().rposition(|row| row.trim() == "done");
+    let prompt_row = rows.iter().position(|row| row.starts_with("PROMPT$"));
+    assert!(
+        matches!((output_row, prompt_row), (Some(output), Some(prompt)) if prompt > output),
+        "the shell prompt must follow the run output: {screen}"
+    );
 }
 
 #[test]

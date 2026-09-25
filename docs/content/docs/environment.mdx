@@ -12,7 +12,11 @@ description: Every variable skit reads, and the ones it sets for child processes
 | `SKIT_CONFIG_DIR` | overrides the config root — `config.toml` |
 | `SKIT_LANG` | UI language for this process (`SKIT_LANG=zh-TW skit`) |
 | `VISUAL` / `EDITOR` | editor, when the `editor` config key is unset |
-| `TERM` | `TERM=dumb` switches interactive flows to plain line prompts (screen readers, Emacs shells) |
+| `TERM` | `TERM=dumb` switches interactive flows to plain line prompts (screen readers, Emacs shells). In the `skit` theme, a `256color` or `kitty` suffix gives 256 colors, and any other value gives 16 |
+| `COLORTERM` | `truecolor` or `24bit` lets the `skit` theme use 24-bit color. On Windows, the `skit` theme always uses 24-bit color |
+| `NO_COLOR` | removes every color and keeps bold, dim, and reverse video. The interface obeys it when it is set, also when it is empty; line output obeys it only when it is not empty |
+| `SSH_CONNECTION` / `SSH_TTY` | skit does not ask the terminal for its background, so the `terminal` theme uses no accent hue |
+| `WT_SESSION` (Windows) | Windows Terminal sets it. On Windows, skit asks the terminal for its background only when it is set |
 | `PATHEXT` (Windows) | decides which extensions count as runnable when classifying executables |
 
 Precedence details:
