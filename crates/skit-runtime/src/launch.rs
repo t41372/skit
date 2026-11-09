@@ -1293,7 +1293,7 @@ fn require_file<P: ProgramProbe + ?Sized>(path: &Path, probe: &P) -> Result<(), 
 ///
 /// The environment values arrive as parameters, so a test can drive every arm on every host.
 // The production caller sits in the cfg(windows) arm of command_plan; the function itself
-// compiles on every host so its owner runs — and its mutants die — on the Linux gates.
+// compiles on every host so its owner runs on the Linux gates.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_command_shell<P: ProgramProbe + ?Sized>(
     comspec: Option<std::ffi::OsString>,
@@ -1650,7 +1650,7 @@ mod private_tests {
 
     /// The command shell resolves the way version 0.4's `shell=True` reaches it: COMSPEC
     /// verbatim, then the system directory's cmd.exe, then PATH, then a typed refusal. The
-    /// pure function runs on every host, so each arm stays owned and mutation-killable here.
+    /// pure function runs on every host, so each arm stays owned and tested here.
     #[test]
     fn windows_command_shell_reads_comspec_before_the_system_directory_and_path() {
         use std::ffi::OsString;

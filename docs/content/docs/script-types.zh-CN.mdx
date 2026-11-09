@@ -19,7 +19,7 @@ skit 通过读取代码找到它们的参数。其他每种类型都能开箱即
 | **Ruby · Perl · Lua · R** | 各自的解释器 | —— |
 | **可执行文件** | 直接运行 | —— |
 | **命令模板** | skit 填空后运行该命令 | —— |
-| **提示词** | 你的编码代理（claude · codex · …） | `{{placeholders}}` |
+| **提示词** | 你的 coding agent（claude · codex · …） | `{{placeholders}}` |
 
 ## 值如何到达脚本 [#how-values-reach-the-script]
 
@@ -44,7 +44,7 @@ skit 通过读取代码找到它们的参数。其他每种类型都能开箱即
 ## 声明的参数 [#declared-parameters]
 
 你的类型没有自动检测？那就手动声明参数 —— 每种类型都得到相同的
-启动菜单 / 预设 / `--set` 体验，哪怕是一个普通的可执行文件：
+启动菜单 / 参数组合 / `--set` 体验，哪怕是一个普通的可执行文件：
 
 ```bash
 skit params my_tool --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=png
@@ -69,7 +69,7 @@ Python 与 JS/TS 拥有隔离的、按脚本划分的软件包依赖项：
 
 - 安装从不运行软件包生命周期脚本：npm 与 bun 使用 `--ignore-scripts`，
   deno 默认跳过它们。
-- 当 skit 选择 deno 作为运行器时，它会传递 `--allow-all`，
+- 当 skit 选择 deno 作为执行器时，它会传递 `--allow-all`，
   这样同一个脚本在 deno、bun 与 node 下表现一致。
 
 如果你没有 uv，skit 会为 Python 引导安装它，但从不安装 JS 运行时 ——
@@ -77,7 +77,7 @@ node、bun 或 deno 由你提供。
 
 ## 固定运行时 [#pinning-the-runtime]
 
-- JS/TS 运行器顺序是 deno → bun → node，取 `PATH` 上先找到的那个；
+- JS/TS 执行器顺序是 deno → bun → node，取 `PATH` 上先找到的那个；
   `js.runner` 配置键可以全局强制指定一个。
 - 解释型类型在添加时根据 shebang 或扩展名记录其解释器 ——
   一个 `#!/bin/zsh` 脚本会一直在 zsh 下运行。用

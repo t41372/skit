@@ -534,10 +534,7 @@ where
     match preflight(effect) {
         Ok(()) => true,
         Err(error) => {
-            let status = Message::new("Error: {}")
-                .nested(error.message())
-                .localize(locale);
-            state.update(Action::SetStatus(status));
+            state.update(preflight_refusal_status(&error, locale));
             false
         }
     }
@@ -557,8 +554,27 @@ fn add_workflow_outcome(action: &Action) -> Option<AddWorkflowOutcome> {
     }
 }
 
-fn localized_status(error: &impl Localize, locale: Locale) -> String {
-    error.message().localize(locale)
+/// Return the status action that the hosted terminal shows when a preflight check refuses an
+/// effect.
+///
+/// The terminal shows it before it suspends, and the effect never reaches the host. A walker
+/// host uses the same action, so a walk answers the refusal as the product answers it.
+#[must_use]
+pub fn preflight_refusal_status(error: &impl Localize, locale: Locale) -> Action {
+    Action::SetStatus(
+        Message::new("Error: {}")
+            .nested(error.message())
+            .localize(locale),
+    )
+}
+
+/// Return the status action that the hosted terminal shows when the host fails one effect.
+///
+/// The terminal keeps the session and stops the effect chain. A walker host uses the same
+/// action, so a walk survives every host failure that the product survives.
+#[must_use]
+pub fn host_failure_status(error: &impl Localize, locale: Locale) -> Action {
+    Action::SetStatus(error.message().localize(locale))
 }
 
 fn action_locale(action: &Action) -> Option<Locale> {
@@ -613,7 +629,7 @@ where
                     effect = state.update(action);
                 }
                 Err(error) => {
-                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    state.update(host_failure_status(&error, *locale));
                     return Ok((false, outcome));
                 }
             },
@@ -793,7 +809,7 @@ where
                     effect = state.update(action);
                 }
                 Err(error) => {
-                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    state.update(host_failure_status(&error, *locale));
                     return Ok(None);
                 }
             },
@@ -1090,12 +1106,16 @@ mod tests {
     #[test]
     fn host_errors_use_the_terminal_locale() {
         assert_eq!(
-            localized_status(&HostError, Locale::ZhCn),
-            "找不到条目：demo"
+            host_failure_status(&HostError, Locale::ZhCn),
+            Action::SetStatus("找不到条目：demo".to_owned())
         );
         assert_eq!(
-            localized_status(&HostError, Locale::ZhTw),
-            "找不到項目：demo"
+            host_failure_status(&HostError, Locale::ZhTw),
+            Action::SetStatus("找不到項目：demo".to_owned())
+        );
+        assert_eq!(
+            preflight_refusal_status(&HostError, Locale::ZhTw),
+            Action::SetStatus("錯誤：找不到項目：demo".to_owned())
         );
     }
 

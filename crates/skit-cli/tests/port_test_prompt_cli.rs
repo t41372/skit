@@ -1022,13 +1022,13 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
             "zh-TW",
             [
                 ("--help", "腳本、提示詞、程式和命令"),
-                ("list", "已登記的條目"),
-                ("show", "一個條目"),
-                ("remove", "已登記的條目"),
-                ("rename", "重新命名條目"),
-                ("describe", "條目的說明"),
-                ("params", "條目的管理參數或宣告參數"),
-                ("deps", "條目的套件依賴"),
+                ("list", "已登記的項目"),
+                ("show", "一個項目"),
+                ("remove", "已登記的項目"),
+                ("rename", "重新命名項目"),
+                ("describe", "項目的說明"),
+                ("params", "項目的管理參數或宣告參數"),
+                ("deps", "項目的套件依賴"),
                 ("doctor", "工具庫"),
             ],
         ),
@@ -1073,7 +1073,7 @@ fn test_prompt_only_library_uses_entry_taxonomy_on_dynamic_cli_surfaces() {
     for (locale, phrase) in [
         ("en", "2 entries registered"),
         ("zh-CN", "已登记 2 个条目"),
-        ("zh-TW", "已登記 2 個條目"),
+        ("zh-TW", "已登記 2 個項目"),
     ] {
         let output = sandbox
             .command()
@@ -2524,8 +2524,8 @@ fn test_runner_remove_abort_keeps_the_runner() {
 fn test_runner_remove_invalid_utf8_confirmation_propagates_io_without_writing() {
     for (locale, prompt) in [
         ("en", "Remove the agent \"amp\"? [y/N]:"),
-        ("zh-CN", "删除 Agent“amp”？[y/N]："),
-        ("zh-TW", "移除 Agent「amp」？[y/N]："),
+        ("zh-CN", "要移除 agent“amp”吗？[y/N]："),
+        ("zh-TW", "要移除 agent「amp」嗎？[y/N]："),
     ] {
         let sandbox = Sandbox::new();
         let data_before = Mutex::new(Vec::new());

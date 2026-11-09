@@ -110,7 +110,7 @@ fn c2_commit_review_name_requires_exact_live_draft_provenance() {
 }
 
 #[test]
-fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
+fn c2_add_input_mirror_maps_its_cursor_and_refuses_cursor_yank_cut_and_shape_drift() {
     let mut host = RealWalkerHost::spawn(profile()).unwrap();
     let draft = write_draft_at(&host, "skit-new-界.py", b"print('unicode')\n", 10);
     host.path_map.refresh(&host.service).unwrap();
@@ -142,6 +142,31 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
         stable.chars().count()
     );
 
+    // A click or an arrow key moves the cursor and keeps the derived value. Every cursor in the
+    // value projects: the start stays at the start, the end stays at the end, an interior cursor
+    // stays interior, and a cursor further right never projects further left.
+    let raw_chars = raw.chars().count();
+    let stable_chars = stable.chars().count();
+    let mut previous = 0;
+    for cursor in 0..=raw_chars {
+        let mut moved = valid.clone();
+        moved["add"]["fields"]["inputs"][0]["state"]["cursor"] = json!(cursor);
+        host.path_map.project_session_value(&mut moved).unwrap();
+        let state = &moved["add"]["fields"]["inputs"][0]["state"];
+        assert_eq!(state["value"], stable);
+        let projected = usize::try_from(state["cursor"].as_u64().unwrap()).unwrap();
+        match cursor {
+            0 => assert_eq!(projected, 0),
+            cursor if cursor == raw_chars => assert_eq!(projected, stable_chars),
+            cursor => assert!(
+                (1..stable_chars).contains(&projected),
+                "the interior cursor {cursor} projects to {projected}"
+            ),
+        }
+        assert!(projected >= previous, "the cursor {cursor} moved left");
+        previous = projected;
+    }
+
     let mut invalid = c2_session(Path::new("/unregistered/session"), None, Vec::new());
     assert!(host.path_map.project_session_value(&mut invalid).is_err());
     let mut duplicate = c2_session(
@@ -152,7 +177,9 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
     assert!(host.path_map.project_session_value(&mut duplicate).is_err());
     for (pointer, replacement) in [
         ("/add/fields/inputs/0/state/value", json!("wrong")),
-        ("/add/fields/inputs/0/state/cursor", json!(0)),
+        ("/add/fields/inputs/0/state/cursor", json!(raw_chars + 1)),
+        ("/add/fields/inputs/0/state/cursor", json!(-1)),
+        ("/add/fields/inputs/0/state/cursor", json!("end")),
         ("/add/fields/inputs/0/state/yank", json!("cut")),
         ("/add/fields/inputs/0/state/yank", json!(7)),
         ("/add/fields/inputs/0/state/last_was_cut", json!(true)),
@@ -189,6 +216,41 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
             .project_session_value(&mut extra_field)
             .is_err()
     );
+}
+
+/// The cursor map of one derived value.
+///
+/// The ways it can fail: the end or the start loses its place; an equal value moves its cursor;
+/// an interior cursor lands on an end; the order of two cursors reverses; the result passes the
+/// end of the stable value; the arithmetic overflows or divides by zero; a stable value with no
+/// interior position makes the clamp panic.
+#[test]
+fn c2_a_derived_cursor_keeps_both_ends_the_order_and_the_interior() {
+    // The real review name `skit-new-000000` projects to `<draft:0>`.
+    assert_eq!(derived_cursor(15, 15, 9), 9);
+    assert_eq!(derived_cursor(0, 15, 9), 0);
+    assert_eq!(derived_cursor(14, 15, 9), 8);
+    assert_eq!(derived_cursor(9, 15, 9), 5);
+    assert_eq!(derived_cursor(1, 15, 9), 1);
+    // Two values of the same length keep every cursor.
+    for cursor in 0..=9 {
+        assert_eq!(derived_cursor(cursor, 9, 9), cursor);
+    }
+    // A short stable value keeps an interior cursor off both ends.
+    assert_eq!(derived_cursor(1, 60, 3), 1);
+    assert_eq!(derived_cursor(59, 60, 3), 2);
+    // A stable value without an interior position stays inside its own length.
+    assert_eq!(derived_cursor(3, 6, 1), 1);
+    assert_eq!(derived_cursor(3, 6, 0), 0);
+    // An empty raw value has only its end. A huge value does not overflow.
+    assert_eq!(derived_cursor(0, 0, 9), 9);
+    assert_eq!(derived_cursor(usize::MAX - 1, usize::MAX, 9), 8);
+    let mut previous = 0;
+    for cursor in 0..=40 {
+        let projected = derived_cursor(cursor, 40, 7);
+        assert!(projected >= previous && projected <= 7);
+        previous = projected;
+    }
 }
 
 #[test]

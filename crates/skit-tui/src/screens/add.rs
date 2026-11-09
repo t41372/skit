@@ -3123,8 +3123,8 @@ mod tests {
         for (locale, expected) in [
             (Locale::En, "[Ctrl+O] Select"),
             // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
-            (Locale::ZhCn, "[Ctrl+O] 选 择"),
-            (Locale::ZhTw, "[Ctrl+O] 選 擇"),
+            (Locale::ZhCn, "[Ctrl+O] 选 取"),
+            (Locale::ZhTw, "[Ctrl+O] 選 取"),
         ] {
             let mut localized_session = AddScreenSession::default();
             let (terminal, geometry) =

@@ -387,9 +387,9 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
 #[test]
 fn test_collect_double_report_exclusion_continues_not_breaks() {
     // The preflight loop skips entries already reported above (missing/needs/no-spec), just
-    // that one entry, so LATER entries are still swept. A `break` mutant would abandon the
-    // rest of the list at the first excluded entry. Ordering makes it observable: doctor
-    // sweeps in slug order, so an excluded "aaa" precedes a blocked "zzz".
+    // that one entry, so LATER entries are still swept. A `break` in place of the skip would
+    // abandon the rest of the list at the first excluded entry. Ordering makes it observable:
+    // doctor sweeps in slug order, so an excluded "aaa" precedes a blocked "zzz".
     let lib = Lib::new();
     lib.add_python("aaa_excluded", "print(1)\n");
     lib.add_shell("zzz_blocked"); // sorts AFTER; interpreter absent -> should be blocked

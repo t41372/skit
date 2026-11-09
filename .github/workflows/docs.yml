@@ -8,7 +8,6 @@ on:
       - docs/**
       - '!docs/assets/**'
       - '!docs/design/**'
-      - '!docs/mutation-ledger.md'
       - README.md
       - README.zh-CN.md
       - README.zh-TW.md
@@ -18,7 +17,6 @@ on:
       - docs/**
       - '!docs/assets/**'
       - '!docs/design/**'
-      - '!docs/mutation-ledger.md'
       - README.md
       - README.zh-CN.md
       - README.zh-TW.md

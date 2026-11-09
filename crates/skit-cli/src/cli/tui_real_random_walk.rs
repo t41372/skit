@@ -35,7 +35,9 @@ use skit_tui_walker_model::{
     },
     parity::binding_event,
 };
-use skit_tui_walker_support::engine::{NoopCheckpointSink, replay_prefix_with_sink};
+use skit_tui_walker_support::engine::{
+    EngineBoundary, NoopCheckpointSink, replay_prefix_with_sink,
+};
 use skit_ui::{LibraryState, UiCommand};
 
 use super::tui_real_host::RealWalkerHost;
@@ -314,10 +316,29 @@ fn sample_liveness(
     sample.unwrap_or(Ok(()))
 }
 
+/// Name the drawn operations that come after the end of the session.
+const SESSION_ENDED: &str = "session_ended";
+
+/// Report whether one quit ended the session of a case.
+///
+/// A host response can end the session the way the product ends it, for example a run while
+/// the After run preference is set to exit. Every input family filters Quit, so a quit from an
+/// input action shows a broken filter. That quit fails the case and is never a normal end.
+fn session_ended(boundary: Option<EngineBoundary>) -> Result<bool, String> {
+    match boundary {
+        None => Ok(false),
+        Some(EngineBoundary::Host) => Ok(true),
+        Some(boundary) => Err(format!(
+            "an input that the walk filters ended the session at the {boundary:?} boundary"
+        )),
+    }
+}
+
 /// Run every drawn operation of one case against one live engine.
 ///
-/// Every operation family filters Quit. A quit that still reaches the engine fails the case
-/// through the engine's own refusal, so the walk needs no separate quit branch.
+/// Every operation family filters Quit, so only a host response can end the session. After that
+/// end, the walk records each remaining drawn operation as skipped. It runs no liveness, because
+/// the product has no session left to check.
 fn walk_case(
     run: &mut CaseRun,
     factory: &CorpusWalkerFactory,
@@ -335,7 +356,12 @@ fn walk_case(
         .as_mut()
         .ok_or("the random walk needs one live engine")?;
     engine.start(sink)?;
+    let mut ended = false;
     for (index, operation) in operations.iter().enumerate() {
+        if ended {
+            skipped.push(json!({"index": index, "reason": SESSION_ENDED}));
+            continue;
+        }
         let live = engine.frontend().live_inventory()?;
         match corpus_step(resolve(operation, &live), &live)? {
             CorpusStep::Skipped(reason) => {
@@ -345,9 +371,15 @@ fn walk_case(
                 values.push(corpus_operation_value(&corpus)?);
                 engine.run_operation(corpus.clone(), sink)?;
                 resolved.push(corpus);
-                sample_liveness(factory, resolved, liveness)?;
+                ended = session_ended(engine.quit_boundary())?;
+                if !ended {
+                    sample_liveness(factory, resolved, liveness)?;
+                }
             }
         }
+    }
+    if ended {
+        return Ok(());
     }
     engine.run_final_liveness(CorpusOperation::FinalLiveness, sink)
 }
@@ -1794,5 +1826,146 @@ mod tests {
         assert_eq!(panic_message(text.as_ref()), "literal panic");
         assert_eq!(panic_message(owned.as_ref()), "owned panic");
         assert_eq!(panic_message(other.as_ref()), "non-text panic");
+    }
+
+    /// Return the drawn operation that binds to one wanted corpus operation on the live frame.
+    ///
+    /// The search tries every ordinal of the four inventory families, every raw key press, and
+    /// both focus changes. The first candidate that binds to the wanted operation wins.
+    fn drawn_operation(live: &LiveInventory, wanted: &CorpusOperation) -> RandomOperation {
+        (0..=u8::MAX)
+            .flat_map(|ordinal| {
+                [
+                    RandomOperation::AdvertisedKey {
+                        command: ordinal,
+                        binding: 0,
+                    },
+                    RandomOperation::PublicHit { ordinal },
+                    RandomOperation::LocalAdvertisedKey {
+                        action: ordinal,
+                        binding: 0,
+                    },
+                    RandomOperation::LocalHit { action: ordinal },
+                ]
+            })
+            .chain(RawKey::ALL.iter().map(|key| RandomOperation::RawKey {
+                key: *key,
+                kind: KeyKind::Press,
+            }))
+            .chain([true, false].map(|gained| RandomOperation::Focus { gained }))
+            .find(|candidate| {
+                corpus_step(resolve(candidate, live), live).ok()
+                    == Some(CorpusStep::Operation(wanted.clone()))
+            })
+            .expect("one drawn operation binds to the wanted corpus operation")
+    }
+
+    /// Draw one vector that reaches every wanted corpus operation in order.
+    ///
+    /// A scratch engine runs each wanted operation, so each search reads the frame that the walk
+    /// sees at the same step.
+    fn drawn_operations(
+        factory: &CorpusWalkerFactory,
+        wanted: &[CorpusOperation],
+    ) -> Vec<RandomOperation> {
+        let mut engine = factory
+            .engine_with_initial_state(real_initial_state)
+            .unwrap();
+        let mut sink = NoopCheckpointSink;
+        engine.start(&mut sink).unwrap();
+        let drawn = wanted
+            .iter()
+            .map(|operation| {
+                let live = engine.frontend().live_inventory().unwrap();
+                let drawn = drawn_operation(&live, operation);
+                engine.run_operation(operation.clone(), &mut sink).unwrap();
+                drawn
+            })
+            .collect();
+        close_corpus_engine(engine).unwrap();
+        drawn
+    }
+
+    /// A run that ends the session ends the case, and the recorded case replays.
+    ///
+    /// The walk sets Preferences, After run, Exit, saves, and runs the entry. The host answers the
+    /// finished run with Quit, as the product does, so the session ends. The walk keeps the case,
+    /// skips the drawn operation after the end, and runs no liveness against the ended session.
+    /// The sampled liveness also stops at the end.
+    #[test]
+    fn a_host_quit_after_a_run_ends_the_case_and_its_repro_replays() {
+        let factory = english_factory();
+        let left = CorpusKeyEvent::from_terminal(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        let mut drawn = drawn_operations(
+            &factory,
+            &[
+                CorpusOperation::CommandKeyboard(UiCommand::Preferences),
+                CorpusOperation::ScreenFocus(ScreenTarget::Preferences(
+                    PreferencesControlId::AfterRun,
+                )),
+                CorpusOperation::RawKey(left),
+                CorpusOperation::CommandKeyboard(UiCommand::SavePreferences),
+                CorpusOperation::CommandKeyboard(UiCommand::Run),
+                CorpusOperation::CommandKeyboard(UiCommand::Submit),
+            ],
+        );
+        drawn.push(RandomOperation::Focus { gained: true });
+
+        let success =
+            evaluate_case(&factory, Size::new(80, 24), &drawn, LivenessSampling::Never).unwrap();
+        assert_eq!(success.operations.len(), 6);
+        assert_eq!(
+            success.skipped,
+            [json!({"index": 6, "reason": "session_ended"})]
+        );
+        let sampled = evaluate_case(
+            &factory,
+            Size::new(80, 24),
+            &drawn,
+            LivenessSampling::Every(NonZeroUsize::new(1).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(sampled.operations, success.operations);
+        assert_eq!(sampled.skipped, success.skipped);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(REPRO_NAME);
+        let repro = repro_value(
+            &(Locale::En, Size::new(80, 24)),
+            &drawn,
+            &CaseRecord {
+                resolved: &success.operations,
+                skipped: &success.skipped,
+            },
+            None,
+        )
+        .unwrap();
+        fs::write(&path, serde_json::to_vec(&repro).unwrap()).unwrap();
+        let replay = |profile: &WalkProfile, operations: &[RandomOperation]| {
+            evaluate_case(
+                &random_walk_factory(profile.0, profile.1),
+                random_canvas(profile.1, operations),
+                operations,
+                LivenessSampling::Never,
+            )
+        };
+        replay_repro(&path, &replay).unwrap();
+    }
+
+    /// The end of one case after a quit.
+    ///
+    /// The ways it can fail: a live session ends the case; a host quit lets the walk run more
+    /// operations on an ended session; a quit from an input action ends the case silently and so
+    /// hides a broken quit filter.
+    #[test]
+    fn only_a_host_quit_ends_the_case_and_an_input_quit_fails_it() {
+        assert_eq!(session_ended(None), Ok(false));
+        assert_eq!(session_ended(Some(EngineBoundary::Host)), Ok(true));
+        let error = session_ended(Some(EngineBoundary::Reducer)).unwrap_err();
+        assert!(
+            error.contains("an input that the walk filters ended the session"),
+            "{error}"
+        );
     }
 }

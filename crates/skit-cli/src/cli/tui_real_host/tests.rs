@@ -80,8 +80,8 @@ use super::{
         StatusProjectionCause, ambient_path_spellings,
     },
     projection_cause::{
-        add_projection_cause, deserialize_canonical, external_payload_mut, external_tag,
-        require_external_unit, require_internal_tag, review_default_name, screen_tag,
+        add_projection_cause, derived_cursor, deserialize_canonical, external_payload_mut,
+        external_tag, require_external_unit, require_internal_tag, review_default_name, screen_tag,
     },
     seed::{
         DirectorySeedIo, WalkerDirectoryRoot, WalkerDirectorySeed, WalkerExternalReferenceSeed,

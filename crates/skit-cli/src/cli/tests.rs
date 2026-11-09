@@ -1060,12 +1060,12 @@ fn prompt_runner_validation_keeps_empty_configuration_typed_and_read_only() {
         ),
         (
             Locale::ZhCn,
-            "未知运行器：missing。已配置的运行器：—",
+            "未知的执行器:missing。已配置的执行器:—",
             "执行器 missing 未配置(已知:—)。管理执行器:skit runner list",
         ),
         (
             Locale::ZhTw,
-            "未知執行器：missing。已設定的執行器：—",
+            "未知的執行器:missing。已設定的執行器:—",
             "執行器 missing 未設定(已知:—)。管理執行器:skit runner list",
         ),
     ] {
@@ -6476,18 +6476,18 @@ fn the_localized_command_tree_translates_every_description() {
                 "skit",
                 "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單",
             ),
-            ("list", "列出所有已登記的條目"),
+            ("list", "列出所有已登記的項目"),
             (
                 "show",
-                "顯示一個條目的全部資訊：中繼資料、依賴、參數和參數組合",
+                "顯示一個項目的全部資訊：中繼資料、依賴、參數和參數組合",
             ),
-            ("remove", "移除一個已登記的條目（原始來源檔案不受影響）"),
-            ("rename", "重新命名條目（參數組合、記住的值與歷史都會保留）"),
-            ("describe", "設定條目的說明（顯示在工具庫和 skit list 中）"),
-            ("params", "檢視或編輯條目的管理參數或宣告參數"),
+            ("remove", "移除一個已登記的項目（原始來源檔案不受影響）"),
+            ("rename", "重新命名項目（參數組合、記住的值與歷史都會保留）"),
+            ("describe", "設定項目的說明（顯示在工具庫和 skit list 中）"),
+            ("params", "檢視或編輯項目的管理參數或宣告參數"),
             (
                 "deps",
-                "檢視或更新條目的套件依賴、Python 版本限制和所需命令",
+                "檢視或更新項目的套件依賴、Python 版本限制和所需命令",
             ),
             ("doctor", "檢查 uv 是否可用以及工具庫是否完好"),
         ],
@@ -7326,11 +7326,11 @@ fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() 
     );
     assert_eq!(
         settings_saved_message(&outcome, Locale::ZhCn),
-        "设置已保存 — 已移除 GONE：它已不存在于脚本中。"
+        "设置已保存 — 已剔除 GONE:脚本中已找不到。"
     );
     assert_eq!(
         settings_saved_message(&outcome, Locale::ZhTw),
-        "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。"
+        "設定已儲存 — 已剔除 GONE:腳本中已找不到。"
     );
 }
 
@@ -8651,10 +8651,14 @@ fn terminal_first_run_questions_use_real_pty_defaults_choices_and_localized_repr
         ),
         (
             "zh-CN",
-            "PyPI 索引（Python 软件包）",
-            "自定义选项需要 URL。",
+            "PyPI 索引（Python 包）",
+            "选了“自定义”就需要填 URL。",
         ),
-        ("zh-TW", "PyPI 索引（Python 套件）", "自訂選項需要 URL。"),
+        (
+            "zh-TW",
+            "PyPI 索引（Python 套件）",
+            "選了「自訂」就需要填 URL。",
+        ),
     ] {
         let mut custom = MirrorPromptPty::spawn("axis-pypi", locale);
         custom.wait_for(question);

@@ -214,7 +214,7 @@ fn test_two_flags_together_are_both_named_and_joined() {
         ),
         (
             "zh-CN",
-            "skit-new-both.py 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 --ref/--exe。",
+            "skit-new-both.py 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序条目做不到这点。请去掉 --ref/--exe。",
         ),
         (
             "zh-TW",
@@ -703,8 +703,8 @@ fn test_deps_dep_on_shell_is_refused() {
             "en",
             "d doesn't take package dependencies; only --need applies\n",
         ),
-        ("zh-CN", "d 不接受软件包依赖项；只有 --need 适用\n"),
-        ("zh-TW", "d 不接受套件相依性；只有 --need 適用\n"),
+        ("zh-CN", "d 不接受包依赖；这里只能用 --need\n"),
+        ("zh-TW", "d 不接受套件依賴；這裡只能用 --need\n"),
     ] {
         let sandbox = Sandbox::new();
         add_shell(&sandbox, "d");

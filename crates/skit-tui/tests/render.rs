@@ -399,8 +399,8 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .collect::<String>();
     assert!(text.contains("工 具 庫"));
     assert!(text.contains("項 目"));
-    assert!(text.contains("詳 細 資 料"));
-    assert!(text.contains("結 束"));
+    assert!(text.contains("詳 情"));
+    assert!(text.contains("離 開"));
     assert!(text.contains("副 本 由  skit"), "{text:?}");
     assert!(!text.contains("Library"));
 
@@ -432,7 +432,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("新 增 項 目"));
+    assert!(text.contains("加 入 項 目"));
     assert!(text.contains("來 源 路 徑"), "{text:?}");
     assert!(text.contains("Library"), "{text:?}");
     assert!(!text.contains("程 式 庫 種 類"), "{text:?}");

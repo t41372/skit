@@ -417,7 +417,7 @@ fn add_dispatch_messages_match_the_oracle_in_every_locale() {
         (
             "a --cmd template takes only --name/--description",
             "--cmd 模板只接受 --name/--description",
-            "--cmd 樣板只接受 --name/--description",
+            "--cmd 範本只接受 --name/--description",
         ),
         (
             "stdin authors a brand-new copy, and --ref/--exe need an existing file",
@@ -535,7 +535,7 @@ fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
         "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
         &[&"x"],
         "x 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
-        "x 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+        "x 不是範本佔位符，無法使用 placeholder 傳遞方式，已跳過。",
     );
     assert_zh(
         "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
@@ -647,7 +647,7 @@ fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
     );
     assert_eq!(
         text(Locale::ZhTw, command_heading),
-        "命令樣板的佔位符（執行表單會詢問）："
+        "命令範本的佔位符（執行表單會詢問）："
     );
     let environment = "Declared environment variables (set on the run):";
     assert_eq!(
@@ -717,7 +717,7 @@ fn chinese_terms_keep_distinct_product_meanings() {
     assert_eq!(text(Locale::ZhCn, "Storage mode"), "存储模式");
     assert_eq!(text(Locale::ZhCn, "Choices: {}"), "可选值：{}");
     assert_eq!(text(Locale::ZhCn, "Options:"), "选项：");
-    assert_eq!(text(Locale::ZhCn, "Secret: yes"), "敏感值：是");
+    assert_eq!(text(Locale::ZhCn, "Secret: yes"), "机密：是");
 
     assert_eq!(text(Locale::ZhTw, "Kind"), "類型");
     assert_eq!(text(Locale::ZhTw, "Type: {}"), "類型：{}");
@@ -753,7 +753,7 @@ fn a_typed_message_keeps_its_values_out_of_the_translation() {
     assert_eq!(message.to_string(), "entry not found: list-me");
 
     let quoted = skit_i18n::Message::new("preset {} does not exist").quoted("on off");
-    assert_eq!(quoted.localize(Locale::ZhTw), "預設 \"on off\" 不存在");
+    assert_eq!(quoted.localize(Locale::ZhTw), "參數組合 \"on off\" 不存在");
 
     let nested = skit_i18n::Message::new("invalid entry mutation: {}")
         .nested(skit_i18n::Message::new("entry name cannot be blank"));
@@ -793,16 +793,16 @@ fn framework_rendering_changes_only_whole_words() {
 fn every_tui_completion_status_has_two_complete_translations() {
     for (english, zh_cn, zh_tw) in [
         ("Source saved", "源文件已保存", "來源已儲存"),
-        ("Entry removed", "条目已删除", "項目已移除"),
-        ("Entry added", "条目已添加", "項目已新增"),
+        ("Entry removed", "条目已移除", "項目已移除"),
+        ("Entry added", "条目已添加", "項目已加入"),
         ("Settings saved", "设置已保存", "設定已儲存"),
         ("Preferences saved", "偏好设置已保存", "偏好設定已儲存"),
         (
             "Prompt runners saved",
-            "提示词运行器已保存",
+            "提示词执行器已保存",
             "提示詞執行器已儲存",
         ),
-        ("Presets saved", "预设已保存", "預設已儲存"),
+        ("Presets saved", "参数组合已保存", "參數組合已儲存"),
         ("Entry renamed", "条目已重命名", "項目已重新命名"),
         (
             "Run finished with exit status",
@@ -819,14 +819,16 @@ fn every_tui_completion_status_has_two_complete_translations() {
     );
 }
 
-/// The add receipt block must carry the version 0.4 strings byte for byte.
+/// The add receipt block must carry the version 0.4 strings.
 ///
 /// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:595-632` and the same
 /// msgids in `zh_TW`. The verbs and the colon widths are the oracle's, never
-/// house style: `已加入:` with an ASCII colon, `描述:`, `管理中的参数:`, and the
-/// full-width colon that the secrets note really uses.
+/// house style: `已加入:` with an ASCII colon, `管理中的参数:`, and the
+/// full-width colon that the secrets note really uses. One word differs from the
+/// oracle: the receipt says `说明:` because the whole catalog uses `说明` for a
+/// description, where version 0.4 mixed `说明` and `描述`.
 #[test]
-fn the_add_receipt_block_is_verbatim_version_0_4() {
+fn the_add_receipt_block_keeps_the_version_0_4_wording() {
     for (key, zh_cn, zh_tw) in [
         ("Added: {}", "已加入:x", "已加入:x"),
         (
@@ -834,7 +836,7 @@ fn the_add_receipt_block_is_verbatim_version_0_4() {
             "已加入:x (y 模式)",
             "已加入:x (y 模式)",
         ),
-        ("Description: {}", "描述:x", "描述:x"),
+        ("Description: {}", "说明:x", "說明:x"),
         ("Managed parameters: {}", "管理中的参数:x", "管理中的參數:x"),
         (
             "Secret parameter values are never saved by skit: {}",

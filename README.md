@@ -3,7 +3,6 @@
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
-[![Mutation tested: cargo-mutants](https://img.shields.io/badge/mutation%20tested-cargo--mutants-blue)](https://github.com/sourcefrog/cargo-mutants)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Rust 1.98.1](https://img.shields.io/badge/rust-1.98.1-orange)](https://www.rust-lang.org/)
 [![TUI: Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue)](https://ratatui.rs/)
@@ -270,8 +269,7 @@ skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/25
 ## Development
 
 Development uses the pinned Rust toolchain. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the TDD
-workflow and the complete coverage, cargo-mutants, supply-chain, wheel, documentation, and benchmark
-gates.
+workflow and the complete coverage, supply-chain, wheel, documentation, and benchmark gates.
 
 ```bash
 cargo build --locked

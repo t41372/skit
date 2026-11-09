@@ -159,7 +159,7 @@ fn launch_errors_localize_their_template_in_every_supported_locale() {
 
     for (locale, template) in [
         ("zh-CN", "找不到所需命令"),
-        ("zh-TW", "找不到必要命令"),
+        ("zh-TW", "找不到所需命令"),
         ("en", "required command was not found"),
     ] {
         sandbox

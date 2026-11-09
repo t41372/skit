@@ -881,6 +881,111 @@ pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
     ]
 }
 
+/// The short operation vector that moves the cursor in the derived Add review name.
+///
+/// It authors one prompt draft. The review stage opens with the focus on the review name and the
+/// cursor at its end. One arrow key moves the cursor inside the name, and `Home` moves it to the
+/// start. The narrow viewport
+/// then makes the click at the center of the name field land inside the name, as in the nightly
+/// walks that found the defect. `End` moves the cursor back to the end. The value stays the
+/// derived name the whole time. Two `Esc` presses then leave the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_cursor_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    let add_focus = |target| CorpusOperation::ScreenFocus(ScreenTarget::Add(target));
+    let add_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Add(target));
+    let add_local = |target, key| CorpusOperation::LocalKeyboard {
+        target: LocalActionTarget::Add(target),
+        key,
+    };
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        add_focus(AddControlId::NewPrompt),
+        add_local(AddControlId::NewPrompt, plain(CorpusKey::Enter)),
+        CorpusOperation::RawKey(plain(CorpusKey::Left)),
+        CorpusOperation::RawKey(plain(CorpusKey::Home)),
+        CorpusOperation::Resize {
+            width: 24,
+            height: 6,
+        },
+        add_hit(AddControlId::Text(AddTextField::ReviewName)),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The short operation vector that moves the cursor in a picked Add source path.
+///
+/// It picks one seeded file, so the focused source path is the path that the host proved. One
+/// arrow key moves the cursor inside the path, and `Home` moves it to the start. The narrow
+/// viewport then makes the click at the center of the path field land inside the path, and `End`
+/// moves the cursor back to the end. The value stays the picked path the whole time. `Esc` then
+/// leaves the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn source_path_cursor_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    let add_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Add(target));
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        add_hit(AddControlId::BrowseSource),
+        CorpusOperation::ScreenHit(ScreenTarget::FilePickerEntry {
+            relative: PathBuf::from("picked.sh"),
+        }),
+        CorpusOperation::RawKey(plain(CorpusKey::Left)),
+        CorpusOperation::RawKey(plain(CorpusKey::Home)),
+        CorpusOperation::Resize {
+            width: 24,
+            height: 6,
+        },
+        add_hit(AddControlId::Text(AddTextField::SourcePath)),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The interpreter that [`refused_run_corpus_operations`] pastes into the entry settings.
+///
+/// It holds a line feed, a carriage return, and one C0 control character, as the nightly walk
+/// that found the defect pasted them.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) const MISSING_PROGRAM: &str = "one\ntwo\r\u{3}é";
+
+/// The text that [`refused_run_corpus_operations`] adds to the extra arguments of the run form.
+///
+/// Its quote has no end, so the host cannot split the arguments.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) const UNBALANCED_ARGUMENTS: &str = " \"unbalanced";
+
+/// The short operation vector that runs an entry twice, and the host refuses both runs.
+///
+/// Three `Tab` presses move the settings focus from the name past the description and the
+/// working directory to the interpreter. It pastes [`MISSING_PROGRAM`] there, saves the settings,
+/// and runs the entry. The host refuses the run because it cannot find the program. One more
+/// `Tab` moves the run form focus from the parameter to the extra arguments, and
+/// [`UNBALANCED_ARGUMENTS`] makes their quoting invalid. The host refuses the second run before
+/// it looks for the program. The product shows each refusal as a status line and keeps the
+/// session, so the walk goes on and goes back to the Library.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn refused_run_corpus_operations() -> Vec<CorpusOperation> {
+    let tab = CorpusOperation::RawKey(CorpusKeyEvent::press(CorpusKey::Tab, CorpusModifiers::NONE));
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Settings),
+        tab.clone(),
+        tab.clone(),
+        tab.clone(),
+        CorpusOperation::Paste(MISSING_PROGRAM.to_owned()),
+        CorpusOperation::CommandKeyboard(UiCommand::SaveSettings),
+        CorpusOperation::CommandKeyboard(UiCommand::Run),
+        CorpusOperation::CommandKeyboard(UiCommand::Submit),
+        CorpusOperation::Focus { gained: false },
+        tab,
+        CorpusOperation::Paste(UNBALANCED_ARGUMENTS.to_owned()),
+        CorpusOperation::CommandKeyboard(UiCommand::Submit),
+        CorpusOperation::CommandKeyboard(UiCommand::Back),
+    ]
+}
+
 /// The short operation vector that paints an absolute sandbox path on a real screen.
 ///
 /// It installs one Agent Skill, opens the source file picker, and picks one seeded file. The

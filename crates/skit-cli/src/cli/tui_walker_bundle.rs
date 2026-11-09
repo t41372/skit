@@ -53,9 +53,11 @@ use super::tui_real_walker::{
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::tui_real_walker::{
-    draft_quarantine_corpus_operations, invalid_corpus_operation,
+    MISSING_PROGRAM, UNBALANCED_ARGUMENTS, draft_quarantine_corpus_operations,
+    invalid_corpus_operation, refused_run_corpus_operations,
     rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
-    review_name_cut_corpus_operations,
+    review_name_cursor_corpus_operations, review_name_cut_corpus_operations,
+    source_path_cursor_corpus_operations,
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use skit_tui_walker_support::{ChunkDescriptor, ReviewVerdict};
@@ -6656,6 +6658,174 @@ fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
         }
     }
     assert!(projected > 0, "no profile recorded a projected cut buffer");
+}
+
+/// A moved cursor in the derived review name reaches the recorded corpus through the projection.
+///
+/// The operations move the cursor inside the derived name with an arrow key, to its start with
+/// `Home`, inside it again with a click at the field center, and back to its end with `End`. The
+/// value stays the derived name, so every recorded session must hold the typed sentinel. The
+/// raw cursors 15, 14, 0, and 9 in `skit-new-000000` project to 9, 8, 0, and 5 in `<draft:0>`:
+/// the ends keep their places, and the interior cursors stay interior and keep their order.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_derived_review_name() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_cursor_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let mut cursors = BTreeSet::new();
+        for ((kind, digest), bytes) in &recorded.objects {
+            if *kind != ObjectKind::Session {
+                continue;
+            }
+            let text = String::from_utf8_lossy(bytes);
+            assert!(
+                !text.contains("skit-new-"),
+                "{profile} {digest} holds a raw allocator name"
+            );
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let inputs = value
+                .pointer("/value/add/fields/inputs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            for input in inputs {
+                if input["id"] == "ReviewName" && input["state"]["value"] == "<draft:0>" {
+                    cursors.insert(input["state"]["cursor"].as_u64().unwrap());
+                }
+            }
+        }
+        assert_eq!(cursors, BTreeSet::from([0, 5, 8, 9]), "{profile}");
+    }
+}
+
+/// A moved cursor in a picked source path reaches the recorded corpus through the projection.
+///
+/// The operations pick one seeded file and move the cursor in its path with an arrow key, `Home`,
+/// a click at the field center, and `End`. The value stays the picked path, so every recorded
+/// session must hold its stable spelling, and the leak oracle refuses any raw sandbox path. The
+/// ends keep their places, and the interior cursors stay interior.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_picked_source_path() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &source_path_cursor_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    let stable = "<profile:canonical-corpus>/external/picked.sh";
+    let end = u64::try_from(stable.chars().count()).unwrap();
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let mut cursors = BTreeSet::new();
+        for ((kind, _), bytes) in &recorded.objects {
+            if *kind != ObjectKind::Session {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let inputs = value
+                .pointer("/value/add/fields/inputs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            for input in inputs {
+                if input["id"] == "SourcePath" && input["state"]["value"] == stable {
+                    cursors.insert(input["state"]["cursor"].as_u64().unwrap());
+                }
+            }
+        }
+        assert!(
+            cursors.contains(&0) && cursors.contains(&end),
+            "{profile} {cursors:?}"
+        );
+        assert!(
+            cursors.iter().any(|cursor| (1..end).contains(cursor)),
+            "{profile} {cursors:?}"
+        );
+    }
+}
+
+/// A run that the host refuses becomes a status line, and the walk goes on.
+///
+/// The operations run the entry twice. The first run has an interpreter that does not exist, and
+/// the second run also has extra arguments with an open quote. The product keeps the session and
+/// shows each localized host error, so the walker host must do the same. The first error holds a
+/// line feed, a carriage return, and a C0 control character, because the user pasted them. No
+/// recorded frame cell may hold a control character: a terminal would act on it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &refused_run_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    assert!(UNBALANCED_ARGUMENTS.contains('"'));
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let locale = skit_i18n::detect_locale(Some(&recorded.locale));
+        let missing = skit_i18n::format_text(
+            locale,
+            "required program was not found: {}",
+            &[&MISSING_PROGRAM],
+        );
+        let quoting = skit_i18n::text(locale, "extra arguments have invalid quoting");
+        let mut statuses = BTreeSet::new();
+        let mut shown = false;
+        for ((kind, digest), bytes) in &recorded.objects {
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            match kind {
+                ObjectKind::Reducer => {
+                    statuses.extend(
+                        value
+                            .pointer("/value/status")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    );
+                }
+                ObjectKind::StyledFrame => {
+                    let cells = value
+                        .pointer("/value/cells")
+                        .and_then(Value::as_array)
+                        .unwrap();
+                    let mut text = String::new();
+                    for cell in cells {
+                        let symbol = cell["symbol"].as_str().unwrap();
+                        assert!(
+                            !symbol.chars().any(char::is_control),
+                            "{profile} {digest} paints the control symbol {symbol:?}"
+                        );
+                        text.push_str(symbol);
+                    }
+                    shown |= text.contains(missing.split('\n').next().unwrap());
+                }
+                ObjectKind::Host | ObjectKind::Session | ObjectKind::Geometry => {}
+            }
+        }
+        assert!(statuses.contains(&missing), "{profile} {statuses:?}");
+        assert!(
+            statuses.contains(quoting.as_ref()),
+            "{profile} {statuses:?}"
+        );
+        // Wide characters leave blank continuation cells, so only the English row reads back
+        // as one string.
+        if locale == skit_i18n::Locale::En {
+            assert!(shown, "{profile} never paints the status line");
+        }
+    }
 }
 
 /// Every real allocation path reaches the recorded corpus as its typed sentinel.

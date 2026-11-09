@@ -817,7 +817,7 @@ fn test_assemble_flags_tolerates_missing_keys() {
 }
 
 /// An empty optional field is skipped, not a hard stop: a later filled field must still
-/// be assembled (kills continue->break).
+/// be assembled. The gap must not end the loop.
 #[test]
 fn test_assemble_empty_field_does_not_stop_later_flags() {
     let mut values = values_ok();
@@ -976,7 +976,7 @@ fn test_record_run_zero_exit_survives_save() {
 }
 
 // --------------------------------------------------------------------------
-// mutation hardening: the small helpers
+// exact contracts: the small helpers
 // --------------------------------------------------------------------------
 
 /// flows.truthy is THE single public bool-spelling rule every renderer shares — the same
@@ -1620,7 +1620,7 @@ fn test_transparency_lines_flag_source_is_single_command_line() {
     assert!(lines[0].starts_with("→ "));
 }
 
-/// Exact first line (kills the ", " separator and the "→ inject: " string mutants).
+/// Exact first line (pins the ", " separator and the "→ inject: " prefix).
 #[test]
 fn test_transparency_inject_lines_are_exact() {
     let asm = run(

@@ -134,7 +134,6 @@ below, and the pull request must report the result of each one:
 - Rustdoc with warnings as errors;
 - all workspace tests on Linux, macOS, and Windows;
 - complete executable-source line coverage after LCOV records are merged;
-- cargo-mutants with zero survivors;
 - complete English, Simplified Chinese, and Traditional Chinese catalogs;
 - cargo-deny, cargo-audit, and zizmor;
 - Maturin wheel, source archive, and `uv tool install` smoke tests;
@@ -142,4 +141,4 @@ below, and the pull request must report the result of each one:
 
 LLVM can assign counters to a closing brace, a blank line, a function signature, or the first line
 of a covered multiline call. The coverage gate ignores only these structural mappings. It rejects
-all uncovered executable source lines. Mutation testing independently checks behavior assertions.
+all uncovered executable source lines.

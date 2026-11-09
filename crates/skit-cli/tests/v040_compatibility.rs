@@ -168,7 +168,7 @@ fn human_list_empty_library_keeps_the_localized_discovery_hint() {
         .arg("list")
         .assert()
         .success()
-        .stdout("還沒有任何條目。用 skit add <path> 加入一個。\n");
+        .stdout("還沒有任何項目。用 skit add <path> 加入一個。\n");
 }
 
 #[test]

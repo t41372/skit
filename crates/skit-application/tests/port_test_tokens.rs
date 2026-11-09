@@ -231,7 +231,7 @@ fn test_default_env_and_now_paths() {
 }
 
 // --------------------------------------------------------------------------
-// mutation hardening
+// exact contracts
 // --------------------------------------------------------------------------
 
 #[test]
@@ -268,7 +268,7 @@ fn test_preview_forwards_every_argument() {
 
 #[test]
 fn test_escape_deep_in_string_exact() {
-    // Escapes far from index 0/2 pin the scanner's advance arithmetic: a mutant that
+    // Escapes far from index 0/2 pin the scanner's advance arithmetic: a scanner that
     // rewinds or pins the index re-reads earlier characters and corrupts the output.
     assert_eq!(expand_default("abc{{d}}e"), "abc{d}e");
     assert_eq!(

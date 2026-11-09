@@ -738,7 +738,7 @@ fn test_show_human_degraded_parser_notice() {
     let path = lib.write_src("multi.py", SUBPARSERS);
     lib.add_python(&path, "multi");
     let output = lib.show_human("multi");
-    // Line-exact: an XX-wrapped msgid mutant still contains the substring.
+    // Line-exact: a copy wrapped in extra text would still contain the substring.
     assert!(output.lines().any(|line| line
         == "skit could not model this script's own arguments; pass them after -- instead."));
 }

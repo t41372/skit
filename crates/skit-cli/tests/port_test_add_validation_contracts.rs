@@ -226,7 +226,7 @@ fn snapshot_sandbox(sandbox: &Sandbox) -> Vec<TreeItem> {
 fn explicit_boundary_message(language: &str, file: &str, flags: &str) -> String {
     match language {
         "zh-CN" => format!(
-            "{file} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {flags}。"
+            "{file} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序条目做不到这点。请去掉 {flags}。"
         ),
         "zh-TW" => format!(
             "{file} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {flags}。"

@@ -1,6 +1,6 @@
 //! Exact public-surface ports of Python v0.4 `tests/test_argspec_mut.py`.
 //!
-//! The mutation suite independently freezes the binding/delivery axes for every reflected Python
+//! This suite independently freezes the binding/delivery axes for every reflected Python
 //! CLI framework. It is intentionally not folded into broader argspec tests.
 
 use skit_domain::parameters::{ParameterBinding, ParameterDelivery};

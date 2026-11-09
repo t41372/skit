@@ -93,7 +93,6 @@ pub(super) enum AddProjectionCause {
     Reset,
     SelectDraft(usize),
     PickedSourcePath(String),
-    SourcePathEdited,
     ReviewSource(Option<PathBuf>),
     ReviewNameEdited,
     ReviewSourceEdited(Option<PathBuf>),

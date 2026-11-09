@@ -804,16 +804,18 @@ fn noop_checkpoint_capture_preserves_values_and_replay_uses_every_cause_kind() {
 #[test]
 fn local_and_exact_limit_host_quit_are_successful_terminal_operations() {
     let factory = Factory::default();
-    for (operation, limit, served) in [
-        (Operation::Quit, 8, 0),
-        (Operation::HostQuit, 2, 1),
-        (Operation::HostQuit, 1, 1),
+    for (operation, limit, served, boundary) in [
+        (Operation::Quit, 8, 0, EngineBoundary::Reducer),
+        (Operation::HostQuit, 2, 1, EngineBoundary::Host),
+        (Operation::HostQuit, 1, 1, EngineBoundary::Host),
     ] {
         let mut engine = engine(&factory, limit);
         let mut trace = Recorder::default();
         engine.start(&mut trace).unwrap();
+        assert_eq!(engine.quit_boundary(), None);
         engine.run_operation(operation, &mut trace).unwrap();
         assert!(engine.is_quit());
+        assert_eq!(engine.quit_boundary(), Some(boundary));
         assert!(!engine.is_poisoned());
         assert_eq!(engine.host().served, served);
 
@@ -838,6 +840,7 @@ fn effect_chain_can_settle_exactly_at_the_limit() {
 
     assert_eq!(engine.host().served, 2);
     assert!(!engine.is_quit());
+    assert_eq!(engine.quit_boundary(), None);
     assert!(!engine.is_poisoned());
 }
 

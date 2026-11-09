@@ -781,7 +781,7 @@ fn test_hosted_python_branch_prints_managed_and_secret_lines() {
 }
 
 // ===========================================================================
-// Mutation-kill battery: the extracted helpers are standalone and mutated.
+// Direct-call battery: each test calls one extracted standalone helper.
 // ===========================================================================
 
 #[test]
@@ -827,7 +827,7 @@ fn test_ans_tui_cancel_prints_exact_message_and_exits_130() {
 }
 
 #[test]
-#[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` with TERM=dumb + form=tui and asserts the AND short-circuits to the plain menu. The TERM=dumb rule is `wants_tui_form` (cli.rs:1241-1246); this direct-call mutation-kill is skit-cli-private."]
+#[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` with TERM=dumb + form=tui and asserts the AND short-circuits to the plain menu. The TERM=dumb rule is `wants_tui_form` (cli.rs:1241-1246); this direct-call check is skit-cli-private."]
 fn test_ans_term_dumb_forces_the_plain_menu_even_with_form_tui() {
     // TERM=dumb forces the plain line menu even under form=tui.
 }
@@ -1285,9 +1285,9 @@ fn test_ans_path_prompt_call_contract() {
 }
 
 #[test]
-#[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` and asserts no \"XX\" string-mutation marker leaks. A belt-and-braces mutation check on the private helper's rendered output; the plain menu render itself is asserted verbatim by test_ans_plain_menu_lines_are_exact."]
+#[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` and asserts that no stray \"XX\" markup token leaks. A belt-and-braces check on the private helper's rendered output; the plain menu render itself is asserted verbatim by test_ans_plain_menu_lines_are_exact."]
 fn test_ans_no_stray_markup_tokens_in_output() {
-    // No XX mutation marker leaks into the plain menu render.
+    // No stray XX token leaks into the plain menu render.
 }
 
 // ---------------------------------------------------------------------------

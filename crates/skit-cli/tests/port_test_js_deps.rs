@@ -2135,7 +2135,7 @@ fn test_placeholder_parity_passes_the_shipped_catalogs() {}
 fn test_po_syntax_allows_a_valid_msgctxt_line() {}
 
 // ============================================================================
-// mutation-hardening: split_requirement boundary + module_type multi-dot,
+// exact contracts: split_requirement boundary + module_type multi-dot,
 // manifest layout, sweep cutoff, unknown-runner fallback, failure-detail noise
 // ============================================================================
 

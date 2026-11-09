@@ -39,16 +39,15 @@ fn test_names(source: &str) -> Vec<String> {
 }
 
 #[test]
-fn shell_cli_reader_mutation_coverage_is_five_executable_two_blocked() {
+fn shell_cli_reader_port_coverage_is_five_executable_two_blocked() {
     assert_eq!(EXECUTABLE.len() + BLOCKED.len(), 7);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(
-        repo.join("crates/skit-form/tests/port_test_shell_cli_reader_mut_exact.rs"),
-    )
-    .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_shell_cli_reader_exact.rs"))
+            .unwrap();
     assert_eq!(
         test_names(&source),
         EXECUTABLE

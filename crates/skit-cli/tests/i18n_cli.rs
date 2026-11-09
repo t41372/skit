@@ -18,7 +18,7 @@ fn help_uses_the_requested_traditional_chinese_catalog() {
         .assert()
         .success()
         .stdout(predicate::str::contains("腳本、提示詞、程式和命令"))
-        .stdout(predicate::str::contains("已登記的條目"))
+        .stdout(predicate::str::contains("已登記的項目"))
         .stdout(predicate::str::contains("選項"));
 }
 
@@ -84,11 +84,11 @@ fn add_flag_refusals_use_the_v040_catalog_in_every_locale() {
         ),
         (
             "zh-TW",
-            "shell 條目不接受依賴套件——拿掉 --dep。",
+            "shell 項目不接受依賴套件——拿掉 --dep。",
             "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",
             "--cmd, 檔案路徑 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
             "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
-            "--runner 在這裡無法套用——--cmd 樣板只接受 --name/--description(未加入任何內容)。",
+            "--runner 在這裡無法套用——--cmd 範本只接受 --name/--description(未加入任何內容)。",
         ),
     ] {
         command(locale)
@@ -196,10 +196,10 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("已登記 1 個條目"))
+        .stdout(predicate::str::contains("已登記 1 個項目"))
         .stdout(predicate::str::contains("工具庫："))
         .stdout(predicate::str::contains("狀態資料："))
-        .stdout(predicate::str::contains("組態："));
+        .stdout(predicate::str::contains("設定檔："));
     command()
         .args(["show", "library", "--json"])
         .assert()

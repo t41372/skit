@@ -1134,8 +1134,8 @@ fn test_settings_candidate_checkboxes_are_flood_capped() {
     ));
     for (locale, expected) in [
         (Locale::En, "…and 9 more"),
-        (Locale::ZhCn, "…以及另外 9 个"),
-        (Locale::ZhTw, "…以及另外 9 個"),
+        (Locale::ZhCn, "……还有 9 个"),
+        (Locale::ZhTw, "……還有 9 個"),
     ] {
         assert_eq!(
             skit_i18n::format_text(locale, "…and {} more", &[&9]),

@@ -53,6 +53,8 @@ enum AddActionProjection<'a> {
     Unit(&'static str),
     Payload(&'static str),
     PickedSourcePath(&'a str),
+    SourcePath(&'a str),
+    ReviewName(&'a str),
     SourceResult(&'static str),
     DraftEdited,
     DraftDeleted,
@@ -341,7 +343,7 @@ impl PathMap {
         value: &mut Value,
     ) -> Result<(), String> {
         let projection = match action {
-            AddAction::SetSourcePath(_) => AddActionProjection::Payload("set_source_path"),
+            AddAction::SetSourcePath(path) => AddActionProjection::SourcePath(path),
             AddAction::PickedSourcePath(raw) => AddActionProjection::PickedSourcePath(raw),
             AddAction::SetCommandTemplate(_) => {
                 AddActionProjection::Payload("set_command_template")
@@ -364,7 +366,7 @@ impl PathMap {
                 AddActionProjection::Payload("confirm_draft_delete")
             }
             AddAction::DraftDeleted { .. } => AddActionProjection::DraftDeleted,
-            AddAction::SetReviewName(_) => AddActionProjection::Payload("set_review_name"),
+            AddAction::SetReviewName(name) => AddActionProjection::ReviewName(name),
             AddAction::SetReviewDescription(_) => {
                 AddActionProjection::Payload("set_review_description")
             }
@@ -406,6 +408,32 @@ impl PathMap {
                 }
                 let path = self.require_exact_picker_file(raw)?;
                 *payload = Value::String(self.normalize_path(path));
+                Ok(())
+            }
+            AddActionProjection::SourcePath(path) => {
+                let payload = external_payload_mut(value, "set_source_path")?;
+                // A cursor key sends the unchanged path. It is not an edit, so the path keeps
+                // its projection.
+                if let Some((_, stable)) = self
+                    .add_source_path_projection()?
+                    .filter(|(raw, _)| raw == path)
+                {
+                    *payload = Value::String(stable);
+                }
+                Ok(())
+            }
+            AddActionProjection::ReviewName(name) => {
+                let payload = external_payload_mut(value, "set_review_name")?;
+                // A cursor key sends the unchanged derived name. It is not an edit, so the name
+                // keeps its projection.
+                if let Some(projection) = self
+                    .add_provenance
+                    .review_name
+                    .as_ref()
+                    .filter(|projection| projection.raw_name == name)
+                {
+                    *payload = Value::String(projection.stable_name.clone());
+                }
                 Ok(())
             }
             AddActionProjection::SourceResult(tag) => {

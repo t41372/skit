@@ -176,7 +176,7 @@ A	1	crates/skit-i18n/src/lib.rs	"{}: that delivery isn't available for this kind
 A	1	crates/skit-i18n/src/lib.rs	"{}: the default doesn't fit its type; skipped.",	oracle msgid production/catalog copy
 A	1	crates/skit-i18n/src/lib.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",	oracle msgid production/catalog copy
 A	1	crates/skit-i18n/src/lib.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",	oracle msgid production/catalog copy
-A	1	crates/skit-i18n/src/lib.rs	row!("Can't read {}: {}", "无法读取 {}：{}", "無法讀取 {}：{}",),	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	row!("Can't read {}: {}", "无法读取 {}:{}", "無法讀取 {}:{}",),	oracle msgid production/catalog copy
 A	1	crates/skit-i18n/src/lib.rs	row!("Couldn't run {}: {}", "无法运行 {}:{}", "無法執行 {}:{}",),	oracle msgid production/catalog copy
 A	1	crates/skit-i18n/tests/catalog.rs	"WIDTH isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."	exact owner for frozen user-visible copy
 A	1	crates/skit-i18n/tests/catalog.rs	"{} can't apply here — {} (nothing was added).",	exact owner for frozen user-visible copy

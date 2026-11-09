@@ -1713,13 +1713,13 @@ mod tests {
             ),
             (
                 Locale::ZhCn,
-                "设置已保存 — 已移除 GONE：它已不存在于脚本中。",
-                "已移除 GONE",
+                "设置已保存 — 已剔除 GONE:脚本中已找不到。",
+                "已剔除 GONE",
             ),
             (
                 Locale::ZhTw,
-                "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。",
-                "已移除 GONE",
+                "設定已儲存 — 已剔除 GONE:腳本中已找不到。",
+                "已剔除 GONE",
             ),
         ] {
             let mut state = LibraryState::default();

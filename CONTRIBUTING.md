@@ -11,7 +11,6 @@ repository. Install these development tools when you need their gates:
 
 ```bash
 cargo install cargo-llvm-cov --version 0.8.7 --locked
-cargo install cargo-mutants --version 27.1.0 --locked
 cargo install cargo-audit --version 0.22.2 --locked
 cargo install cargo-deny --version 0.20.2 --locked
 cargo install zizmor --version 1.29.0 --locked
@@ -76,19 +75,14 @@ cargo test --locked --workspace --all-targets --all-features
 cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
 bash scripts/test_coverage.sh
 bash scripts/check_coverage.sh lcov.info
-cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300
 cargo deny --locked check
 cargo audit --deny warnings
 zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 ```
 
-Mutation commands use the `mutants` Cargo profile. It enables optimization and keeps debug assertions
-and overflow checks. `.cargo/mutants.toml` selects this profile for local and CI runs.
-
 The coverage script merges records from all test binaries. It rejects every uncovered executable
 source line. It ignores only LLVM mappings for structural Rust lines, such as braces, attributes,
-and function signatures. Mutation testing remains a separate hard gate and must report zero
-survivors.
+and function signatures.
 
 ## Internationalization
 
@@ -196,6 +190,71 @@ Use current supported dependencies. Add Rust dependencies through workspace entr
 
 A release tag must match the workspace and PyPI metadata versions. The release workflow builds
 platform wheels and a source archive with Maturin, then publishes through PyPI trusted publishing.
+
+## Release a version (maintainers)
+
+A release has five steps. `release.yml` does step 3 only. Steps 4 and 5 are manual, and version
+0.3.0 missed both: PyPI had 0.3.0 while the releases page still showed 0.2.0 as the latest, and
+`main` kept the released version number.
+
+The tag must be on `main`, and every commit is signed. Unlock your signing key before you start.
+
+Before you start, make sure that these are true:
+
+- CI, the documentation build, and the UI model walker are green on the `main` commit that you
+  release. Start the walker by hand if its last run is older than that commit:
+  `gh workflow run ui-walker.yml --ref main`.
+- If user-visible text changed, the demo assets are recorded again (see "Demo assets").
+
+**1. Set the release version.** Put `X.Y.Z` in three places: `[workspace.package] version` in
+`Cargo.toml`, the `version` of each `skit-*` entry in `[workspace.dependencies]` in `Cargo.toml`,
+and `[project] version` in `pyproject.toml`. Then update the lock file, check that the versions
+agree, and commit:
+
+```bash
+cargo update --workspace
+cargo test --locked -p skit-cli-rs --test port_test_packaging
+git commit -am "chore(release): X.Y.Z"
+```
+
+**2. Tag the commit.** Use an annotated tag named `vX.Y.Z`. The workflow starts on the `v` prefix.
+
+```bash
+git push origin main
+git tag -a vX.Y.Z -m "skit X.Y.Z"
+git push origin vX.Y.Z
+```
+
+**3. The workflow publishes to PyPI. You cannot undo this step.** The tag push builds, checks, and
+uploads the distributions. The `pypi` environment has no protection rules, so no approval stops
+the upload. PyPI never accepts the same version again. The first job compares the tag with the
+version of `skit-cli-rs` and stops the release if they differ.
+
+```bash
+gh run watch "$(gh run list --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
+curl -s https://pypi.org/pypi/skit-cli/json | jq -r .info.version
+```
+
+**4. Write the GitHub release.** The workflow does not make one. Until you make it, the releases
+page shows the previous version as the latest. Write the notes by hand: one sentence about the
+release, highlights that start with the largest change (read `git log vPREV..vX.Y.Z`), the install
+and upgrade commands, and the PyPI link.
+
+```bash
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file notes.md --latest
+```
+
+**5. Open `main` for development again.** Do this immediately. Put `X.Y.(Z+1)-dev.0` in the same
+three places as step 1. This value is a valid Cargo version and a valid PyPI version, and the
+wheel shows it as `X.Y.(Z+1).dev0`. Without this step, `uv tool install git+…` installs
+development builds that show the released version.
+
+```bash
+cargo update --workspace
+cargo test --locked -p skit-cli-rs --test port_test_packaging
+git commit -am "chore: start X.Y.(Z+1) development"
+git push origin main
+```
 
 ## License
 

@@ -38,16 +38,15 @@ fn test_names(source: &str) -> Vec<String> {
 }
 
 #[test]
-fn javascript_parseargs_mutation_oracles_match_the_frozen_python_module_exactly() {
+fn javascript_parseargs_oracles_match_the_frozen_python_module_exactly() {
     assert_eq!(EXPECTED.len(), 10);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(
-        repo.join("crates/skit-form/tests/port_test_js_cli_reader_mut_exact.rs"),
-    )
-    .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_js_cli_reader_exact.rs"))
+            .unwrap();
     assert_eq!(
         test_names(&source),
         EXPECTED

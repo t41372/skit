@@ -7,8 +7,8 @@ none, and 34 rows are must-migrate. No production source exists only for the leg
 deletion changes no production code.
 
 Revision 2 folds in two advisor reviews (a full-context Fable fork and a fresh-context Opus
-reviewer). The decisive change: the product-coupled oracles get a dev-only, mutation-visible crate
-instead of skit-cli private test modules.
+reviewer). The decisive change: the product-coupled oracles get a dev-only crate instead of
+skit-cli private test modules.
 
 Ordering constraint: MIG-D wiring, MIG-E's real-host driver, and the `RawMouse` resolver edit
 `crates/skit-cli/src/cli/tui_real_walker.rs`, which G4 owns until G4 commits. Everything else starts
@@ -20,8 +20,6 @@ now in disjoint files.
   `scripts/check_coverage.sh` (no path filter; an `#[ignore]` body is uncovered lines). Files under
   `crates/*/tests/**` get no lcov record. A workspace coverage run merges hits from every test
   binary, so a dev-only crate's lines count when skit-cli's tests execute them.
-- `cargo mutants` skips `#[cfg(test)]` items, so skit-cli private modules are mutation-blind while a
-  separate crate is mutation-visible. AGENTS.md requires zero survivors.
 - `skit-tui-walker-support` must stay product-independent and must not depend on skit-ui,
   skit-tui, skit-cli, or proptest.
 
@@ -56,14 +54,14 @@ live in its own `tests/` directory (M4, M5). Modules:
   hit yields its command action, `FocusField(i)` yields `Action::FocusField(i)`, run tokens yield
   their option payload); it never grows host or reducer expectations. Every named code gets a
   refusal test in `parity_tests.rs` reached through a forged session or geometry (this is what makes
-  the `Err` arms covered and the mutants killable). The `try_fork` failure arm: `try_fork` returns
+  the `Err` arms covered). The `try_fork` failure arm: `try_fork` returns
   `None` only while a path-completion worker owns a channel, which the walker never has; write the
   arm as a one-line `ok_or_else` and pin the reason in a comment.
   The guarantee has a boundary. The probes prove parity for the targets that the live inventory
   holds. They cannot prove that a render registered every visible control: a control that a
   render draws without a hit region is absent from the geometry, from the inventory, and from
   every parity loop. The state-specific inventory tests (screen targets, run pointer rules,
-  preferences focus) and the mutation gate hold that side.
+  preferences focus) hold that side.
 - `model`: the random operation model. The nine weighted families with late-bound ordinals
   (`AdvertisedKey`, `PublicHit`, `LocalAdvertisedKey`, `LocalHit`, `MouseCell`, `Resize`, `Paste`,
   `RawKey`, `Focus`), the ten resize shapes, the seven paste payloads, the 15-profile matrix
@@ -93,7 +91,7 @@ styled-frame violation. Cost (from the legacy implementation): one fork plus ren
 hit, and for form fields the activation sequences (7 per text field, `2*options+2` per choice
 field); about 50 ms per form checkpoint, roughly +15 s per profile on the corpus. The sweep is not
 bounded: endpoints depend on session state, not only on geometry. Measure and record the preflight
-and corpus deltas in the handoff; they also raise every mutant's suite time (issue #47).
+and corpus deltas in the handoff.
 
 The corpus resolver's local dispatch gains the descriptor-versus-live-endpoint refusal
 (`LOCAL_ACTION_ENDPOINT`, ledger `driver.rs:3031`) tested through the existing `local_actions`
@@ -180,7 +178,7 @@ The 15 `fake_host.rs` must-migrate rows (ledger items 18–30, 32, 33) become te
 ## M7. Constants with product meaning
 
 The ten resize shapes, seven paste payloads, and the 15-profile matrix are the model crate's tables
-(M1 `model`) with the legacy exact-set tests ported, mutation-visible.
+(M1 `model`) with the legacy exact-set tests ported.
 
 ## M8. Deletion
 

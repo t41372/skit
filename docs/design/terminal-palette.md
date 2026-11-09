@@ -1,7 +1,7 @@
 # Terminal palette design
 
 Status: owner-approved design, 2026-09-23. Phases 0 to 6 are done; see "Phases". Not verified:
-Windows, and the mutation gate (deferred by the owner).
+Windows.
 
 ## Decision
 
@@ -336,8 +336,7 @@ Owner ruling, 2026-09-23:
   byte for byte.
 - An isolated test is added only where a gate requires it, and only after a written list of the
   ways the unit can fail.
-- The mutation gate is deferred. Write as many tests as possible now; add tests later where a gate
-  falls short.
+- Write as many tests as possible now; add tests later where a gate falls short.
 - The old concrete-color unit assertions stay while they pass. When a phase changes a color that
   one of them checks, ask the owner whether the census replaces it.
 
@@ -494,7 +493,7 @@ first, because the output filter does not depend on the role refactor.
      coverage run found 17 lines that no test ran. End-to-end tests closed most of them; code that
      no frame can reach was restructured, and the forwarders got the one isolated test of phase 1
      (commit "fix(tui): mark buttons, titles, and overlays in the terminal theme"). The gate then
-     reported complete line coverage. The mutation gate stays deferred by the owner's ruling.
+     reported complete line coverage.
    - A review of the whole branch found six defects in the terminal theme: idle buttons that read
      as plain text, titles that carried the dim of their border, two post-passes sized by the
      widget's click region instead of its painted cells, an overlay border that looked idle,

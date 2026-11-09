@@ -2393,13 +2393,13 @@ fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
         ),
         (
             "zh-CN",
-            "删除格式错误的提示词运行器容器？[y/N]：",
-            "格式错误的提示词运行器容器已删除。",
+            "要移除格式错误的提示词执行器容器吗？[y/N]：",
+            "已移除格式错误的提示词执行器容器。",
         ),
         (
             "zh-TW",
-            "移除格式錯誤的提示詞執行器容器？[y/N]：",
-            "格式錯誤的提示詞執行器容器已移除。",
+            "要移除格式錯誤的提示詞執行器容器嗎？[y/N]：",
+            "已移除格式錯誤的提示詞執行器容器。",
         ),
     ] {
         let run = |answer: &[u8]| {
@@ -2454,13 +2454,13 @@ fn runner_human_selection_reports_container_unknown_and_pinned_names() {
         ),
         (
             "zh-CN",
-            "有 2 个提示词固定使用此运行器",
-            "删除 Agent“local”？[y/N]：",
+            "有 2 个提示词固定使用此执行器",
+            "要移除 agent“local”吗？[y/N]：",
         ),
         (
             "zh-TW",
-            "有 2 個提示詞固定使用此執行器",
-            "移除 Agent「local」？[y/N]：",
+            "有 2 個提示詞釘選此執行器",
+            "要移除 agent「local」嗎？[y/N]：",
         ),
     ] {
         let data = TempDir::new().unwrap();

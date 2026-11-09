@@ -219,7 +219,7 @@ fn test_fresh_draft_keeps_the_file_when_the_entry_is_not_a_copy() {
     // always copies, so the arc is exercised by forcing the review's stored mode to reference —
     // the serde-seam analog of the oracle's `monkeypatch.setattr(store, "resolve", ...)`, because
     // `set_storage` force-copies a draft (add.rs:793) and no public setter reaches this state.
-    // Kills the mutant that drops the `storage == Copy` condition (would delete regardless).
+    // Pins the `storage == Copy` condition: without it, the dismissal would delete regardless.
     let mut workflow = authored_draft("skit-new-kept.py", b"import sys\nprint('drafted')\n");
     let _ = workflow.reduce(AddAction::SetReviewName("kept".to_owned()));
 

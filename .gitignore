@@ -21,11 +21,6 @@ lcov.info
 # Agent handoff notes are local and temporary.
 /CLAUDE_HANDOFF.md
 
-# Test / coverage artifacts
-mutants/
-mutants.out/
-mutants.out.old/
-
 # Benchmark pipeline artifacts (results are CI artifacts, never committed)
 .bench/
 

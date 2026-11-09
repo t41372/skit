@@ -41,9 +41,7 @@ impl RealHostBoundary {
     }
 
     fn serve_effect(&mut self, effect: Effect) -> Result<Action, String> {
-        self.host
-            .dispatch(effect)
-            .map_err(|error| error.to_string())
+        Ok(self.host.hosted_dispatch(effect))
     }
 
     fn capture_frontend(

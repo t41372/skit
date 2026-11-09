@@ -389,7 +389,7 @@ fn test_tsx_grammar_branch() {
 
 // UNMAPPED (supervisor adjudication): the oracle's `language_for` (`_LANGUAGES.get(lang, _JS)`) is a
 // JS-analyzer-internal totality default -- an unknown `lang` falls back to the javascript grammar.
-// The Python pragma marks it a mutation-gate/totality fixture ("maps js/JS/XXjsXX all to _JS"), not a
+// The Python pragma marks it a totality fixture (an unknown lang maps to _JS), not a
 // product behavior: no entry resolution ever produces an unknown JS-family lang. The Rust equivalent
 // is `parse_document`, the TOP-LEVEL kind dispatcher, which intentionally rejects an unknown kind (a
 // "pythn" typo must not silently parse as JS) -- so this internal default has no faithful Rust home

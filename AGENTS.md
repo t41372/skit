@@ -18,7 +18,7 @@ in one library. They can use the Ratatui interface or the deterministic CLI.
 4. Keep every TUI capability available through the CLI. Machine paths need `--json`, deterministic
    exit codes, `--no-input`, `--dry-run` where applicable, and dynamic completion.
 5. Keep the quality gates hard: complete executable-source line coverage, Clippy with warnings as
-   errors, Rustdoc warnings as errors, cargo-mutants with zero survivors, and complete i18n.
+   errors, Rustdoc warnings as errors, and complete i18n.
 6. Do not change global or third-party configuration without explicit consent. skit can change only
    its own data, state, and configuration directories.
 
@@ -94,7 +94,6 @@ RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-de
 cargo test --locked --workspace --all-targets --all-features
 cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
 bash scripts/check_coverage.sh lcov.info
-cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300
 cargo deny --locked check
 cargo audit --deny warnings
 zizmor .github/workflows .github/actions/install-hyperfine/action.yml

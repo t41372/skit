@@ -15,16 +15,18 @@ pub(super) use corpus::{
 pub(super) use engine::{
     CorpusEngine, CorpusWalkerFactory, close_corpus_engine, random_walk_factory, real_initial_state,
 };
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(super) use recording::{
+    MISSING_PROGRAM, UNBALANCED_ARGUMENTS, draft_quarantine_corpus_operations,
+    invalid_corpus_operation, refused_run_corpus_operations,
+    rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
+    review_name_cursor_corpus_operations, review_name_cut_corpus_operations,
+    source_path_cursor_corpus_operations,
+};
 pub(super) use recording::{
     canonical_corpus_artifact_values, canonical_corpus_operations, record_real_locale_smoke,
     record_real_review_corpus_in, record_real_smoke_main, record_real_smoke_replay,
     record_real_smoke_stable_pair_in,
-};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(super) use recording::{
-    draft_quarantine_corpus_operations, invalid_corpus_operation,
-    rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
-    review_name_cut_corpus_operations,
 };
 pub(super) use trace::{
     RealTrace, RecordedRealCorpus, RecordedRealTrace, SchemaThreeSink, StableCorpusTracePair,

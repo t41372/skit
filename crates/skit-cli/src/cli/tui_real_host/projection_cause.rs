@@ -24,7 +24,6 @@ use super::{
 
 pub(super) fn add_projection_cause(action: &AddAction) -> AddProjectionCause {
     match action {
-        AddAction::SetSourcePath(_) => AddProjectionCause::SourcePathEdited,
         AddAction::PickedSourcePath(path) => AddProjectionCause::PickedSourcePath(path.clone()),
         AddAction::SelectDraft(index) => AddProjectionCause::SelectDraft(*index),
         AddAction::SourceInspected { result, .. } => {
@@ -41,7 +40,10 @@ pub(super) fn add_projection_cause(action: &AddAction) -> AddProjectionCause {
         AddAction::SourceEdited {
             result: Ok(source), ..
         } => AddProjectionCause::ReviewSourceEdited(draft_source_path(source)),
-        AddAction::SetCommandTemplate(_)
+        // A changed path drops its provenance in `reconcile_selected_source`. The product also
+        // sends the unchanged path when a cursor key moves the cursor, and that is no edit.
+        AddAction::SetSourcePath(_)
+        | AddAction::SetCommandTemplate(_)
         | AddAction::SetCommandName(_)
         | AddAction::SetCommandDescription(_)
         | AddAction::HighlightDraft(_)
@@ -204,22 +206,30 @@ impl PathMap {
                 self.add_provenance.selected_source_path = None;
                 self.add_provenance.picked_source_path = Some(raw);
             }
-            AddProjectionCause::SourcePathEdited => {
-                self.add_provenance.selected_source_path = None;
-                self.add_provenance.picked_source_path = None;
-            }
             AddProjectionCause::ReviewSource(path) => {
                 self.add_provenance.review_source_path = path;
                 self.add_provenance.review_name = None;
                 self.add_provenance.review_name_edited = false;
             }
             AddProjectionCause::ReviewNameEdited => {
-                self.add_provenance.review_name_yank = self
-                    .add_provenance
-                    .review_name
-                    .take()
-                    .or_else(|| self.add_provenance.review_name_yank.take());
-                self.add_provenance.review_name_edited = true;
+                // The product also sends the unchanged name when a cursor key moves the cursor.
+                // Only a changed name is an edit.
+                let unchanged =
+                    self.add_provenance
+                        .review_name
+                        .as_ref()
+                        .is_some_and(|projection| {
+                            add.pointer("/review/name").and_then(Value::as_str)
+                                == Some(projection.raw_name.as_str())
+                        });
+                if !unchanged {
+                    self.add_provenance.review_name_yank = self
+                        .add_provenance
+                        .review_name
+                        .take()
+                        .or_else(|| self.add_provenance.review_name_yank.take());
+                    self.add_provenance.review_name_edited = true;
+                }
             }
             AddProjectionCause::ReviewSourceEdited(path) => {
                 self.add_provenance.review_source_path = path;
@@ -844,6 +854,35 @@ fn add_session_stage(fields: &Value) -> Result<Option<skit_ui::AddStage>, String
         .map_err(|_| "the add session signature has an invalid stage".to_owned())
 }
 
+/// Map one cursor of a derived raw value onto its stable value.
+///
+/// The stable value is a name for the raw value, not a copy of its characters. Only the two ends
+/// of the value have an exact place in both values. The start maps to the start, and the end
+/// maps to the end. An empty raw value has one position, and it maps to the end. An interior
+/// cursor counts characters that the projection removes, so it has no exact place. It scales by
+/// the length ratio, rounds to the nearest position, and stays off both ends. The result keeps
+/// each fact that does not depend on the raw characters: where the ends are, that the cursor is
+/// inside the value, and the order of two cursors. Two values of the same length keep every
+/// cursor.
+pub(super) fn derived_cursor(cursor: usize, raw: usize, stable: usize) -> usize {
+    if cursor >= raw {
+        return stable;
+    }
+    if cursor == 0 {
+        return 0;
+    }
+    let wide = |value: usize| u128::try_from(value).unwrap_or(u128::MAX);
+    let scaled = wide(cursor)
+        .saturating_mul(wide(stable))
+        .saturating_mul(2)
+        .saturating_add(wide(raw))
+        / wide(raw).saturating_mul(2);
+    usize::try_from(scaled)
+        .unwrap_or(stable)
+        .clamp(1, stable.saturating_sub(1).max(1))
+        .min(stable)
+}
+
 fn project_default_line_input(
     state: &mut Value,
     raw: &str,
@@ -854,14 +893,14 @@ fn project_default_line_input(
     if object.get("value").and_then(Value::as_str) != Some(raw) {
         return Err("an auto-derived Add input value does not match its state".to_owned());
     }
-    if object
+    // A click or a cursor key moves the cursor and keeps the derived value.
+    let raw_chars = raw.chars().count();
+    let cursor = object
         .get("cursor")
         .and_then(Value::as_u64)
         .and_then(|cursor| usize::try_from(cursor).ok())
-        != Some(raw.chars().count())
-    {
-        return Err("an auto-derived Add input cursor is not at the end".to_owned());
-    }
+        .filter(|cursor| *cursor <= raw_chars)
+        .ok_or("an auto-derived Add input cursor is outside its value")?;
     if !project_derived_cut(object, cut)? && object.get("yank").and_then(Value::as_str) != Some("")
     {
         return Err("an auto-derived Add input has nondefault yank state".to_owned());
@@ -869,8 +908,9 @@ fn project_default_line_input(
     if object.get("last_was_cut").and_then(Value::as_bool) != Some(false) {
         return Err("an auto-derived Add input has nondefault cut state".to_owned());
     }
+    let cursor = derived_cursor(cursor, raw_chars, stable.chars().count());
     object.insert("value".to_owned(), Value::String(stable.to_owned()));
-    object.insert("cursor".to_owned(), Value::from(stable.chars().count()));
+    object.insert("cursor".to_owned(), Value::from(cursor));
     Ok(())
 }
 

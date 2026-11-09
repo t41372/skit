@@ -250,7 +250,7 @@ fn test_read_cli_none_for_plain_scripts() {
 }
 
 // --------------------------------------------------------------------------
-// mutation hardening: exact contracts for the click/typer readers
+// exact contracts for the click/typer readers
 // --------------------------------------------------------------------------
 
 #[test]
@@ -313,7 +313,7 @@ fn test_click_uppercase_type_constants() {
 #[test]
 fn test_click_non_choice_call_type_degrades_even_with_list_arg() {
     // A random callable taking a list is NOT a Choice -- it must degrade, never be
-    // mistaken for one (kills the and->or mutant in the Choice detection).
+    // mistaken for one (the Choice detection needs every condition, not only one).
     let fields = static_fields(concat!(
         "import click\n@click.command()\n",
         "@click.option('--c', type=Wrapper(['a', 'b']))\ndef m(c): pass\n",
@@ -430,7 +430,7 @@ fn test_click_is_flag_defaulting_on_degrades_not_guesses() {
 }
 
 // --------------------------------------------------------------------------
-// mutation tail: exact contracts for import guards, orders, dests, defaults
+// exact contracts for import guards, orders, dests, defaults
 // --------------------------------------------------------------------------
 
 #[test]
@@ -876,6 +876,6 @@ fn test_annotated_option_positional_decl_is_a_flag_not_a_default() {
     ));
     let field = &fields[0];
     assert_eq!(field.flag, "--primary");
-    assert!(field.default.is_none()); // not '--primary' (the True mutant would read it as a default)
+    assert!(field.default.is_none()); // not '--primary' (an always-true guard makes it the default)
     assert!(field.required);
 }

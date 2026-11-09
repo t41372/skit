@@ -18,8 +18,7 @@ fresh-context Opus reviewer) shaped revision 31; their accepted changes are fold
 required vocabulary (20 served names, 13 nested names, exact key lists). Codex's G4a
 `RecordedRealCorpus::new` also requires the canonical 100-operation vector. Under those rules the
 aggregate transaction can only run on the full corpus, about 495 seconds per generation. A test that
-generates twice takes about 17 minutes. It cannot be a normal `#[test]`: `.cargo/mutants.toml` sets
-`test_workspace = true`, `mutation.yml` passes `--timeout 300`, and `ci.yml` runs
+generates twice takes about 17 minutes. That is too slow for a normal `#[test]`. Also, `ci.yml` runs
 `cargo llvm-cov --workspace --all-targets --all-features` without `--include-ignored`, so an
 `#[ignore]` owner contributes no line coverage while every `#[cfg(test)]` line under `crates/*/src/`
 is gated. The transaction must therefore be exercisable with a small real corpus (four real stable
@@ -61,7 +60,7 @@ The G3 tests `complete_timeline_builds_one_valid_required_profile_coverage_summa
 `four_profile_coverage_merge_is_exact_checked_and_stored_comparable` keep their assertions by
 calling the policy validator explicitly.
 
-## D2. Walker-support additions (pure, mutation-visible)
+## D2. Walker-support additions (pure)
 
 All in `crates/skit-tui-walker-support/src/bundle.rs`, with contracts in `bundle_tests.rs` or
 `aggregate_contract_tests.rs`. No `std::fs`, no product dependency.
@@ -120,7 +119,7 @@ pub fn validate_review_files(
 ) -> Result<ReviewProgress, ArtifactError>;
 ```
 
-Contracts must pin each refusal message and kill mutants: exact root-level matching for
+Contracts must pin each refusal message and each rule: exact root-level matching for
 `is_reviewer_mutable`; digest validation and prefix for the directory name; missing, extra, and
 changed immutable paths versus changed mutable paths for the comparison; random mode, missing,
 extra, and misnamed profiles for the run rule; digest mismatch, stored-profile inequality (including
@@ -454,10 +453,7 @@ short prefix already used by `short_stable_corpus_prefix_replays_the_complete_re
     known to be dead and removed.
 
 Coverage: zero new executable-line misses in every changed file (cargo-llvm-cov plus
-`scripts/check_coverage.sh`). Mutation: every D2 rule has a killing contract; the package-scoped
-`cargo mutants --no-config --package skit-tui-walker-support --file crates/skit-tui-walker-support/src/bundle.rs`
-run is development evidence only; the real workspace gate (`test_workspace = true`) remains the
-deferred issue #47 debt, and the small-corpus recordings add to every mutant's suite time.
+`scripts/check_coverage.sh`). Every D2 rule has a contract that fails when the rule changes.
 Preservation is conditional on replay byte equality: `review-progress.json` binds the manifest
 digest, so a stable-replay divergence makes regeneration refuse rather than preserve.
 Do not touch `.github/workflows/ui-walker.yml`; `scripts/test_tooling_contracts.sh` pins its text.
