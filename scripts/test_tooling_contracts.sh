@@ -58,6 +58,12 @@ expect_text .github/workflows/release.yml 'workflow_dispatch:'
 expect_text .github/workflows/release.yml "if: github.event_name == 'push'"
 expect_text .github/workflows/release.yml "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Linux wheel'
+# Each Linux wheel runs on its own platform before the upload, not only the x86_64 glibc wheel.
+expect_text .github/workflows/release.yml 'runner: ubuntu-24.04-arm'
+# The cross image cannot build ring for aarch64 glibc, so that wheel builds on an Arm runner.
+expect_text .github/workflows/release.yml 'runner: ubuntu-22.04-arm'
+expect_text .github/workflows/release.yml 'name: Smoke-test the musl wheel in Alpine'
+expect_text .github/workflows/release.yml 'needs: [linux, linux-smoke, windows, macos, sdist]'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Windows wheel'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native macOS wheel'
 expect_text .github/workflows/release.yml 'export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"'
