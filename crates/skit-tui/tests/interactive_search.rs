@@ -192,20 +192,21 @@ fn search_uses_grapheme_editing_paste_navigation_and_a_real_cursor() {
     }
     assert_eq!(state.query(), "e\u{301}x");
 
+    // Ctrl+U deletes from the cursor to the start of the line, not the whole line.
     let _ = drive(
         &mut session,
         &mut state,
         &geometry,
         key(KeyCode::Char('u'), KeyModifiers::CONTROL),
     );
-    assert_eq!(state.query(), "");
+    assert_eq!(state.query(), "x");
     let _ = drive(
         &mut session,
         &mut state,
         &geometry,
-        Event::Paste("界q".to_owned()),
+        Event::Paste("界q\nsecond line".to_owned()),
     );
-    assert_eq!(state.query(), "界q");
+    assert_eq!(state.query(), "界qx");
 
     let (terminal, _) = draw(&mut session, &state);
     let cursor = terminal.backend().cursor_position();

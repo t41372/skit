@@ -429,7 +429,51 @@ impl PathMap {
         if !source.is_null() {
             self.project_memory_file_picker_node(source)?;
         }
+        self.project_clipboard(session)
+    }
+
+    /// Project the session clipboard, which can hold text that a person copied from a box the
+    /// host filled.
+    ///
+    /// A copy of a whole derived value takes its stable form. Any other copy is host text, so the
+    /// registered host spellings in it take their labels.
+    fn project_clipboard(&self, session: &mut Value) -> Result<(), String> {
+        let derived = self.derived_text_projections()?;
+        let clipboard = required_session_owner_mut(session, "clipboard")?;
+        let fields = agent_review_fields_mut(clipboard, "clipboard")?;
+        let state = required_field_mut(fields, "state", "clipboard")?;
+        for field in ["text", "pending_export"] {
+            let value = required_field_mut(state, field, "clipboard state")?;
+            match value {
+                Value::Null if field == "pending_export" => {}
+                Value::String(text) => {
+                    *text = derived.iter().find(|(raw, _)| raw == text).map_or_else(
+                        || self.normalize_host_text(text),
+                        |(_, stable)| stable.clone(),
+                    );
+                }
+                _ => return Err(format!("the clipboard {field} is not text")),
+            }
+        }
         Ok(())
+    }
+
+    /// Every derived value the host proved, as its raw and its stable spelling.
+    fn derived_text_projections(&self) -> Result<Vec<(String, String)>, String> {
+        let mut derived = Vec::new();
+        if let Some(source) = self.add_source_path_projection()? {
+            derived.push(source);
+        }
+        for projection in [
+            self.add_provenance.review_name.as_ref(),
+            self.add_provenance.review_name_yank.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            derived.push((projection.raw_name.clone(), projection.stable_name.clone()));
+        }
+        Ok(derived)
     }
 
     fn project_agent_signature(&self, fields: &mut Value) -> Result<(), String> {
@@ -893,70 +937,128 @@ fn project_default_line_input(
     if object.get("value").and_then(Value::as_str) != Some(raw) {
         return Err("an auto-derived Add input value does not match its state".to_owned());
     }
-    // A click or a cursor key moves the cursor and keeps the derived value.
-    let raw_chars = raw.chars().count();
-    let cursor = object
-        .get("cursor")
-        .and_then(Value::as_u64)
-        .and_then(|cursor| usize::try_from(cursor).ok())
-        .filter(|cursor| *cursor <= raw_chars)
-        .ok_or("an auto-derived Add input cursor is outside its value")?;
-    if !project_derived_cut(object, cut)? && object.get("yank").and_then(Value::as_str) != Some("")
-    {
-        return Err("an auto-derived Add input has nondefault yank state".to_owned());
+    // A host-derived value has no edits yet. The history can hold only the derived name that an
+    // edit took away, and only as the cut projection proves it.
+    if !project_derived_history(object, cut)? && !line_input_history_is_empty(object)? {
+        return Err("an auto-derived Add input has nondefault history".to_owned());
     }
-    if object.get("last_was_cut").and_then(Value::as_bool) != Some(false) {
-        return Err("an auto-derived Add input has nondefault cut state".to_owned());
+    if object.get("group").is_none_or(|group| !group.is_null()) {
+        return Err("an auto-derived Add input has nondefault edit state".to_owned());
     }
-    let cursor = derived_cursor(cursor, raw_chars, stable.chars().count());
+    // A click or a cursor key moves the cursor and keeps the derived value. A Shift key or a
+    // drag also keeps it, and moves the selection anchor.
+    project_derived_positions(object, raw, stable)?;
     object.insert("value".to_owned(), Value::String(stable.to_owned()));
-    object.insert("cursor".to_owned(), Value::from(cursor));
     Ok(())
 }
 
-/// Project only the cut derived name that one Add input still holds.
+/// Map the cursor and the selection anchor of one derived value to the stable value.
+fn project_derived_positions(
+    object: &mut Map<String, Value>,
+    raw: &str,
+    stable: &str,
+) -> Result<(), String> {
+    let raw_chars = raw.chars().count();
+    let stable_chars = stable.chars().count();
+    let position = |value: &Value| {
+        value
+            .as_u64()
+            .and_then(|position| usize::try_from(position).ok())
+            .filter(|position| *position <= raw_chars)
+    };
+    let cursor = object
+        .get("cursor")
+        .and_then(position)
+        .ok_or("an auto-derived Add input cursor is outside its value")?;
+    let anchor = match object.get("anchor") {
+        Some(Value::Null) => None,
+        Some(anchor) => {
+            Some(position(anchor).ok_or("an auto-derived Add input anchor is outside its value")?)
+        }
+        None => return Err("an auto-derived Add input has no anchor".to_owned()),
+    };
+    object.insert(
+        "cursor".to_owned(),
+        Value::from(derived_cursor(cursor, raw_chars, stable_chars)),
+    );
+    object.insert(
+        "anchor".to_owned(),
+        anchor.map_or(Value::Null, |anchor| {
+            Value::from(derived_cursor(anchor, raw_chars, stable_chars))
+        }),
+    );
+    Ok(())
+}
+
+/// Project only the cut derived name that the history of one Add input still holds.
 ///
-/// The value is user text again, so it keeps its exact bytes. The mirror still
-/// owns the cut buffer while that buffer holds the name the host derived.
+/// The value is user text again, so it keeps its exact bytes. The mirror still owns each history
+/// entry that holds the name the host derived, because undo can bring that name back.
 fn project_default_line_input_cut(
     state: &mut Value,
     cut: Option<(&str, &str)>,
 ) -> Result<(), String> {
     let object = default_line_input_object(state)?;
-    project_derived_cut(object, cut).map(|_| ())
+    project_derived_history(object, cut).map(|_| ())
 }
 
 fn default_line_input_object(state: &mut Value) -> Result<&mut Map<String, Value>, String> {
     let object = state
         .as_object_mut()
         .ok_or("an auto-derived Add input state is not an object".to_owned())?;
-    if object.len() != 4
-        || !["value", "cursor", "yank", "last_was_cut"]
+    if object.len() != 6
+        || !["value", "cursor", "anchor", "undo", "redo", "group"]
             .into_iter()
             .all(|field| object.contains_key(field))
     {
-        return Err("an auto-derived Add input state is not a default LineInput shape".to_owned());
+        return Err("an auto-derived Add input state is not a single-line editor shape".to_owned());
     }
     Ok(object)
 }
 
-/// Replace one cut buffer that holds the exact derived name the host proved.
+fn line_input_history_is_empty(object: &Map<String, Value>) -> Result<bool, String> {
+    let mut empty = true;
+    for list in ["undo", "redo"] {
+        empty &= object
+            .get(list)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("an auto-derived Add input {list} history is not a list"))?
+            .is_empty();
+    }
+    Ok(empty)
+}
+
+/// Replace each history entry that holds the exact derived name the host proved.
 ///
-/// It reports whether it replaced the buffer. Every other cut text is user
-/// text and keeps its exact bytes.
-fn project_derived_cut(
+/// It reports whether it replaced an entry. Every other entry is user text and keeps its exact
+/// bytes.
+fn project_derived_history(
     object: &mut Map<String, Value>,
     cut: Option<(&str, &str)>,
 ) -> Result<bool, String> {
-    let yank = object
-        .get("yank")
-        .and_then(Value::as_str)
-        .ok_or("an auto-derived Add input yank is not text".to_owned())?;
-    let Some(stable) = cut.and_then(|(raw, stable)| (yank == raw).then_some(stable)) else {
-        return Ok(false);
-    };
-    object.insert("yank".to_owned(), Value::String(stable.to_owned()));
-    Ok(true)
+    let mut replaced = false;
+    for list in ["undo", "redo"] {
+        let entries = object
+            .get_mut(list)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("an auto-derived Add input {list} history is not a list"))?;
+        for entry in entries {
+            let entry = entry
+                .as_object_mut()
+                .ok_or("an auto-derived Add input history entry is not an object")?;
+            let value = entry
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or("an auto-derived Add input history entry is not text")?;
+            let Some((raw, stable)) = cut.filter(|(raw, _)| value == *raw) else {
+                continue;
+            };
+            project_derived_positions(entry, raw, stable)?;
+            entry.insert("value".to_owned(), Value::String(stable.to_owned()));
+            replaced = true;
+        }
+    }
+    Ok(replaced)
 }
 
 pub(super) fn decode_session_path_value(value: &Value) -> Result<PathBuf, String> {

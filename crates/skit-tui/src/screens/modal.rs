@@ -31,6 +31,7 @@ use crate::{
         AgentReviewNode, color as snapshot_color, node as snapshot_node, rect as snapshot_rect,
         scroll as snapshot_scroll,
     },
+    editor::EDITING_HELP,
     pointer::{ClickOutcome, ClickTracker},
     theme::{self, Panel, padded_panel},
 };
@@ -495,7 +496,7 @@ impl HelpScreenSession {
             .max()
             .unwrap_or_default()
             .max(20);
-        let lines = rows
+        let mut lines = rows
             .into_iter()
             .map(|(hint, label)| {
                 Line::from(vec![
@@ -508,6 +509,28 @@ impl HelpScreenSession {
                 ])
             })
             .collect::<Vec<_>>();
+        // The editing keys work in every text box. Help names them, so nobody has to remember
+        // them (AGENTS.md rule 3).
+        let editing_width = EDITING_HELP
+            .iter()
+            .map(|(keys, _)| keys.width())
+            .max()
+            .unwrap_or_default();
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            text(locale, "Editing text"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(EDITING_HELP.iter().map(|(keys, label)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{keys:>editing_width$}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::raw(text(locale, label)),
+            ])
+        }));
         let base_block = Block::default()
             .borders(Borders::ALL)
             .title(text(locale, "Help"));

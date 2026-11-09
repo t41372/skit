@@ -22,7 +22,6 @@ use ratatui_interact::{
     state::FocusManager,
     traits::ClickRegion,
 };
-use ratatui_textarea::{CursorMove, TextArea as RichTextArea};
 use ratatui_widgets::{
     block::Block,
     borders::Borders,
@@ -40,7 +39,7 @@ use skit_ui::{
     RunFormView, RunTokenError, RunValidationError, RunnerEditorOwner, Screen, UiBinding,
     UiCommand,
 };
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
+use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -50,9 +49,10 @@ use crate::{
         AgentReviewNode, AgentReviewSnapshot, AgentReviewSnapshotError, button as snapshot_button,
         checkbox as snapshot_checkbox, focus as snapshot_focus, node as snapshot_node,
         path_value as snapshot_path, rect as snapshot_rect, select as snapshot_select,
-        textarea as snapshot_textarea, value as snapshot_value,
+        value as snapshot_value,
     },
     command_action,
+    editor::{Clipboard, EditResponse, TextEditor, is_copy_key, is_cut_key, is_paste_key},
     footer::{FooterInputOwnership, FooterSession},
     local_action::{
         LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
@@ -60,10 +60,10 @@ use crate::{
     map_event,
     pointer::{
         ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, HitMap, PointerPosition,
-        TextAreaGeometry, TextAreaViewport, display_cursor, display_scroll, is_primary_down,
-        secret_display,
+        PressSequence, TextAreaGeometry, TextAreaViewport, display_cursor, display_scroll,
+        is_primary_down, is_primary_drag, secret_display,
     },
-    rowclip::{RowClip, bounded_textarea_lines, editor_cursor_virtual_row},
+    rowclip::{RowClip, TextAreaStyles, bounded_textarea_lines, editor_cursor_virtual_row},
     run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
     screens::library::{LibraryClickTarget, LibraryPointerHandling, LibraryScreenSession},
@@ -101,6 +101,17 @@ pub enum EventHandling {
     Ignored,
 }
 
+/// What the clipboard part of one key does before a screen sees the key.
+#[derive(Debug)]
+enum ClipboardKey {
+    /// The clipboard handled the key completely.
+    Handled(EventHandling),
+    /// The key becomes a paste of this text.
+    Paste(String),
+    /// The screen gets the key.
+    Continue,
+}
+
 #[cfg(test)]
 mod agent_review_tests {
     use std::{collections::BTreeSet, fs, path::PathBuf, sync::mpsc};
@@ -132,61 +143,59 @@ mod agent_review_tests {
     fn textarea_session() -> TuiSession {
         let mut session = TuiSession::default();
         session.form.controls.push(FormWidgetControl::TextArea {
-            state: Box::new(new_textarea("same")),
+            state: Box::new(TextEditor::multi_line("same")),
             focused: true,
-            undo_group: 0,
-            redo_group: 0,
         });
         session
     }
 
-    fn replace_textarea_state(session: &mut TuiSession, state: RichTextArea<'static>) {
+    fn replace_textarea_state(session: &mut TuiSession, state: TextEditor) {
         session.form.controls[0] = FormWidgetControl::TextArea {
             state: Box::new(state),
             focused: true,
-            undo_group: 0,
-            redo_group: 0,
         };
     }
 
+    // Ways this can fail: the snapshot keeps only the value and the caret, so two boxes whose
+    // undo history differs snapshot the same and the walker cannot tell them apart.
     #[test]
-    fn line_input_snapshot_keeps_cut_and_yank_state() {
-        let mut cut = TuiSession::default();
-        cut.search.input = LineInput::new("alpha beta".to_owned());
-        cut.search.input.handle(InputRequest::DeletePrevWord);
+    fn line_input_snapshot_keeps_the_undo_history() {
+        let mut edited = TuiSession::default();
+        edited.search.input = TextEditor::single_line("alpha beta");
+        let _ = edited
+            .search
+            .input
+            .handle_key(&KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
 
         let mut plain = TuiSession::default();
-        plain.search.input = LineInput::new("alpha ".to_owned());
-        assert_eq!(cut.search.input.value(), plain.search.input.value());
-        assert_eq!(cut.search.input.cursor(), plain.search.input.cursor());
-        assert_ne!(snapshot_bytes(&cut), snapshot_bytes(&plain));
+        plain.search.input = TextEditor::single_line("alpha ");
+        assert_eq!(edited.search.input.value(), plain.search.input.value());
+        assert_eq!(edited.search.input.cursor(), plain.search.input.cursor());
+        assert_ne!(snapshot_bytes(&edited), snapshot_bytes(&plain));
         assert!(
-            String::from_utf8(snapshot_bytes(&cut))
+            String::from_utf8(snapshot_bytes(&edited))
                 .unwrap()
                 .contains("beta")
         );
     }
 
     #[test]
-    fn textarea_blob_is_sensitive_to_hidden_undo_state() {
+    fn textarea_snapshot_is_sensitive_to_hidden_undo_state() {
         let plain = textarea_session();
         let mut hidden = plain.try_fork().unwrap();
-        let mut state = new_textarea("same");
-        let _ = state.input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        let _ = state.undo();
-        assert_eq!(textarea_text(&state), "same");
+        let mut state = TextEditor::multi_line("same");
+        let _ = state.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let _ = state.handle_key(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(state.text(), "same");
         replace_textarea_state(&mut hidden, state);
         assert_ne!(snapshot_bytes(&plain), snapshot_bytes(&hidden));
     }
 
     #[test]
-    fn textarea_blob_is_sensitive_to_hidden_yank_state() {
+    fn the_clipboard_is_part_of_the_snapshot() {
         let plain = textarea_session();
         let mut hidden = plain.try_fork().unwrap();
-        let mut state = new_textarea("same");
-        state.set_yank_text("copied");
-        assert_eq!(textarea_text(&state), "same");
-        replace_textarea_state(&mut hidden, state);
+        hidden.copy_for_test("copied");
         assert_ne!(snapshot_bytes(&plain), snapshot_bytes(&hidden));
         assert!(
             String::from_utf8(snapshot_bytes(&hidden))
@@ -196,23 +205,20 @@ mod agent_review_tests {
     }
 
     #[test]
-    fn textarea_blob_is_sensitive_to_hidden_selection_state() {
+    fn textarea_snapshot_is_sensitive_to_hidden_selection_state() {
         let plain = textarea_session();
         let mut hidden = plain.try_fork().unwrap();
-        let reference = new_textarea("same");
-        let mut state = new_textarea("same");
-        state.start_selection();
+        let reference = TextEditor::multi_line("same");
+        let mut state = TextEditor::multi_line("same");
+        state.press_at(state.cursor());
         assert_eq!(state.lines(), reference.lines());
         assert_eq!(state.cursor(), reference.cursor());
-        assert_eq!(state.cursor_style(), reference.cursor_style());
-        assert_eq!(state.yank_text(), reference.yank_text());
-        assert_eq!(reference.selection_range(), None);
-        assert_eq!(state.selection_range(), Some(((0, 4), (0, 4))));
+        assert_eq!(reference.selection(), None);
+        assert_eq!(state.selection(), None);
         replace_textarea_state(&mut hidden, state);
         assert_ne!(snapshot_bytes(&plain), snapshot_bytes(&hidden));
         let hidden = String::from_utf8(snapshot_bytes(&hidden)).unwrap();
-        assert!(hidden.contains("opaque_debug"));
-        assert!(hidden.contains("ratatui-textarea"));
+        assert!(hidden.contains("anchor"));
     }
 
     #[test]
@@ -448,8 +454,22 @@ mod agent_review_tests {
         let baseline = TuiSession::default();
 
         let mut session = baseline.try_fork().unwrap();
-        session.search.input = LineInput::new("changed".to_owned());
+        session.search.input = TextEditor::single_line("changed");
         assert_field_changed(&baseline, &session, "search");
+
+        let mut session = baseline.try_fork().unwrap();
+        session.copy_for_test("copied");
+        assert_field_changed(&baseline, &session, "clipboard");
+
+        let mut session = baseline.try_fork().unwrap();
+        let mut press = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        session.presses.follow(&mut press, true);
+        assert_field_changed(&baseline, &session, "presses");
 
         let mut session = baseline.try_fork().unwrap();
         session.library.perturb_agent_review_state();
@@ -696,15 +716,20 @@ mod agent_review_tests {
     }
 
     #[test]
-    fn input_serialization_is_locked_to_tui_input_full_state() {
+    fn input_serialization_records_the_whole_editor_state() {
         let mut session = TuiSession::default();
-        session.search.input = LineInput::new("one two".to_owned());
-        session.search.input.handle(InputRequest::DeletePrevWord);
+        session.search.input = TextEditor::single_line("one two");
+        let _ = session
+            .search
+            .input
+            .handle_key(&KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
         let value: serde_json::Value = serde_json::from_slice(&snapshot_bytes(&session)).unwrap();
         let input = &value["search"]["fields"]["input"];
         assert_eq!(input["value"], "one ");
-        assert_eq!(input["yank"], "two");
-        assert_eq!(input["last_was_cut"], true);
+        assert_eq!(input["cursor"], 4);
+        assert_eq!(input["anchor"], serde_json::Value::Null);
+        assert_eq!(input["undo"][0]["value"], "one two");
+        assert_eq!(input["redo"], serde_json::json!([]));
     }
 
     #[test]
@@ -742,15 +767,13 @@ mod agent_review_tests {
         });
         session.run.controls = vec![
             WidgetControl::Input {
-                state: LineInput::new("value".to_owned()),
+                state: TextEditor::single_line("value"),
                 secret: true,
                 focused: false,
             },
             WidgetControl::TextArea {
-                state: Box::new(new_textarea("body")),
+                state: Box::new(TextEditor::multi_line("body")),
                 focused: false,
-                undo_group: 1,
-                redo_group: 2,
             },
             WidgetControl::Checkbox(CheckBoxState::new(true)),
             WidgetControl::Choice {
@@ -764,14 +787,9 @@ mod agent_review_tests {
             .run
             .editables
             .push(Some(EditableGeometry::new(Rect::new(1, 2, 3, 1), 4, true)));
-        session
-            .run
-            .textarea_editables
-            .push(Some(TextAreaViewport::default().geometry(
-                Rect::new(2, 3, 4, 5),
-                6,
-                8,
-            )));
+        session.run.textarea_editables.push(Some(
+            TextAreaViewport::default().geometry(Rect::new(2, 3, 4, 5), 6),
+        ));
         session
             .run
             .textarea_viewports
@@ -792,29 +810,22 @@ mod agent_review_tests {
         }]);
         session.form.controls = vec![
             FormWidgetControl::Input {
-                state: LineInput::new("form".to_owned()),
+                state: TextEditor::single_line("form"),
                 secret: false,
                 focused: true,
             },
             FormWidgetControl::TextArea {
-                state: Box::new(new_textarea("form body")),
+                state: Box::new(TextEditor::multi_line("form body")),
                 focused: false,
-                undo_group: 3,
-                redo_group: 4,
             },
         ];
         session
             .form
             .editables
             .push(Some(EditableGeometry::new(Rect::new(3, 4, 5, 1), 6, false)));
-        session
-            .form
-            .textarea_editables
-            .push(Some(TextAreaViewport::default().geometry(
-                Rect::new(4, 5, 6, 7),
-                8,
-                4,
-            )));
+        session.form.textarea_editables.push(Some(
+            TextAreaViewport::default().geometry(Rect::new(4, 5, 6, 7), 8),
+        ));
         session
             .form
             .textarea_viewports
@@ -1009,6 +1020,10 @@ pub struct TuiSession {
     local_actions: LocalActionInventory,
     /// The color choices of every frame this session draws.
     appearance: Appearance,
+    /// The text that Ctrl+C and Ctrl+X copied, for Ctrl+V and for the system clipboard.
+    clipboard: Clipboard,
+    /// The primary presses that can make a double click.
+    presses: PressSequence,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1408,7 +1423,7 @@ enum AddOverlayEvent {
 
 #[derive(Clone, Debug, Default)]
 struct SearchWidgetSession {
-    input: LineInput,
+    input: TextEditor,
     editable: Option<EditableGeometry>,
 }
 
@@ -1570,30 +1585,26 @@ struct FormWidgetSession {
 #[derive(Clone, Debug)]
 enum FormWidgetControl {
     Input {
-        state: LineInput,
+        state: TextEditor,
         secret: bool,
         focused: bool,
     },
     TextArea {
-        state: Box<RichTextArea<'static>>,
+        state: Box<TextEditor>,
         focused: bool,
-        undo_group: usize,
-        redo_group: usize,
     },
 }
 
 #[derive(Clone, Debug)]
 enum WidgetControl {
     Input {
-        state: LineInput,
+        state: TextEditor,
         secret: bool,
         focused: bool,
     },
     TextArea {
-        state: Box<RichTextArea<'static>>,
+        state: Box<TextEditor>,
         focused: bool,
-        undo_group: usize,
-        redo_group: usize,
     },
     Checkbox(CheckBoxState),
     Choice {
@@ -1649,6 +1660,8 @@ impl TuiSession {
             pointer,
             local_actions,
             appearance: _,
+            clipboard,
+            presses,
         } = self;
         if quit_armed_at.is_some() || quit_toast.occupied() {
             return Err(AgentReviewSnapshotError::ClockActive);
@@ -1698,6 +1711,8 @@ impl TuiSession {
             top_level_click_snapshot(top_level_click)?,
             snapshot_node("pointer", [("cell", pointer.snapshot())]),
             crate::agent_review::local_action_inventory(local_actions)?,
+            snapshot_node("clipboard", [("state", clipboard.agent_review_snapshot())]),
+            snapshot_node("presses", [("last", presses.snapshot())]),
         ))
     }
 
@@ -1739,6 +1754,8 @@ impl TuiSession {
             pointer: self.pointer,
             local_actions: self.local_actions.clone(),
             appearance: self.appearance,
+            clipboard: self.clipboard.clone(),
+            presses: self.presses,
         })
     }
 
@@ -2058,12 +2075,15 @@ impl TuiSession {
 
     fn dispatch_event(
         &mut self,
-        event: Event,
+        mut event: Event,
         state: &LibraryState,
         geometry: &ViewGeometry,
     ) -> EventHandling {
         self.screen_target_rendered = false;
         self.screen_target_state = None;
+        let on_text_box = matches!(&event, Event::Mouse(mouse)
+            if is_primary_down(mouse) && self.text_box_at(state, mouse.column, mouse.row));
+        self.presses.follow(&mut event, on_text_box);
         if !matches!(event, Event::Mouse(_))
             || matches!(&event, Event::Mouse(mouse) if matches!(
                 mouse.kind,
@@ -2073,6 +2093,13 @@ impl TuiSession {
         {
             self.top_level_click.cancel();
             self.cancel_owner_clicks();
+        }
+        if let Event::Key(key) = &event {
+            match self.handle_clipboard_key(key, state) {
+                ClipboardKey::Handled(handling) => return handling,
+                ClipboardKey::Paste(text) => event = Event::Paste(text),
+                ClipboardKey::Continue => {}
+            }
         }
         if is_ctrl_c(&event) {
             return self.handle_ctrl_c();
@@ -2114,7 +2141,17 @@ impl TuiSession {
                 && matches!(target, Some(TopLevelClickTarget::SearchInput))
                 && let Some(editable) = self.search.editable
             {
-                let _ = editable.place_cursor(&mut self.search.input, mouse.column, mouse.row);
+                let _ = editable.pointer(&mut self.search.input, mouse);
+            }
+            if is_primary_drag(mouse)
+                && matches!(
+                    self.top_level_click.pressed(),
+                    Some(TopLevelClickTarget::SearchInput)
+                )
+                && let Some(editable) = self.search.editable
+            {
+                let _ = editable.pointer(&mut self.search.input, mouse);
+                return EventHandling::Consumed;
             }
             if target.is_some()
                 && matches!(
@@ -2515,6 +2552,9 @@ impl TuiSession {
         if !matches!(state.modal(), Some(ModalState::ConfirmDiscardChanges)) {
             self.confirm_discard.reset();
         }
+        if !matches!(state.modal(), Some(ModalState::RunnerEditor { .. })) {
+            self.runner_editor.reset_editors();
+        }
         self.search.sync(state.query());
         if let Screen::Run(form) = state.screen() {
             self.run.sync(form);
@@ -2652,6 +2692,133 @@ impl TuiSession {
         theme::patch_plain(frame.buffer_mut(), area);
     }
 
+    /// Apply the clipboard part of Ctrl+C, Ctrl+X, and Ctrl+V for the focused text box.
+    ///
+    /// Ctrl+C copies a selection and keeps the quit chord for a box with no selection. Ctrl+X
+    /// copies the selection and goes on to the box, which removes it. Ctrl+V becomes a paste of the
+    /// internal clipboard, so every box pastes it with its own paste policy.
+    fn handle_clipboard_key(&mut self, key: &KeyEvent, state: &LibraryState) -> ClipboardKey {
+        let copy = is_copy_key(key);
+        let cut = is_cut_key(key);
+        let paste = is_paste_key(key);
+        if !(copy || cut || paste) {
+            return ClipboardKey::Continue;
+        }
+        let Some(editor) = self.focused_text_editor(state) else {
+            return ClipboardKey::Continue;
+        };
+        if paste {
+            return if self.clipboard.text().is_empty() {
+                ClipboardKey::Handled(EventHandling::Consumed)
+            } else {
+                ClipboardKey::Paste(self.clipboard.text().to_owned())
+            };
+        }
+        let Some(selected) = editor.selected_text() else {
+            return ClipboardKey::Continue;
+        };
+        self.clipboard.copy(selected);
+        if copy {
+            ClipboardKey::Handled(EventHandling::Consumed)
+        } else {
+            ClipboardKey::Continue
+        }
+    }
+
+    /// The text box that receives the next key, when one has the keyboard.
+    fn focused_text_editor(&self, state: &LibraryState) -> Option<&TextEditor> {
+        match state.modal() {
+            Some(ModalState::RunnerEditor { view, .. }) => {
+                return Some(self.runner_editor.focused_editor(view));
+            }
+            Some(ModalState::RunPresetName { .. }) => return Some(self.run_modal.preset_editor()),
+            Some(ModalState::RunEnvironmentPicker { .. }) => {
+                return Some(self.run_modal.environment_editor());
+            }
+            Some(_) => return None,
+            None => {}
+        }
+        match state.screen() {
+            Screen::Library if state.input_mode() == InputMode::Search => Some(&self.search.input),
+            Screen::Run(form) => match self.run.controls.get(self.run.clamped_focus(form)?)? {
+                WidgetControl::Input { state, .. } => Some(state),
+                WidgetControl::TextArea { state, .. } => Some(state),
+                WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => None,
+            },
+            Screen::Form(form) => match self.form.controls.get(self.form.clamped_focus(form)?)? {
+                FormWidgetControl::Input { state, .. } => Some(state),
+                FormWidgetControl::TextArea { state, .. } => Some(state),
+            },
+            Screen::Add(_) if self.add_overlay.is_none() => self.add.focused_editor(),
+            Screen::Settings(view) if self.settings_prompt_overlay.is_none() => {
+                self.settings.focused_editor(view)
+            }
+            Screen::Preferences(view) if view.agent_skill_install().is_none() => {
+                self.preferences.focused_editor(view)
+            }
+            Screen::Library
+            | Screen::Add(_)
+            | Screen::Settings(_)
+            | Screen::Preferences(_)
+            | Screen::Health(_)
+            | Screen::Report(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn copy_for_test(&mut self, text: &str) {
+        self.clipboard.copy(text.to_owned());
+    }
+
+    /// Report whether the cell shows the text of a box that the next press reaches.
+    fn text_box_at(&self, state: &LibraryState, column: u16, row: u16) -> bool {
+        let line = |geometry: &Option<EditableGeometry>| {
+            geometry.is_some_and(|geometry| geometry.position_contains(column, row))
+        };
+        let area = |geometry: &Option<TextAreaGeometry>| {
+            geometry.is_some_and(|geometry| geometry.position_contains(column, row))
+        };
+        match state.modal() {
+            Some(ModalState::RunnerEditor { .. }) => {
+                return self.runner_editor.text_box_at(column, row);
+            }
+            Some(ModalState::RunPresetName { .. }) => {
+                return self.run_modal.preset_box_at(column, row);
+            }
+            Some(ModalState::RunEnvironmentPicker { .. }) => {
+                return self.run_modal.environment_box_at(column, row);
+            }
+            Some(_) => return false,
+            None => {}
+        }
+        match state.screen() {
+            Screen::Library => line(&self.search.editable),
+            Screen::Run(_) => {
+                self.run.editables.iter().any(line) || self.run.textarea_editables.iter().any(area)
+            }
+            Screen::Form(_) => {
+                self.form.editables.iter().any(line)
+                    || self.form.textarea_editables.iter().any(area)
+            }
+            Screen::Add(_) => self.add_overlay.is_none() && self.add.text_box_at(column, row),
+            Screen::Settings(_) => {
+                self.settings_prompt_overlay.is_none() && self.settings.text_box_at(column, row)
+            }
+            Screen::Preferences(_) => self.preferences.text_box_at(column, row),
+            Screen::Health(_) | Screen::Report(_) => false,
+        }
+    }
+
+    /// Take the copy that the terminal must still send to the system clipboard.
+    pub(crate) fn take_clipboard_export(&mut self) -> Option<String> {
+        self.clipboard.take_export()
+    }
+
+    /// End the press sequence, so the next press is not the second press of a double click.
+    pub(crate) fn end_press_sequence(&mut self) {
+        self.presses.end();
+    }
+
     fn handle_ctrl_c(&mut self) -> EventHandling {
         const WINDOW: Duration = Duration::from_secs(2);
         let now = Instant::now();
@@ -2765,7 +2932,7 @@ impl TuiSession {
                     self.form.editables[index] =
                         render_line_input_band(frame, clip, state, *secret, *focused, &label, None);
                 }
-                FormWidgetControl::TextArea { state, focused, .. } => {
+                FormWidgetControl::TextArea { state, focused } => {
                     self.form.textarea_editables[index] = render_textarea_band(
                         frame,
                         clip,
@@ -3102,28 +3269,25 @@ impl TuiSession {
                 if key.code == KeyCode::Esc {
                     return EventHandling::Action(Action::FinishSearch);
                 }
-                let before = self.search.input.value().to_owned();
-                if self.search.input.handle_event(&Event::Key(key)).is_some() {
-                    return if before == self.search.input.value() {
-                        EventHandling::Consumed
-                    } else {
-                        EventHandling::Action(Action::SetSearchQuery(
-                            self.search.input.value().to_owned(),
-                        ))
-                    };
+                match self.search.input.handle_key(&key) {
+                    EditResponse::Changed => EventHandling::Action(Action::SetSearchQuery(
+                        self.search.input.value().to_owned(),
+                    )),
+                    EditResponse::Consumed => EventHandling::Consumed,
+                    EditResponse::Ignored | EditResponse::Boundary => {
+                        map_event(Event::Key(key), state, geometry)
+                            .map_or(EventHandling::Ignored, EventHandling::Action)
+                    }
                 }
-                map_event(Event::Key(key), state, geometry)
-                    .map_or(EventHandling::Ignored, EventHandling::Action)
             }
-            Event::Paste(value) => {
-                for character in value.chars() {
-                    let _ = self
-                        .search
-                        .input
-                        .handle(InputRequest::InsertChar(character));
+            Event::Paste(value) => match self.search.input.paste(&value) {
+                EditResponse::Changed => EventHandling::Action(Action::SetSearchQuery(
+                    self.search.input.value().to_owned(),
+                )),
+                EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                    EventHandling::Consumed
                 }
-                EventHandling::Action(Action::SetSearchQuery(self.search.input.value().to_owned()))
-            }
+            },
             Event::FocusGained
             | Event::FocusLost
             | Event::Key(_)
@@ -3169,7 +3333,7 @@ impl TuiSession {
                     action: HitTarget::FocusField(index),
                 });
             }
-            WidgetControl::TextArea { state, focused, .. } => {
+            WidgetControl::TextArea { state, focused } => {
                 self.run.textarea_editables[index] = render_textarea_band(
                     frame,
                     clip,
@@ -3377,10 +3541,11 @@ impl TuiSession {
             WidgetControl::Input { state, .. } => {
                 if key.code == KeyCode::Right
                     && key.modifiers.is_empty()
-                    && state.cursor() == state.value().chars().count()
+                    && state.selection().is_none()
+                    && state.cursor().column == state.value().chars().count()
                     && let Some(suggestion) = self.path_suggestions.take(focused, state.value())
                 {
-                    *state = LineInput::new(suggestion.clone());
+                    let _ = state.set_text(&suggestion);
                     let request =
                         form.path_completion_request(focused, &suggestion, host_path_dialect());
                     self.path_suggestions.ensure(focused, request);
@@ -3389,58 +3554,46 @@ impl TuiSession {
                         value: suggestion,
                     });
                 }
-                let before = state.value().to_owned();
-                let response = state.handle_event(&Event::Key(key));
-                if response.is_none() {
-                    if key.code == KeyCode::Enter {
-                        return EventHandling::Action(Action::Submit);
+                match state.handle_key(&key) {
+                    EditResponse::Changed => {
+                        // An edit brings its box back into view, so no key types into a box
+                        // that the wheel scrolled away.
+                        self.run.pending_ensure_focus = true;
+                        let value = state.value().to_owned();
+                        let request =
+                            form.path_completion_request(focused, &value, host_path_dialect());
+                        self.path_suggestions.ensure(focused, request);
+                        EventHandling::Action(Action::SetFieldValue {
+                            field: focused,
+                            value,
+                        })
                     }
-                    if key.code == KeyCode::Down {
-                        return self.move_focus(true);
+                    EditResponse::Consumed => {
+                        self.run.pending_ensure_focus = true;
+                        EventHandling::Consumed
                     }
-                    if key.code == KeyCode::Up {
-                        return self.move_focus(false);
-                    }
-                    return EventHandling::Ignored;
-                }
-                if before == state.value() {
-                    EventHandling::Consumed
-                } else {
-                    let value = state.value().to_owned();
-                    let request =
-                        form.path_completion_request(focused, &value, host_path_dialect());
-                    self.path_suggestions.ensure(focused, request);
-                    EventHandling::Action(Action::SetFieldValue {
-                        field: focused,
-                        value,
-                    })
+                    EditResponse::Ignored | EditResponse::Boundary => match key.code {
+                        KeyCode::Enter => EventHandling::Action(Action::Submit),
+                        KeyCode::Down => self.move_focus(true),
+                        KeyCode::Up => self.move_focus(false),
+                        _ => EventHandling::Ignored,
+                    },
                 }
             }
-            WidgetControl::TextArea {
-                state,
-                undo_group,
-                redo_group,
-                ..
-            } => {
-                let before = textarea_text(state);
-                let before_cursor = state.cursor();
-                match edit_textarea(state, key, undo_group, redo_group) {
-                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
-                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
-                }
-                let after = textarea_text(state);
-                if state.cursor() != before_cursor {
+            WidgetControl::TextArea { state, .. } => match state.handle_key(&key) {
+                EditResponse::Changed => {
                     self.run.pending_ensure_focus = true;
-                }
-                if before == after {
-                    EventHandling::Consumed
-                } else {
                     EventHandling::Action(Action::SetFieldValue {
                         field: focused,
-                        value: after,
+                        value: state.text().into_owned(),
                     })
                 }
-            }
+                EditResponse::Consumed | EditResponse::Boundary => {
+                    self.run.pending_ensure_focus = true;
+                    EventHandling::Consumed
+                }
+                EditResponse::Ignored => EventHandling::Ignored,
+            },
             WidgetControl::Checkbox(state) => match key.code {
                 KeyCode::Char(' ') => {
                     state.toggle();
@@ -3528,9 +3681,10 @@ impl TuiSession {
         };
         match &mut self.run.controls[focused] {
             WidgetControl::Input { state, .. } => {
-                for character in value.chars() {
-                    let _ = state.handle(InputRequest::InsertChar(character));
+                if state.paste(value) != EditResponse::Changed {
+                    return EventHandling::Consumed;
                 }
+                self.run.pending_ensure_focus = true;
                 let value = state.value().to_owned();
                 let request = form.path_completion_request(focused, &value, host_path_dialect());
                 self.path_suggestions.ensure(focused, request);
@@ -3539,19 +3693,14 @@ impl TuiSession {
                     value,
                 })
             }
-            WidgetControl::TextArea {
-                state,
-                undo_group,
-                redo_group,
-                ..
-            } => {
-                let selected = state.is_selecting();
-                state.insert_str(value);
-                *undo_group = 1 + usize::from(selected && !value.is_empty());
-                *redo_group = 0;
+            WidgetControl::TextArea { state, .. } => {
+                if state.paste(value) != EditResponse::Changed {
+                    return EventHandling::Consumed;
+                }
+                self.run.pending_ensure_focus = true;
                 EventHandling::Action(Action::SetFieldValue {
                     field: focused,
-                    value: textarea_text(state),
+                    value: state.text().into_owned(),
                 })
             }
             WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => EventHandling::Ignored,
@@ -3564,21 +3713,12 @@ impl TuiSession {
         };
         let value = match control {
             WidgetControl::Input { state, .. } => {
-                for character in text.chars() {
-                    let _ = state.handle(InputRequest::InsertChar(character));
-                }
+                let _ = state.paste(text);
                 state.value().to_owned()
             }
-            WidgetControl::TextArea {
-                state,
-                undo_group,
-                redo_group,
-                ..
-            } => {
-                state.insert_str(text);
-                *undo_group = 1;
-                *redo_group = 0;
-                textarea_text(state)
+            WidgetControl::TextArea { state, .. } => {
+                let _ = state.paste(text);
+                state.text().into_owned()
             }
             WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => {
                 return EventHandling::Ignored;
@@ -3629,6 +3769,14 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
+        // A drag that started in a text box selects in that box and keeps the press armed, so
+        // the release still focuses the box.
+        if is_primary_drag(&mouse)
+            && let Some(RunClickTarget::FocusField(index)) = self.run.click.pressed().cloned()
+            && self.point_run_field(index, &mouse)
+        {
+            return EventHandling::Consumed;
+        }
         if !matches!(
             mouse.kind,
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
@@ -3676,15 +3824,14 @@ impl TuiSession {
             .or_else(|| self.run.hits.topmost(mouse.column, mouse.row));
         match self.run.click.update(&mouse, target) {
             ClickOutcome::Armed => {
-                if let Some(RunClickTarget::FocusField(index)) = target {
-                    self.place_run_cursor(*index, mouse.column, mouse.row);
+                if let Some(RunClickTarget::FocusField(index)) = target.cloned() {
+                    let _ = self.point_run_field(index, &mouse);
                 }
                 EventHandling::Consumed
             }
             ClickOutcome::Ignored => EventHandling::Ignored,
             ClickOutcome::Activated(target) => match target {
                 RunClickTarget::FocusField(index) => {
-                    self.place_run_cursor(index, mouse.column, mouse.row);
                     if form.focused() == index {
                         EventHandling::Consumed
                     } else {
@@ -3721,27 +3868,23 @@ impl TuiSession {
         }
     }
 
-    fn place_run_cursor(&mut self, index: usize, column: u16, row: u16) {
-        if let Some((editable, WidgetControl::Input { state, .. })) = self
-            .run
-            .editables
-            .get(index)
-            .copied()
-            .flatten()
-            .zip(self.run.controls.get_mut(index))
-        {
-            let _ = editable.place_cursor(state, column, row);
+    /// Give one primary press or drag to the text box of field `index`.
+    fn point_run_field(&mut self, index: usize, mouse: &MouseEvent) -> bool {
+        let editable = self.run.editables.get(index).copied().flatten();
+        let textarea = self.run.textarea_editables.get(index).copied().flatten();
+        let pointed = match self.run.controls.get_mut(index) {
+            Some(WidgetControl::Input { state, .. }) => {
+                editable.is_some_and(|geometry| geometry.pointer(state, mouse))
+            }
+            Some(WidgetControl::TextArea { state, .. }) => {
+                textarea.is_some_and(|geometry| geometry.pointer(state, mouse))
+            }
+            Some(WidgetControl::Checkbox(_) | WidgetControl::Choice { .. }) | None => false,
+        };
+        if pointed {
+            self.run.pending_ensure_focus = true;
         }
-        if let Some((editable, WidgetControl::TextArea { state, .. })) = self
-            .run
-            .textarea_editables
-            .get(index)
-            .copied()
-            .flatten()
-            .zip(self.run.controls.get_mut(index))
-        {
-            let _ = editable.place_cursor(state, column, row);
-        }
+        pointed
     }
 
     fn handle_form_key(&mut self, key: KeyEvent, form: &FormView) -> EventHandling {
@@ -3760,57 +3903,45 @@ impl TuiSession {
         };
 
         match &mut self.form.controls[focused] {
-            FormWidgetControl::Input { state, .. } => {
-                let before = state.value().to_owned();
-                let response = state.handle_event(&Event::Key(key));
-                if response.is_none() {
-                    return match key.code {
-                        // Enter submits the dialog, as the footer says (A11 of the 2026-11 audit:
-                        // Enter in the Rename box only moved the focus).
-                        KeyCode::Enter => EventHandling::Action(Action::Submit),
-                        KeyCode::Down => self.move_form_focus(true),
-                        KeyCode::Up => self.move_form_focus(false),
-                        KeyCode::PageUp | KeyCode::PageDown => {
-                            let _ = self.form.scroll.handle_key(&key, self.form.visible_height);
-                            EventHandling::Consumed
-                        }
-                        _ => EventHandling::Ignored,
-                    };
-                }
-                if before == state.value() {
-                    EventHandling::Consumed
-                } else {
+            FormWidgetControl::Input { state, .. } => match state.handle_key(&key) {
+                EditResponse::Changed => {
+                    self.form.pending_ensure_focus = true;
                     EventHandling::Action(Action::SetFieldValue {
                         field: focused,
                         value: state.value().to_owned(),
                     })
                 }
-            }
-            FormWidgetControl::TextArea {
-                state,
-                undo_group,
-                redo_group,
-                ..
-            } => {
-                let before = textarea_text(state);
-                let before_cursor = state.cursor();
-                match edit_textarea(state, key, undo_group, redo_group) {
-                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
-                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
-                }
-                let after = textarea_text(state);
-                if state.cursor() != before_cursor {
+                EditResponse::Consumed => {
                     self.form.pending_ensure_focus = true;
-                }
-                if before == after {
                     EventHandling::Consumed
-                } else {
+                }
+                EditResponse::Ignored | EditResponse::Boundary => match key.code {
+                    // Enter submits the dialog, as the footer says (A11 of the 2026-11 audit:
+                    // Enter in the Rename box only moved the focus).
+                    KeyCode::Enter => EventHandling::Action(Action::Submit),
+                    KeyCode::Down => self.move_form_focus(true),
+                    KeyCode::Up => self.move_form_focus(false),
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        let _ = self.form.scroll.handle_key(&key, self.form.visible_height);
+                        EventHandling::Consumed
+                    }
+                    _ => EventHandling::Ignored,
+                },
+            },
+            FormWidgetControl::TextArea { state, .. } => match state.handle_key(&key) {
+                EditResponse::Changed => {
+                    self.form.pending_ensure_focus = true;
                     EventHandling::Action(Action::SetFieldValue {
                         field: focused,
-                        value: after,
+                        value: state.text().into_owned(),
                     })
                 }
-            }
+                EditResponse::Consumed | EditResponse::Boundary => {
+                    self.form.pending_ensure_focus = true;
+                    EventHandling::Consumed
+                }
+                EditResponse::Ignored => EventHandling::Ignored,
+            },
         }
     }
 
@@ -3818,32 +3949,21 @@ impl TuiSession {
         let Some(focused) = self.form.clamped_focus(form) else {
             return EventHandling::Ignored;
         };
-        match &mut self.form.controls[focused] {
-            FormWidgetControl::Input { state, .. } => {
-                for character in value.chars() {
-                    let _ = state.handle(InputRequest::InsertChar(character));
-                }
-                EventHandling::Action(Action::SetFieldValue {
-                    field: focused,
-                    value: state.value().to_owned(),
-                })
-            }
-            FormWidgetControl::TextArea {
-                state,
-                undo_group,
-                redo_group,
-                ..
-            } => {
-                let selected = state.is_selecting();
-                let _ = state.insert_str(value);
-                *undo_group = 1 + usize::from(selected && !value.is_empty());
-                *redo_group = 0;
-                EventHandling::Action(Action::SetFieldValue {
-                    field: focused,
-                    value: textarea_text(state),
-                })
-            }
+        let changed = match &mut self.form.controls[focused] {
+            FormWidgetControl::Input { state, .. } => state.paste(value),
+            FormWidgetControl::TextArea { state, .. } => state.paste(value),
+        };
+        if changed != EditResponse::Changed {
+            return EventHandling::Consumed;
         }
+        self.form.pending_ensure_focus = true;
+        EventHandling::Action(Action::SetFieldValue {
+            field: focused,
+            value: match &self.form.controls[focused] {
+                FormWidgetControl::Input { state, .. } => state.value().to_owned(),
+                FormWidgetControl::TextArea { state, .. } => state.text().into_owned(),
+            },
+        })
     }
 
     fn handle_form_mouse(
@@ -3859,11 +3979,17 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
+        if is_primary_drag(&mouse)
+            && let Some(index) = self.form.click.pressed().copied()
+            && self.point_form_field(index, &mouse)
+        {
+            return EventHandling::Consumed;
+        }
         let target = self.form.clicks.topmost(mouse.column, mouse.row).copied();
         match self.form.click.update(&mouse, target.as_ref()) {
             ClickOutcome::Armed => {
                 let index = target.expect("an armed form click has one target");
-                self.place_form_cursor(index, mouse.column, mouse.row);
+                let _ = self.point_form_field(index, &mouse);
                 EventHandling::Consumed
             }
             ClickOutcome::Activated(index) => {
@@ -3880,27 +4006,26 @@ impl TuiSession {
         }
     }
 
-    fn place_form_cursor(&mut self, index: usize, column: u16, row: u16) {
-        if let Some((editable, FormWidgetControl::Input { state, .. })) = self
+    /// Give one primary press or drag to the text box of field `index`.
+    fn point_form_field(&mut self, index: usize, mouse: &MouseEvent) -> bool {
+        let editable = self.form.editables.get(index).copied().flatten();
+        let textarea = self.form.textarea_editables.get(index).copied().flatten();
+        let pointed = self
             .form
-            .editables
-            .get(index)
-            .copied()
-            .flatten()
-            .zip(self.form.controls.get_mut(index))
-        {
-            let _ = editable.place_cursor(state, column, row);
+            .controls
+            .get_mut(index)
+            .is_some_and(|control| match control {
+                FormWidgetControl::Input { state, .. } => {
+                    editable.is_some_and(|geometry| geometry.pointer(state, mouse))
+                }
+                FormWidgetControl::TextArea { state, .. } => {
+                    textarea.is_some_and(|geometry| geometry.pointer(state, mouse))
+                }
+            });
+        if pointed {
+            self.form.pending_ensure_focus = true;
         }
-        if let Some((editable, FormWidgetControl::TextArea { state, .. })) = self
-            .form
-            .textarea_editables
-            .get(index)
-            .copied()
-            .flatten()
-            .zip(self.form.controls.get_mut(index))
-        {
-            let _ = editable.place_cursor(state, column, row);
-        }
+        pointed
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
@@ -4057,7 +4182,6 @@ fn textarea_geometry_snapshot(geometry: TextAreaGeometry) -> serde_json::Value {
         "content": snapshot_rect(geometry.content()),
         "first_row": geometry.first_row(),
         "left_cell": geometry.left_cell(),
-        "tab_length": geometry.tab_length(),
     })
 }
 
@@ -4307,7 +4431,7 @@ impl RunWidgetSession {
             {
                 let last_content_row = height.saturating_sub(3);
                 let cursor =
-                    editor_cursor_virtual_row(start, state.cursor().0.min(last_content_row));
+                    editor_cursor_virtual_row(start, state.cursor().line.min(last_content_row));
                 let next = start.max(cursor.saturating_add(1).saturating_sub(self.visible_height));
                 self.scroll.set_scroll_offset(next);
             } else {
@@ -4352,21 +4476,14 @@ fn widget_control_snapshot(
             focused,
         } => serde_json::json!({
             "kind": "input",
-            "state": snapshot_value("run.control.input", state)?,
+            "state": state.agent_review_snapshot(),
             "secret": secret,
             "focused": focused,
         }),
-        WidgetControl::TextArea {
-            state,
-            focused,
-            undo_group,
-            redo_group,
-        } => serde_json::json!({
+        WidgetControl::TextArea { state, focused } => serde_json::json!({
             "kind": "textarea",
-            "state": snapshot_textarea(state),
+            "state": state.agent_review_snapshot(),
             "focused": focused,
-            "undo_group": undo_group,
-            "redo_group": redo_group,
         }),
         WidgetControl::Checkbox(state) => serde_json::json!({
             "kind": "checkbox",
@@ -4411,7 +4528,7 @@ impl SearchWidgetSession {
         Ok(snapshot_node(
             "search",
             [
-                ("input", snapshot_value("search.input", input)?),
+                ("input", input.agent_review_snapshot()),
                 (
                     "editable",
                     editable.map_or(serde_json::Value::Null, editable_geometry_snapshot),
@@ -4422,7 +4539,7 @@ impl SearchWidgetSession {
 
     fn sync(&mut self, value: &str) {
         if self.input.value() != value {
-            self.input = LineInput::new(value.to_owned());
+            self.input.replace_text(value);
         }
     }
 }
@@ -4567,7 +4684,7 @@ impl FormWidgetSession {
             if height.cmp(&self.visible_height) == std::cmp::Ordering::Greater
                 && let FormWidgetControl::TextArea { state, .. } = &self.controls[form.focused]
             {
-                let cursor = editor_cursor_virtual_row(start, state.cursor().0);
+                let cursor = editor_cursor_virtual_row(start, state.cursor().line);
                 let next = start.max(cursor.saturating_add(1).saturating_sub(self.visible_height));
                 self.scroll.set_scroll_offset(next);
             } else {
@@ -4620,21 +4737,14 @@ fn form_widget_control_snapshot(
             focused,
         } => serde_json::json!({
             "kind": "input",
-            "state": snapshot_value("form.control.input", state)?,
+            "state": state.agent_review_snapshot(),
             "secret": secret,
             "focused": focused,
         }),
-        FormWidgetControl::TextArea {
-            state,
-            focused,
-            undo_group,
-            redo_group,
-        } => serde_json::json!({
+        FormWidgetControl::TextArea { state, focused } => serde_json::json!({
             "kind": "textarea",
-            "state": snapshot_textarea(state),
+            "state": state.agent_review_snapshot(),
             "focused": focused,
-            "undo_group": undo_group,
-            "redo_group": redo_group,
         }),
     })
 }
@@ -4643,10 +4753,10 @@ impl FormWidgetControl {
     fn sync_value(&mut self, field: &FormField) {
         match self {
             Self::Input { state, .. } if state.value() != field.value => {
-                *state = LineInput::new(field.value.clone());
+                state.replace_text(&field.value);
             }
-            Self::TextArea { state, .. } if textarea_text(state) != field.value => {
-                **state = new_textarea(&field.value);
+            Self::TextArea { state, .. } if state.text() != field.value.as_str() => {
+                state.replace_text(&field.value);
             }
             Self::Input { .. } | Self::TextArea { .. } => {}
         }
@@ -4670,12 +4780,12 @@ impl WidgetControl {
     fn sync_value(&mut self, model: &FormControl) {
         match (self, model) {
             (Self::Input { state, .. }, FormControl::Text(text)) if state.value() != text.value => {
-                *state = LineInput::new(text.value.clone());
+                state.replace_text(&text.value);
             }
             (Self::TextArea { state, .. }, FormControl::Text(text))
-                if textarea_text(state) != text.value =>
+                if state.text() != text.value.as_str() =>
             {
-                **state = new_textarea(&text.value);
+                state.replace_text(&text.value);
             }
             (Self::Checkbox(state), FormControl::Checkbox { checked }) => {
                 state.set_checked(*checked);
@@ -4763,14 +4873,12 @@ fn form_field_signature(field: &FormField) -> FieldSignature {
 fn form_widget_control(field: &FormField) -> FormWidgetControl {
     if field.multiline && !field.secret {
         FormWidgetControl::TextArea {
-            state: Box::new(new_textarea(&field.value)),
+            state: Box::new(TextEditor::multi_line(&field.value)),
             focused: false,
-            undo_group: 0,
-            redo_group: 0,
         }
     } else {
         FormWidgetControl::Input {
-            state: LineInput::new(field.value.clone()),
+            state: TextEditor::single_line(&field.value),
             secret: field.secret,
             focused: false,
         }
@@ -4814,14 +4922,12 @@ fn widget_control(field: &RunField) -> WidgetControl {
     match &field.control {
         FormControl::Text(control) if control.multiline && !control.secret => {
             WidgetControl::TextArea {
-                state: Box::new(new_textarea(&control.value)),
+                state: Box::new(TextEditor::multi_line(&control.value)),
                 focused: false,
-                undo_group: 0,
-                redo_group: 0,
             }
         }
         FormControl::Text(control) => WidgetControl::Input {
-            state: LineInput::new(control.value.clone()),
+            state: TextEditor::single_line(&control.value),
             secret: control.secret,
             focused: false,
         },
@@ -4846,84 +4952,6 @@ fn widget_control(field: &RunField) -> WidgetControl {
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TextAreaEventHandling {
-    Ignored,
-    Consumed,
-    VerticalBoundary,
-}
-
-pub(crate) fn edit_textarea(
-    state: &mut RichTextArea<'static>,
-    key: KeyEvent,
-    undo_group: &mut usize,
-    redo_group: &mut usize,
-) -> TextAreaEventHandling {
-    if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
-        let count = (*undo_group).max(1);
-        for _ in 0..count {
-            let _ = state.undo();
-        }
-        *redo_group = count;
-        *undo_group = 0;
-        return TextAreaEventHandling::Consumed;
-    }
-    if (key.code == KeyCode::Char('z')
-        && key
-            .modifiers
-            .contains(KeyModifiers::CONTROL.union(KeyModifiers::SHIFT)))
-        || (key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::CONTROL)
-    {
-        let count = (*redo_group).max(1);
-        for _ in 0..count {
-            let _ = state.redo();
-        }
-        *undo_group = count;
-        *redo_group = 0;
-        return TextAreaEventHandling::Consumed;
-    }
-    let before = textarea_text(state);
-    let selected = state.is_selecting();
-    let cursor = state.cursor();
-    let _ = state.input(key);
-    if textarea_text(state) != before {
-        let inserts_after_delete =
-            selected && matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab);
-        *undo_group = 1 + usize::from(inserts_after_delete);
-        *redo_group = 0;
-    }
-    if !textarea_accepts(key) {
-        TextAreaEventHandling::Ignored
-    } else if matches!(key.code, KeyCode::Up | KeyCode::Down)
-        && key.modifiers.is_empty()
-        && !selected
-        && state.cursor() == cursor
-    {
-        TextAreaEventHandling::VerticalBoundary
-    } else {
-        TextAreaEventHandling::Consumed
-    }
-}
-
-fn textarea_accepts(key: KeyEvent) -> bool {
-    matches!(
-        key.code,
-        KeyCode::Char(_)
-            | KeyCode::Enter
-            | KeyCode::Tab
-            | KeyCode::Backspace
-            | KeyCode::Delete
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-    )
 }
 
 fn select_radio(
@@ -4951,224 +4979,6 @@ fn select_radio(
 #[cfg(test)]
 mod editor_contract_tests {
     use super::*;
-
-    fn edit(
-        state: &mut RichTextArea<'static>,
-        undo_group: &mut usize,
-        redo_group: &mut usize,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-    ) -> TextAreaEventHandling {
-        edit_textarea(
-            state,
-            KeyEvent::new(code, modifiers),
-            undo_group,
-            redo_group,
-        )
-    }
-
-    fn undone_edit() -> (RichTextArea<'static>, usize, usize) {
-        let mut state = new_textarea("ab");
-        let (mut undo_group, mut redo_group) = (0, 0);
-        assert_eq!(
-            edit(
-                &mut state,
-                &mut undo_group,
-                &mut redo_group,
-                KeyCode::Char('c'),
-                KeyModifiers::NONE,
-            ),
-            TextAreaEventHandling::Consumed
-        );
-        assert_eq!(textarea_text(&state), "abc");
-        assert_eq!(
-            edit(
-                &mut state,
-                &mut undo_group,
-                &mut redo_group,
-                KeyCode::Char('z'),
-                KeyModifiers::CONTROL,
-            ),
-            TextAreaEventHandling::Consumed
-        );
-        assert_eq!(textarea_text(&state), "ab");
-        (state, undo_group, redo_group)
-    }
-
-    #[test]
-    fn textarea_undo_and_redo_require_their_exact_key_chords() {
-        for (code, modifiers) in [
-            (
-                KeyCode::Char('z'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            (
-                KeyCode::Char('z'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT,
-            ),
-            (KeyCode::Char('y'), KeyModifiers::CONTROL),
-        ] {
-            let (mut state, mut undo_group, mut redo_group) = undone_edit();
-            assert_eq!(
-                edit(
-                    &mut state,
-                    &mut undo_group,
-                    &mut redo_group,
-                    code,
-                    modifiers,
-                ),
-                TextAreaEventHandling::Consumed
-            );
-            assert_eq!(textarea_text(&state), "abc", "redo chord {code:?}");
-        }
-
-        for (code, modifiers) in [
-            (KeyCode::Char('q'), KeyModifiers::CONTROL),
-            (
-                KeyCode::Char('q'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            (
-                KeyCode::Char('y'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-        ] {
-            let (mut state, mut undo_group, mut redo_group) = undone_edit();
-            let _ = edit(
-                &mut state,
-                &mut undo_group,
-                &mut redo_group,
-                code,
-                modifiers,
-            );
-            assert_eq!(textarea_text(&state), "ab", "false redo chord {code:?}");
-        }
-
-        for (code, modifiers, expected) in [
-            (KeyCode::Char('z'), KeyModifiers::NONE, "abz"),
-            (KeyCode::Char('z'), KeyModifiers::SHIFT, "abz"),
-            (KeyCode::Char('y'), KeyModifiers::NONE, "aby"),
-        ] {
-            let (mut state, mut undo_group, mut redo_group) = undone_edit();
-            let _ = edit(
-                &mut state,
-                &mut undo_group,
-                &mut redo_group,
-                code,
-                modifiers,
-            );
-            assert_eq!(textarea_text(&state), expected, "plain character {code:?}");
-        }
-    }
-
-    #[test]
-    fn textarea_undo_groups_selection_replacement_and_deletion_exactly() {
-        let mut replaced = new_textarea("ab");
-        let (mut undo_group, mut redo_group) = (0, 0);
-        for (code, modifiers) in [
-            (KeyCode::End, KeyModifiers::NONE),
-            (KeyCode::Left, KeyModifiers::SHIFT),
-            (KeyCode::Char('界'), KeyModifiers::NONE),
-            (KeyCode::Left, KeyModifiers::NONE),
-        ] {
-            let _ = edit(
-                &mut replaced,
-                &mut undo_group,
-                &mut redo_group,
-                code,
-                modifiers,
-            );
-        }
-        assert_eq!(textarea_text(&replaced), "a界");
-        let _ = edit(
-            &mut replaced,
-            &mut undo_group,
-            &mut redo_group,
-            KeyCode::Char('z'),
-            KeyModifiers::CONTROL,
-        );
-        assert_eq!(textarea_text(&replaced), "ab");
-
-        let mut deleted = new_textarea("ab");
-        let (mut undo_group, mut redo_group) = (0, 0);
-        for (code, modifiers) in [
-            (KeyCode::End, KeyModifiers::NONE),
-            (KeyCode::Char('Q'), KeyModifiers::NONE),
-            (KeyCode::Left, KeyModifiers::SHIFT),
-            (KeyCode::Backspace, KeyModifiers::NONE),
-        ] {
-            let _ = edit(
-                &mut deleted,
-                &mut undo_group,
-                &mut redo_group,
-                code,
-                modifiers,
-            );
-        }
-        assert_eq!(textarea_text(&deleted), "ab");
-        let _ = edit(
-            &mut deleted,
-            &mut undo_group,
-            &mut redo_group,
-            KeyCode::Char('z'),
-            KeyModifiers::CONTROL,
-        );
-        assert_eq!(textarea_text(&deleted), "abQ");
-    }
-
-    #[test]
-    fn textarea_reports_only_unmodified_vertical_edges_as_boundaries() {
-        for (code, modifiers, expected) in [
-            (
-                KeyCode::F(2),
-                KeyModifiers::NONE,
-                TextAreaEventHandling::Ignored,
-            ),
-            (
-                KeyCode::Up,
-                KeyModifiers::NONE,
-                TextAreaEventHandling::VerticalBoundary,
-            ),
-            (
-                KeyCode::Up,
-                KeyModifiers::SHIFT,
-                TextAreaEventHandling::Consumed,
-            ),
-            (
-                KeyCode::Char('x'),
-                KeyModifiers::NONE,
-                TextAreaEventHandling::Consumed,
-            ),
-        ] {
-            let mut state = new_textarea("ab");
-            let (mut undo_group, mut redo_group) = (0, 0);
-            assert_eq!(
-                edit(
-                    &mut state,
-                    &mut undo_group,
-                    &mut redo_group,
-                    code,
-                    modifiers,
-                ),
-                expected,
-                "event classification for {code:?}"
-            );
-        }
-
-        let mut selected = new_textarea("a\nb");
-        selected.start_selection();
-        let (mut undo_group, mut redo_group) = (0, 0);
-        assert_eq!(
-            edit(
-                &mut selected,
-                &mut undo_group,
-                &mut redo_group,
-                KeyCode::Up,
-                KeyModifiers::NONE,
-            ),
-            TextAreaEventHandling::Consumed
-        );
-    }
 
     #[test]
     fn radio_navigation_stops_at_both_ends_and_moves_one_option() {
@@ -5611,25 +5421,14 @@ fn run_scrollbar_style() -> Style {
     theme::scrollbar()
 }
 
-pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
-    let mut state = RichTextArea::new(value.split('\n').map(str::to_owned).collect());
-    state.move_cursor(CursorMove::Bottom);
-    state.move_cursor(CursorMove::End);
-    state
-}
-
 pub(crate) fn textarea_control_height(value: &str, minimum_content_height: usize) -> usize {
     value.split('\n').count().max(minimum_content_height) + 2
-}
-
-pub(crate) fn textarea_text(state: &RichTextArea<'_>) -> String {
-    state.lines().join("\n")
 }
 
 pub(crate) fn render_line_input(
     frame: &mut Frame,
     area: Rect,
-    state: &LineInput,
+    state: &TextEditor,
     secret: bool,
     focused: bool,
     label: &str,
@@ -5648,7 +5447,7 @@ pub(crate) fn render_line_input(
 pub(crate) fn render_search_line_input(
     frame: &mut Frame,
     area: Rect,
-    state: &LineInput,
+    state: &TextEditor,
     label: &str,
 ) -> Option<EditableGeometry> {
     if area.height < 3 {
@@ -5661,7 +5460,7 @@ pub(crate) fn render_search_line_input(
 fn render_line_input_with_suggestion(
     frame: &mut Frame,
     area: Rect,
-    state: &LineInput,
+    state: &TextEditor,
     secret: bool,
     focused: bool,
     label: &str,
@@ -5682,7 +5481,7 @@ fn render_line_input_with_suggestion(
 pub(crate) fn render_line_input_band(
     frame: &mut Frame,
     clip: RowClip,
-    state: &LineInput,
+    state: &TextEditor,
     secret: bool,
     focused: bool,
     label: &str,
@@ -5690,16 +5489,17 @@ pub(crate) fn render_line_input_band(
 ) -> Option<EditableGeometry> {
     let border = theme::border(focused);
     let width = usize::from(clip.area().width.saturating_sub(2).max(1));
-    let scroll = display_scroll(state.value(), state.cursor(), width, secret);
-    let display = if secret {
-        Line::from(Span::styled(secret_display(state.value()), theme::text()))
-    } else {
+    let cursor = state.cursor().column;
+    let scroll = display_scroll(state.value(), cursor, width, secret);
+    let mut spans = line_input_spans(state, secret, focused);
+    if !secret {
         let suffix = suggestion.and_then(|suggestion| suggestion.strip_prefix(state.value()));
-        Line::from(vec![
-            Span::styled(state.value().to_owned(), theme::text()),
-            Span::styled(suffix.unwrap_or_default().to_owned(), theme::suggestion()),
-        ])
-    };
+        spans.push(Span::styled(
+            suffix.unwrap_or_default().to_owned(),
+            theme::suggestion(),
+        ));
+    }
+    let display = Line::from(spans);
     clip.paint_bordered_paragraph(
         frame.buffer_mut(),
         Paragraph::new(display),
@@ -5711,7 +5511,7 @@ pub(crate) fn render_line_input_band(
         && let Some(row) = clip.row(1)
         && row.width > 2
     {
-        let visual_cursor = display_cursor(state.value(), state.cursor(), secret);
+        let visual_cursor = display_cursor(state.value(), cursor, secret);
         let x = visual_cursor
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
@@ -5741,7 +5541,7 @@ pub(crate) fn render_line_input_band(
 fn render_flat_search_input(
     frame: &mut Frame,
     area: Rect,
-    state: &LineInput,
+    state: &TextEditor,
     focused: bool,
     label: &str,
 ) -> Option<EditableGeometry> {
@@ -5753,11 +5553,12 @@ fn render_flat_search_input(
     );
     let width = usize::from(std::num::NonZeroU16::new(content.width)?.get());
     let _height = std::num::NonZeroU16::new(content.height)?;
-    let scroll = display_scroll(state.value(), state.cursor(), width, false);
+    let cursor = state.cursor().column;
+    let scroll = display_scroll(state.value(), cursor, width, false);
     let shown = if state.value().is_empty() {
-        label.to_owned()
+        Line::from(label.to_owned())
     } else {
-        state.value().to_owned()
+        Line::from(line_input_spans(state, false, focused))
     };
     frame.render_widget(
         Paragraph::new(shown)
@@ -5766,7 +5567,7 @@ fn render_flat_search_input(
         content,
     );
     if focused {
-        let x = display_cursor(state.value(), state.cursor(), false)
+        let x = display_cursor(state.value(), cursor, false)
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
         frame.set_cursor_position((
@@ -5779,26 +5580,72 @@ fn render_flat_search_input(
     Some(EditableGeometry::new(content, scroll, false))
 }
 
+/// The spans of one single-line value: the text before the selection, the selection, and the
+/// text after it.
+///
+/// A box shows its selection only while it has the focus. A control character takes one cell, as
+/// its width says: a Tab shows as a blank cell, and any other control character as U+FFFD.
+fn line_input_spans(state: &TextEditor, secret: bool, focused: bool) -> Vec<Span<'static>> {
+    let value = state.value();
+    let shown = if secret {
+        secret_display(value)
+    } else {
+        value
+            .chars()
+            .map(|character| match character {
+                '\t' => ' ',
+                character if character.is_control() => '\u{FFFD}',
+                character => character,
+            })
+            .collect()
+    };
+    let selection = focused
+        .then(|| state.selection())
+        .flatten()
+        .map(|(start, end)| {
+            if secret {
+                let graphemes = |column: usize| {
+                    value
+                        .chars()
+                        .take(column)
+                        .collect::<String>()
+                        .graphemes(true)
+                        .count()
+                };
+                (graphemes(start.column), graphemes(end.column))
+            } else {
+                (start.column, end.column)
+            }
+        });
+    let Some((start, end)) = selection else {
+        return vec![Span::styled(shown, theme::text())];
+    };
+    let at = |column: usize| {
+        shown
+            .char_indices()
+            .nth(column)
+            .map_or(shown.len(), |(index, _)| index)
+    };
+    let (start, end) = (at(start), at(end));
+    vec![
+        Span::styled(shown[..start].to_owned(), theme::text()),
+        Span::styled(shown[start..end].to_owned(), theme::text_selection()),
+        Span::styled(shown[end..].to_owned(), theme::text()),
+    ]
+}
+
 /// Draw only the visible band of one bordered text area.
+///
+/// The focused box puts the hardware cursor on its caret cell, so an input method opens its
+/// candidate window there. The terminal draws that cursor, as it does in a single-line box.
 pub(crate) fn render_textarea_band(
     frame: &mut Frame,
     clip: RowClip,
-    state: &mut RichTextArea<'static>,
+    state: &TextEditor,
     viewport: &mut TextAreaViewport,
     focused: bool,
     label: &str,
 ) -> Option<TextAreaGeometry> {
-    state.set_block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border(focused))
-            .title(label.to_owned())
-            .title_style(theme::border_title()),
-    );
-    state.set_style(theme::text());
-    state.set_cursor_line_style(Style::default());
-    state.set_cursor_style(theme::caret(focused));
-    state.set_selection_style(theme::selection());
     let content_width = usize::from(clip.area().width.saturating_sub(2));
     let content_height = clip.full_height().saturating_sub(2);
     viewport.align(state, content_width, content_height);
@@ -5816,7 +5663,11 @@ pub(crate) fn render_textarea_band(
         content_end.saturating_sub(content_start),
         viewport.left_cell(),
         content_width,
-        theme::selection(),
+        TextAreaStyles {
+            base: theme::text(),
+            caret: theme::text(),
+            selection: focused.then(theme::text_selection),
+        },
     );
     clip.paint_bordered_lines(
         frame.buffer_mut(),
@@ -5825,7 +5676,7 @@ pub(crate) fn render_textarea_band(
         theme::border(focused),
     );
     let first = clip.row(content_start)?;
-    (content_start < content_end && first.width > 2).then(|| {
+    let geometry = (content_start < content_end && first.width > 2).then(|| {
         viewport.geometry(
             Rect::new(
                 first.x.saturating_add(1),
@@ -5834,7 +5685,29 @@ pub(crate) fn render_textarea_band(
                 u16::try_from(content_end.saturating_sub(content_start)).unwrap_or(u16::MAX),
             ),
             content_start.saturating_sub(1),
-            usize::from(state.tab_length()),
+        )
+    })?;
+    if focused && let Some(cell) = textarea_caret_cell(state, geometry) {
+        frame.set_cursor_position(cell);
+    }
+    Some(geometry)
+}
+
+/// The terminal cell of the caret of a multi-line box, when the caret is on a drawn cell.
+fn textarea_caret_cell(state: &TextEditor, geometry: TextAreaGeometry) -> Option<(u16, u16)> {
+    let cursor = state.cursor();
+    let content = geometry.content();
+    let row = cursor.line.checked_sub(geometry.first_row())?;
+    let cells = crate::editor::display_column(&state.lines()[cursor.line], cursor.column)
+        .checked_sub(geometry.left_cell())?;
+    (row < usize::from(content.height) && cells < usize::from(content.width)).then(|| {
+        (
+            content
+                .x
+                .saturating_add(u16::try_from(cells).unwrap_or(u16::MAX)),
+            content
+                .y
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
         )
     })
 }
@@ -6248,7 +6121,7 @@ mod textarea_band_tests {
 
     #[test]
     fn search_and_bordered_inputs_publish_only_real_content_cells() {
-        let input = LineInput::new("界abc".to_owned());
+        let input = TextEditor::single_line("界abc");
 
         let mut compact = Terminal::new(TestBackend::new(8, 2)).unwrap();
         let mut compact_geometry = None;
@@ -6289,7 +6162,7 @@ mod textarea_band_tests {
                 two_column_geometry = render_line_input(
                     frame,
                     frame.area(),
-                    &LineInput::new(String::new()),
+                    &TextEditor::single_line(""),
                     false,
                     true,
                     "Value",
@@ -6310,7 +6183,7 @@ mod textarea_band_tests {
                 three_column_geometry = render_line_input(
                     frame,
                     frame.area(),
-                    &LineInput::new(String::new()),
+                    &TextEditor::single_line(""),
                     false,
                     true,
                     "Value",
@@ -6386,7 +6259,7 @@ mod textarea_band_tests {
                     geometry = render_flat_search_input(
                         frame,
                         area,
-                        &LineInput::new(value.to_owned()),
+                        &TextEditor::single_line(value),
                         true,
                         label,
                     );
@@ -6414,7 +6287,7 @@ mod textarea_band_tests {
         fn draw_band(top: u16, width: u16, height: u16) -> (bool, String) {
             let backend_height = height.max(1);
             let mut terminal = Terminal::new(TestBackend::new(width, backend_height)).unwrap();
-            let mut state = new_textarea("zero\none\ntwo\nthree");
+            let state = TextEditor::multi_line("zero\none\ntwo\nthree");
             let mut viewport = TextAreaViewport::default();
             let mut has_geometry = false;
             terminal
@@ -6422,7 +6295,7 @@ mod textarea_band_tests {
                     has_geometry = render_textarea_band(
                         frame,
                         RowClip::new(6, usize::from(top), Rect::new(0, 0, width, height)),
-                        &mut state,
+                        &state,
                         &mut viewport,
                         true,
                         "Body",
@@ -6448,8 +6321,31 @@ mod textarea_band_tests {
         );
     }
 
+    fn draw_textarea(
+        terminal: &mut Terminal<TestBackend>,
+        state: &TextEditor,
+        viewport: &mut TextAreaViewport,
+    ) -> Option<TextAreaGeometry> {
+        let mut geometry = None;
+        terminal
+            .draw(|frame| {
+                geometry = render_textarea_band(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    state,
+                    viewport,
+                    true,
+                    "Body",
+                );
+            })
+            .unwrap();
+        geometry
+    }
+
+    // Ways this can fail: the band splits a combined or emoji grapheme at the edge; the caret of
+    // the focused box has no hardware cursor, so an input method has no place to open.
     #[test]
-    fn bounded_textarea_render_keeps_complete_unicode_graphemes_and_cursor_style() {
+    fn bounded_textarea_render_keeps_complete_unicode_graphemes_and_the_hardware_cursor() {
         for (value, expected) in [("e\u{301}x", "e\u{301}"), ("👨‍👩‍👧x", "👨‍👩‍👧")]
         {
             for (width, horizontal_tail) in [(12, false), (5, true)] {
@@ -6458,24 +6354,13 @@ mod textarea_band_tests {
                 } else {
                     value.to_owned()
                 };
-                let mut state = new_textarea(&value);
+                let mut state = TextEditor::multi_line(&value);
                 if !horizontal_tail {
-                    state.move_cursor(CursorMove::Head);
+                    state.set_cursor(crate::editor::TextPosition::new(0, 0));
                 }
                 let mut viewport = TextAreaViewport::default();
                 let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
-                terminal
-                    .draw(|frame| {
-                        let _ = render_textarea_band(
-                            frame,
-                            RowClip::new(3, 0, frame.area()),
-                            &mut state,
-                            &mut viewport,
-                            true,
-                            "Body",
-                        );
-                    })
-                    .unwrap();
+                let _ = draw_textarea(&mut terminal, &state, &mut viewport);
                 let content_x = 1;
                 let cell = &terminal.backend().buffer()[(content_x, 1)];
                 assert_eq!(
@@ -6484,146 +6369,127 @@ mod textarea_band_tests {
                     "the final buffer split {expected:?} at width {width}"
                 );
                 if !horizontal_tail {
-                    assert_eq!(cell.fg, Color::Black);
-                    assert_eq!(cell.bg, ACCENT, "the cursor did not style one grapheme");
+                    assert_eq!(
+                        terminal.backend().cursor_position(),
+                        ratatui_core::layout::Position::new(1, 1),
+                        "the caret has no hardware cursor"
+                    );
                 }
             }
         }
     }
 
+    // Ways this can fail: a narrow box scrolls the caret out of its one cell; a wide character or
+    // a tab stop moves the hardware cursor off the caret cell.
     #[test]
-    fn one_cell_textarea_keeps_a_caret_for_a_cursor_inside_one_grapheme() {
-        for value in ["e\u{301}x", "👨‍👩‍👧x"] {
-            let mut state = new_textarea(value);
-            state.move_cursor(CursorMove::Head);
-            state.move_cursor(CursorMove::Forward);
-            assert_eq!(
-                state.cursor().1,
-                1,
-                "the fixture cursor must be inside {value:?}"
-            );
+    fn one_cell_textarea_keeps_the_hardware_cursor_on_its_caret_cell() {
+        for (value, column, symbol) in [
+            ("e\u{301}x", 0, "e\u{301}"),
+            ("e\u{301}x", 2, "x"),
+            ("👨‍👩‍👧x", 5, "x"),
+            ("a\tX", 2, "X"),
+        ] {
+            let mut state = TextEditor::multi_line(value);
+            state.set_cursor(crate::editor::TextPosition::new(0, column));
             let mut viewport = TextAreaViewport::default();
             let mut terminal = Terminal::new(TestBackend::new(3, 3)).unwrap();
-
-            terminal
-                .draw(|frame| {
-                    let _ = render_textarea_band(
-                        frame,
-                        RowClip::new(3, 0, frame.area()),
-                        &mut state,
-                        &mut viewport,
-                        true,
-                        "Body",
-                    );
-                })
-                .unwrap();
-
-            let caret = &terminal.backend().buffer()[(1, 1)];
-            assert_eq!(caret.fg, Color::Black, "the caret vanished for {value:?}");
-            assert_eq!(caret.bg, ACCENT, "the caret vanished for {value:?}");
+            let _ = draw_textarea(&mut terminal, &state, &mut viewport);
             assert_eq!(
-                textarea_text(&state),
-                value,
-                "render changed the model value"
+                terminal.backend().buffer()[(1, 1)].symbol(),
+                symbol,
+                "{value:?} at {column}"
             );
+            assert_eq!(
+                terminal.backend().cursor_position(),
+                ratatui_core::layout::Position::new(1, 1),
+                "{value:?} at {column}"
+            );
+            assert_eq!(state.text(), value, "render changed the model value");
         }
 
-        let mut state = new_textarea("a\tX");
-        state.move_cursor(CursorMove::Head);
-        state.move_cursor(CursorMove::Forward);
-        state.move_cursor(CursorMove::Forward);
-        assert_eq!(state.cursor().1, 2, "the cursor must follow the tab");
+        let mut wide = TextEditor::multi_line("日本語\nx");
+        wide.set_cursor(crate::editor::TextPosition::new(0, 2));
         let mut viewport = TextAreaViewport::default();
-        let mut terminal = Terminal::new(TestBackend::new(3, 3)).unwrap();
-        terminal
+        let mut terminal = Terminal::new(TestBackend::new(10, 4)).unwrap();
+        let mut terminal_rows = Terminal::new(TestBackend::new(10, 4)).unwrap();
+        terminal_rows
             .draw(|frame| {
                 let _ = render_textarea_band(
                     frame,
-                    RowClip::new(3, 0, frame.area()),
-                    &mut state,
+                    RowClip::new(4, 0, frame.area()),
+                    &wide,
                     &mut viewport,
                     true,
                     "Body",
                 );
             })
             .unwrap();
-        let caret = &terminal.backend().buffer()[(1, 1)];
-        assert_eq!(caret.symbol(), "X");
-        assert_eq!((caret.fg, caret.bg), (Color::Black, ACCENT));
+        assert_eq!(
+            terminal_rows.backend().cursor_position(),
+            ratatui_core::layout::Position::new(5, 1),
+            "a wide character moved the caret by one cell"
+        );
+        let _ = draw_textarea(&mut terminal, &wide, &mut viewport);
+        let unfocused_cursor = {
+            let mut unfocused = Terminal::new(TestBackend::new(10, 4)).unwrap();
+            let mut viewport = TextAreaViewport::default();
+            unfocused
+                .draw(|frame| {
+                    let _ = render_textarea_band(
+                        frame,
+                        RowClip::new(4, 0, frame.area()),
+                        &wide,
+                        &mut viewport,
+                        false,
+                        "Body",
+                    );
+                })
+                .unwrap();
+            unfocused.backend().cursor_position()
+        };
+        assert_ne!(
+            unfocused_cursor,
+            ratatui_core::layout::Position::new(5, 1),
+            "an unfocused box placed the hardware cursor"
+        );
     }
 
     #[test]
     fn rendered_textarea_clicks_use_tab_cells_and_rows_above_u16() {
         for column in [0, 1, 2] {
-            let mut state = new_textarea("\tX");
-            state.move_cursor(CursorMove::Head);
+            let mut state = TextEditor::multi_line("\tX");
+            state.set_cursor(crate::editor::TextPosition::new(0, 0));
             let mut viewport = TextAreaViewport::default();
-            let mut geometry = None;
             let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
-            terminal
-                .draw(|frame| {
-                    geometry = render_textarea_band(
-                        frame,
-                        RowClip::new(3, 0, frame.area()),
-                        &mut state,
-                        &mut viewport,
-                        true,
-                        "Body",
-                    );
-                })
-                .unwrap();
-            let geometry = geometry.expect("the tab row is editable");
-            assert!(geometry.place_cursor(&mut state, 1 + column, 1));
-            state.insert_char('Z');
-            assert_eq!(textarea_text(&state), "Z\tX", "tab cell {column}");
+            let geometry = draw_textarea(&mut terminal, &state, &mut viewport)
+                .expect("the tab row is editable");
+            state.press_at(geometry.position_at(&state, 1 + column, 1).unwrap());
+            let _ = state.apply(crate::editor::EditCommand::Insert('Z'));
+            assert_eq!(state.text(), "Z\tX", "tab cell {column}");
         }
 
-        let mut lines = vec![String::new(); usize::from(u16::MAX) + 2];
-        lines[usize::from(u16::MAX) + 1] = "abcdef".to_owned();
-        let mut state = RichTextArea::new(lines);
-        state.move_cursor(CursorMove::Bottom);
-        state.move_cursor(CursorMove::Head);
+        let tail = usize::from(u16::MAX) + 1;
+        let mut lines = vec![String::new(); tail + 1];
+        lines[tail] = "abcdef".to_owned();
+        let mut state = TextEditor::multi_line(&lines.join("\n"));
+        state.set_cursor(crate::editor::TextPosition::new(tail, 0));
         let mut viewport = TextAreaViewport::default();
-        let mut geometry = None;
         let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
-        terminal
-            .draw(|frame| {
-                geometry = render_textarea_band(
-                    frame,
-                    RowClip::new(3, 0, frame.area()),
-                    &mut state,
-                    &mut viewport,
-                    true,
-                    "Body",
-                );
-            })
-            .unwrap();
-        let geometry = geometry.expect("the virtual tail row is editable");
-        assert!(geometry.place_cursor(&mut state, 4, 1));
-        state.insert_char('X');
+        let geometry = draw_textarea(&mut terminal, &state, &mut viewport)
+            .expect("the virtual tail row is editable");
+        state.press_at(geometry.position_at(&state, 4, 1).unwrap());
+        let _ = state.apply(crate::editor::EditCommand::Insert('X'));
         assert_eq!(state.lines().last().unwrap(), "abcXdef");
 
-        let mut state = new_textarea("a");
-        state.move_cursor(CursorMove::Head);
+        let mut state = TextEditor::multi_line("a");
+        state.set_cursor(crate::editor::TextPosition::new(0, 0));
         let mut viewport = TextAreaViewport::default();
-        let mut geometry = None;
         let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
-        terminal
-            .draw(|frame| {
-                geometry = render_textarea_band(
-                    frame,
-                    RowClip::new(3, 0, frame.area()),
-                    &mut state,
-                    &mut viewport,
-                    true,
-                    "Body",
-                );
-            })
-            .unwrap();
-        let geometry = geometry.expect("the short row is editable");
-        assert!(geometry.place_cursor(&mut state, 7, 1));
-        state.insert_char('X');
-        assert_eq!(textarea_text(&state), "aX");
+        let geometry =
+            draw_textarea(&mut terminal, &state, &mut viewport).expect("the short row is editable");
+        state.press_at(geometry.position_at(&state, 7, 1).unwrap());
+        let _ = state.apply(crate::editor::EditCommand::Insert('X'));
+        assert_eq!(state.text(), "aX");
     }
 
     #[test]
@@ -6745,10 +6611,8 @@ mod textarea_band_tests {
             .join("\n");
         let mut run = run_session_at(0);
         run.controls.push(WidgetControl::TextArea {
-            state: Box::new(new_textarea(&value)),
+            state: Box::new(TextEditor::multi_line(&value)),
             focused: true,
-            undo_group: 0,
-            redo_group: 0,
         });
         let layout = positioned_run_layout(2, 6, 12);
         run.prepare_layout(&layout, 0, Rect::new(0, 0, 24, 5));
@@ -6901,14 +6765,12 @@ mod textarea_band_tests {
         let viewport = Rect::new(0, 0, 24, 3);
 
         for (cursor_row, expected_offset) in [(0, 5), (2, 6), (3, 7)] {
-            let mut state = new_textarea(&value);
-            state.move_cursor(CursorMove::Jump(cursor_row, 0));
+            let mut state = TextEditor::multi_line(&value);
+            state.set_cursor(crate::editor::TextPosition::new(cursor_row, 0));
             let mut run = run_session_at(0);
             run.controls.push(WidgetControl::TextArea {
                 state: Box::new(state),
                 focused: true,
-                undo_group: 0,
-                redo_group: 0,
             });
 
             run.prepare_layout(&layout, 0, viewport);
@@ -7545,15 +7407,30 @@ mod textarea_band_tests {
             "the clipped first row returned:\n{frame}"
         );
         assert!(
-            middle
-                .iter()
-                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            middle.iter().any(|cell| cell.symbol() != " "
+                && cell.fg == SELECT_BG
+                && cell
+                    .modifier
+                    .contains(ratatui_core::style::Modifier::REVERSED)),
             "the selection style is missing from the middle row:\n{frame}"
         );
-        assert!(
-            last.iter()
-                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
-            "the focused cursor style is missing from the last row:\n{frame}"
+        // The terminal draws the caret of the focused box at its hardware cursor.
+        let last_row = rows
+            .iter()
+            .position(|row| std::ptr::eq(*row, *last))
+            .unwrap();
+        let symbols = last.iter().map(|cell| cell.symbol()).collect::<Vec<_>>();
+        let last_column = symbols
+            .windows(4)
+            .position(|window| window == ["l", "a", "s", "t"])
+            .unwrap();
+        assert_eq!(
+            terminal.backend().cursor_position(),
+            ratatui_core::layout::Position::new(
+                u16::try_from(last_column + 4).unwrap(),
+                u16::try_from(last_row).unwrap()
+            ),
+            "the focused caret has no hardware cursor on the last row:\n{frame}"
         );
 
         let followed = geometry.first_visible;

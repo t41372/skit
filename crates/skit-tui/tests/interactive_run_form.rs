@@ -1,7 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
+use ratatui_core::{
+    backend::TestBackend,
+    buffer::Buffer,
+    style::{Color, Modifier},
+    terminal::Terminal,
+};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -622,6 +627,76 @@ fn every_visible_run_field_affordance_has_a_typed_mouse_action() {
         session_click(&mut session, &state, &geometry, area.x, area.y),
         EventHandling::Action(Action::OpenRunRunnerEditor)
     );
+}
+
+/// A press beside the radio options focuses the radio field.
+///
+/// Failure modes: the press reaches the text-box pointer of the radio field; the press does
+/// nothing, so the field never takes the focus.
+#[test]
+fn a_press_beside_the_radio_options_focuses_the_radio_field() {
+    let mut state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    let yaml = geometry
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.action
+                == HitTarget::SelectFieldOption {
+                    field: 3,
+                    option: 1,
+                }
+        })
+        .expect("the radio option must expose its exact typed mouse endpoint");
+    assert_ne!(state.focused_form_field(), Some(3));
+    assert_eq!(
+        drive_click(
+            &mut session,
+            &mut state,
+            &geometry,
+            yaml.rect.right() + 2,
+            yaml.rect.y,
+        ),
+        EventHandling::Action(Action::FocusField(3))
+    );
+    assert_eq!(state.focused_form_field(), Some(3));
+}
+
+/// A selection in a secret box shows on the mask cell of each selected character.
+///
+/// Failure modes: the selection counts characters where the mask counts graphemes, so a combining
+/// mark moves it off the selected character; a secret box never shows its selection.
+#[test]
+fn a_secret_box_shows_its_selection_on_the_mask() {
+    let mut value = serde_json::to_value(text_run_form("")).unwrap();
+    value["fields"][0]["control"]["text"]["secret"] = true.into();
+    let mut state = state_with_form(serde_json::from_value(value).unwrap());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 60, 20);
+    for character in ['e', '\u{301}', 'x'] {
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Char(character), KeyModifiers::NONE),
+        );
+    }
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Left, KeyModifiers::SHIFT),
+    );
+    let (terminal, _) = draw(&mut session, &state, 60, 20);
+    // The caret stands after the combined character, so it is on the mask cell of `x`.
+    let caret = terminal.backend().cursor_position();
+    let buffer = terminal.backend().buffer();
+    let combined = &buffer[(caret.x - 1, caret.y)];
+    let selected = &buffer[(caret.x, caret.y)];
+    assert_eq!((combined.symbol(), selected.symbol()), ("•", "•"));
+    assert!(!combined.modifier.contains(Modifier::REVERSED));
+    assert!(selected.modifier.contains(Modifier::REVERSED));
 }
 
 #[test]
@@ -1374,7 +1449,7 @@ fn open_run_picker_does_not_own_wheel_outside_its_dropdown() {
 }
 
 #[test]
-fn run_textarea_paste_groups_selection_replacement_but_not_empty_deletion() {
+fn run_textarea_paste_groups_selection_replacement_and_ignores_an_empty_paste() {
     let make_state = || state_with_form(with_multiline_run_field(text_run_form("a界b"), 0));
 
     let mut replaced = make_state();
@@ -1426,6 +1501,7 @@ fn run_textarea_paste_groups_selection_replacement_but_not_empty_deletion() {
         key(KeyCode::Char('Q'), KeyModifiers::NONE),
     );
     let _ = session.handle_event(key(KeyCode::Left, KeyModifiers::SHIFT), &deleted, &geometry);
+    // An empty paste pastes nothing: the selection and the value stay.
     let _ = drive(
         &mut session,
         &mut deleted,
@@ -1434,7 +1510,7 @@ fn run_textarea_paste_groups_selection_replacement_but_not_empty_deletion() {
     );
     assert_eq!(
         deleted.run_form().unwrap().fields()[0].control.value(),
-        "a界b"
+        "a界bQ"
     );
     let _ = drive(
         &mut session,
@@ -1444,7 +1520,7 @@ fn run_textarea_paste_groups_selection_replacement_but_not_empty_deletion() {
     );
     assert_eq!(
         deleted.run_form().unwrap().fields()[0].control.value(),
-        "a界bQ"
+        "a界b"
     );
 }
 
@@ -3317,6 +3393,15 @@ fn run_control_height_tracks_typed_multiline_and_packed_radio_content() {
     assert_eq!(wrapped_bottom.saturating_sub(wrapped_top), 2);
 }
 
+/// Report whether the terminal put its hardware cursor inside `rect`.
+///
+/// A focused text box marks its caret with the hardware cursor, so an input method opens its
+/// window there.
+fn caret_inside(terminal: &Terminal<TestBackend>, rect: ratatui_core::layout::Rect) -> bool {
+    let cursor = terminal.backend().cursor_position();
+    rect.contains(ratatui_core::layout::Position::new(cursor.x, cursor.y))
+}
+
 #[test]
 fn a_focused_run_textarea_keeps_its_cursor_and_last_row_in_a_short_viewport() {
     let value = (0..24)
@@ -3361,13 +3446,8 @@ fn a_focused_run_textarea_keeps_its_cursor_and_last_row_in_a_short_viewport() {
         "cursor alignment hid the textarea's last row"
     );
     assert!(
-        (field.rect.y..field.rect.bottom()).any(|row| {
-            (field.rect.x..field.rect.right()).any(|column| {
-                let cell = &terminal.backend().buffer()[(column, row)];
-                cell.fg == Color::Black && cell.bg == ACCENT
-            })
-        }),
-        "the clipped textarea lost its visible caret cell"
+        caret_inside(&terminal, field.rect),
+        "the clipped textarea lost its visible hardware cursor"
     );
 
     for _ in 0..25 {
@@ -3387,13 +3467,8 @@ fn a_focused_run_textarea_keeps_its_cursor_and_last_row_in_a_short_viewport() {
         "cursor movement did not realign the outer textarea band"
     );
     assert!(
-        (top_field.rect.y..top_field.rect.bottom()).any(|row| {
-            (top_field.rect.x..top_field.rect.right()).any(|column| {
-                let cell = &top.backend().buffer()[(column, row)];
-                cell.fg == Color::Black && cell.bg == ACCENT
-            })
-        }),
-        "the top-aligned textarea lost its visible caret cell"
+        caret_inside(&top, top_field.rect),
+        "the top-aligned textarea lost its visible hardware cursor"
     );
 
     for _ in 0..25 {
@@ -3417,13 +3492,8 @@ fn a_focused_run_textarea_keeps_its_cursor_and_last_row_in_a_short_viewport() {
         "reverse cursor movement did not realign the outer textarea band"
     );
     assert!(
-        (bottom_field.rect.y..bottom_field.rect.bottom()).any(|row| {
-            (bottom_field.rect.x..bottom_field.rect.right()).any(|column| {
-                let cell = &bottom.backend().buffer()[(column, row)];
-                cell.fg == Color::Black && cell.bg == ACCENT
-            })
-        }),
-        "the bottom-realigned textarea lost its visible caret cell"
+        caret_inside(&bottom, bottom_field.rect),
+        "the bottom-realigned textarea lost its visible hardware cursor"
     );
 }
 
@@ -3463,13 +3533,8 @@ fn a_form_textarea_beyond_terminal_coordinates_renders_only_its_visible_tail() {
         "the textarea published a ghost hit outside its viewport: {field:?}"
     );
     assert!(
-        (field.rect.y..field.rect.bottom()).any(|row| {
-            (field.rect.x..field.rect.right()).any(|column| {
-                let cell = &buffer[(column, row)];
-                cell.fg == Color::Black && cell.bg == ACCENT
-            })
-        }),
-        "the visible tail lost its focused caret style"
+        caret_inside(&terminal, field.rect),
+        "the visible tail lost its focused hardware cursor"
     );
     assert_eq!(
         state.form().unwrap().fields[0].value,
@@ -3505,13 +3570,8 @@ fn a_fixed_height_run_textarea_can_show_a_tail_beyond_terminal_coordinates() {
         "the fixed-height editor published a ghost hit: {field:?}"
     );
     assert!(
-        (field.rect.y..field.rect.bottom()).any(|row| {
-            (field.rect.x..field.rect.right()).any(|column| {
-                let cell = &buffer[(column, row)];
-                cell.fg == Color::Black && cell.bg == ACCENT
-            })
-        }),
-        "the large fixed-height editor lost its focused caret style"
+        caret_inside(&terminal, field.rect),
+        "the large fixed-height editor lost its focused hardware cursor"
     );
 }
 

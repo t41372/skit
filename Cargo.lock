@@ -2487,19 +2487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratatui-textarea"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cf7263fbb7f37caa4bcfd00fc604ff1409f70456a833fbdff99282e88fdfe92"
-dependencies = [
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
 name = "ratatui-widgets"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,7 +3119,6 @@ dependencies = [
  "ratatui-core",
  "ratatui-crossterm",
  "ratatui-interact",
- "ratatui-textarea",
  "ratatui-widgets",
  "serde",
  "serde_json",
@@ -3145,7 +3131,6 @@ dependencies = [
  "skit-ui",
  "tempfile",
  "thiserror 2.0.21",
- "tui-input",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -3771,18 +3756,6 @@ checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
 dependencies = [
  "cc",
  "tree-sitter-language",
-]
-
-[[package]]
-name = "tui-input"
-version = "0.15.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4fa0cb7933d19f91eb3109781bf7297d5e4cba57e857d97a29b9465d3383f56"
-dependencies = [
- "ratatui",
- "serde",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]

@@ -24,7 +24,6 @@ use skit_ui::{
     ChoicePicker, PathOutputPolicy, PathPickerState, PathSelectionMode, PickerMode, PickerPurpose,
     PickerResult,
 };
-use tui_input::{Input as LineInput, InputRequest};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -34,6 +33,7 @@ use crate::{
         node as snapshot_node, path_value as snapshot_path, path_values as snapshot_paths,
         rect as snapshot_rect, scroll as snapshot_scroll, value as snapshot_value,
     },
+    editor::{EditCommand, TextEditor},
     footer::handle_footer_scroll,
     pointer::{ClickOutcome, ClickTracker, EditableGeometry},
     session::render_search_line_input,
@@ -132,7 +132,7 @@ pub enum PromptCandidatePickerEvent {
 #[derive(Clone, Debug)]
 pub struct PromptCandidatePickerSession {
     picker: ChoicePicker<String>,
-    query: LineInput,
+    query: TextEditor,
     list: ListPickerState,
     visible_height: usize,
     footer_scroll: ScrollableContentState,
@@ -204,7 +204,7 @@ impl PromptCandidatePickerSession {
                         "visible": visible,
                     }),
                 ),
-                ("query", snapshot_value("prompt_picker.query", query)?),
+                ("query", query.agent_review_snapshot()),
                 ("list", snapshot_list_picker(list)),
                 ("visible_height", serde_json::json!(visible_height)),
                 ("footer_scroll", snapshot_scroll(footer_scroll)),
@@ -236,7 +236,7 @@ impl PromptCandidatePickerSession {
         let total = picker.visible_items().len();
         Self {
             picker,
-            query: LineInput::default(),
+            query: TextEditor::default(),
             list: ListPickerState::new(total),
             visible_height: 1,
             footer_scroll: ScrollableContentState::default(),
@@ -275,9 +275,7 @@ impl PromptCandidatePickerSession {
             }
             Event::Paste(value) => {
                 self.click.cancel();
-                for character in value.chars() {
-                    self.query.handle(InputRequest::InsertChar(character));
-                }
+                let _ = self.query.paste(&value);
                 self.sync_choice_filter();
                 Some(PromptCandidatePickerEvent::Changed)
             }
@@ -322,7 +320,7 @@ impl PromptCandidatePickerSession {
                     && matches!(target, Some(ChoicePickerHit::Search))
                     && let Some(editable) = self.query_editable
                 {
-                    let _ = editable.place_cursor(&mut self.query, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.query, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Armed => Some(PromptCandidatePickerEvent::Changed),
@@ -376,12 +374,12 @@ impl PromptCandidatePickerSession {
             KeyCode::Char(' ') => self.toggle_current_choice(),
             KeyCode::Esc => Some(PromptCandidatePickerEvent::Cancelled),
             KeyCode::Backspace => {
-                self.query.handle(InputRequest::DeletePrevChar);
+                let _ = self.query.apply(EditCommand::DeleteBackward);
                 self.sync_choice_filter();
                 Some(PromptCandidatePickerEvent::Changed)
             }
             KeyCode::Char(character) => {
-                self.query.handle(InputRequest::InsertChar(character));
+                let _ = self.query.apply(EditCommand::Insert(character));
                 self.sync_choice_filter();
                 Some(PromptCandidatePickerEvent::Changed)
             }
@@ -691,7 +689,7 @@ pub enum FilePickerEvent {
 pub struct FilePickerSession {
     contract: PathPickerState,
     explorer: FileExplorerState,
-    query: LineInput,
+    query: TextEditor,
     current_directory_focused: bool,
     visible_height: usize,
     io_error: Option<String>,
@@ -991,7 +989,7 @@ impl FilePickerSession {
                         "filtered_indices": explorer.filtered_indices,
                     }),
                 ),
-                ("query", snapshot_value("file_picker.query", query)?),
+                ("query", query.agent_review_snapshot()),
                 (
                     "current_directory_focused",
                     serde_json::json!(current_directory_focused),
@@ -1050,7 +1048,7 @@ impl FilePickerSession {
         memory_source: Option<MemoryFilePickerSource>,
     ) -> Self {
         let has_real_entry = select_first_real_entry(&mut explorer);
-        let query = LineInput::new(contract.query().to_owned());
+        let query = TextEditor::single_line(contract.query());
         explorer.search_query = contract.query().trim().to_owned();
         if !explorer.search_query.is_empty() {
             apply_filter(&mut explorer);
@@ -1150,7 +1148,7 @@ impl FilePickerSession {
                     && matches!(target, Some(FilePickerHit::Search))
                     && let Some(editable) = self.query_editable
                 {
-                    let _ = editable.place_cursor(&mut self.query, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.query, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Armed => Some(FilePickerEvent::Changed),
@@ -1244,17 +1242,17 @@ impl FilePickerSession {
             }
             KeyCode::Esc if self.query.value().is_empty() => Some(FilePickerEvent::Cancelled),
             KeyCode::Esc => {
-                self.query.reset();
+                self.query.replace_text("");
                 self.sync_filter();
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Char(character) => {
-                self.query.handle(InputRequest::InsertChar(character));
+                let _ = self.query.apply(EditCommand::Insert(character));
                 self.sync_filter();
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Backspace => {
-                self.query.handle(InputRequest::DeletePrevChar);
+                let _ = self.query.apply(EditCommand::DeleteBackward);
                 self.sync_filter();
                 Some(FilePickerEvent::Changed)
             }
@@ -1346,7 +1344,7 @@ impl FilePickerSession {
 
     fn enter(&mut self, path: PathBuf) {
         self.explorer.current_dir = path;
-        self.query.reset();
+        self.query.replace_text("");
         self.contract.set_query("");
         self.reload_entries();
     }
@@ -1363,7 +1361,7 @@ impl FilePickerSession {
             return;
         }
         self.explorer.current_dir = parent;
-        self.query.reset();
+        self.query.replace_text("");
         self.contract.set_query("");
         self.reload_entries();
     }
@@ -3137,7 +3135,7 @@ mod tests {
     fn prompt_picker_search_click_places_the_caret_before_typing() {
         let picker = ChoicePicker::new(PickerMode::Multiple, Vec::new(), Vec::new());
         let mut session = PromptCandidatePickerSession::new(picker);
-        session.query = LineInput::new("abcdef".to_owned());
+        session.query = TextEditor::single_line("abcdef");
         let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
         let mut geometry = ChoicePickerGeometry::default();
         terminal

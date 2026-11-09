@@ -848,12 +848,13 @@ fn test_help_overlay_caps_to_a_tiny_screen_and_scrolls_by_key() {
         assert_eq!(geometry.first_visible, 0);
         assert!(geometry.rows.right() <= 40 && geometry.rows.bottom() <= 8);
         let help = skit_i18n::text(locale, "Help");
-        let quit = skit_i18n::text(locale, "Quit");
+        // The editing keys come after the commands, so Redo is the last row.
+        let last = skit_i18n::text(locale, "Redo");
         let before = visible_text(terminal.backend().buffer());
         let title_count = before.matches(help.as_ref()).count();
         assert!(
-            !before.contains(quit.as_ref()),
-            "fixture already shows Quit"
+            !before.contains(last.as_ref()),
+            "fixture already shows the last row"
         );
         assert_eq!(
             session.handle_event(key(KeyCode::End), &state, &geometry),
@@ -863,8 +864,8 @@ fn test_help_overlay_caps_to_a_tiny_screen_and_scrolls_by_key() {
         let after = visible_text(terminal.backend().buffer());
         assert!(geometry.first_visible > 0);
         assert!(
-            after.contains(quit.as_ref()),
-            "Help scrolling did not make Quit visible in {locale:?}:\n{after}"
+            after.contains(last.as_ref()),
+            "Help scrolling did not make the last row visible in {locale:?}:\n{after}"
         );
         assert_eq!(
             title_count, 1,

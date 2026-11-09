@@ -2399,6 +2399,40 @@ fn a_windows_console_outside_windows_terminal_gets_no_color_question() {
     );
 }
 
+/// A Windows console has no bracketed paste, so a terminal types a paste as keys: the line break
+/// of `Bob\rCarol` arrives as Enter. skit reads the keys that arrive together as one paste, so the
+/// launch menu must not run, and the box keeps the first line, as a bracketed paste does on Unix.
+/// The one write puts every key of the paste into the console at once, as a terminal does. Esc
+/// then cancels the launch menu with 130; a run would have ended the session with 0.
+#[cfg(windows)]
+#[test]
+fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+
+    let (code, output) = run_pty_configured(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"Bob\rCarol", b"\x1b"],
+        false,
+        |command| command.env_remove("WT_SESSION"),
+    );
+    let history = strip_terminal_control(&output);
+    assert_eq!(code, 130, "the paste ran the launch menu:\n{history}");
+    assert!(
+        history.contains("Bob"),
+        "the box lost the first line of the paste:\n{history}"
+    );
+    assert!(
+        !history.contains("Carol"),
+        "the box kept the second line of the paste:\n{history}"
+    );
+}
+
 /// The Settings parameter summary must use the source's live default without changing any stored
 /// data merely because the user inspected it.
 // Synchronizes through the LiveTui cursor-position handshake, which exists only on unix

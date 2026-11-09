@@ -257,6 +257,52 @@ pub enum RawKey {
     ControlR,
     /// Alt and X.
     AltX,
+    /// Shift and Left: select one character to the left.
+    ShiftLeft,
+    /// Shift and Right: select one character to the right.
+    ShiftRight,
+    /// Shift and Home: select to the start of the line.
+    ShiftHome,
+    /// Shift and End: select to the end of the line.
+    ShiftEnd,
+    /// Control and Left: go to the previous word.
+    ControlLeft,
+    /// Control and Right: go to the next word.
+    ControlRight,
+    /// Control, Shift, and Left: select to the previous word.
+    ControlShiftLeft,
+    /// Alt and B, sent as Escape and B: go to the previous word.
+    AltB,
+    /// Alt and F, sent as Escape and F: go to the next word.
+    AltF,
+    /// Control and A: go to the start of the line.
+    ControlA,
+    /// Control and E: go to the end of the line.
+    ControlE,
+    /// Control and W: delete the word before the cursor.
+    ControlW,
+    /// Alt and Backspace: delete the word before the cursor.
+    AltBackspace,
+    /// Alt and D: delete the word after the cursor.
+    AltD,
+    /// Control and Delete: delete the word after the cursor.
+    ControlDelete,
+    /// Control and U: delete to the start of the line.
+    ControlU,
+    /// Control and K: delete to the end of the line.
+    ControlK,
+    /// Control and D: delete the character after the cursor.
+    ControlD,
+    /// Control and H: delete the character before the cursor.
+    ControlH,
+    /// Control and X: cut the selected text.
+    ControlX,
+    /// Control and V: paste the internal clipboard.
+    ControlV,
+    /// Control and Z: undo.
+    ControlZ,
+    /// Control and Y: redo.
+    ControlY,
 }
 
 impl RawKey {
@@ -281,6 +327,29 @@ impl RawKey {
         Self::ControlN,
         Self::ControlR,
         Self::AltX,
+        Self::ShiftLeft,
+        Self::ShiftRight,
+        Self::ShiftHome,
+        Self::ShiftEnd,
+        Self::ControlLeft,
+        Self::ControlRight,
+        Self::ControlShiftLeft,
+        Self::AltB,
+        Self::AltF,
+        Self::ControlA,
+        Self::ControlE,
+        Self::ControlW,
+        Self::AltBackspace,
+        Self::AltD,
+        Self::ControlDelete,
+        Self::ControlU,
+        Self::ControlK,
+        Self::ControlD,
+        Self::ControlH,
+        Self::ControlX,
+        Self::ControlV,
+        Self::ControlZ,
+        Self::ControlY,
     ];
 
     fn chord(self) -> (KeyCode, KeyModifiers) {
@@ -304,6 +373,32 @@ impl RawKey {
             Self::ControlN => (KeyCode::Char('n'), KeyModifiers::CONTROL),
             Self::ControlR => (KeyCode::Char('r'), KeyModifiers::CONTROL),
             Self::AltX => (KeyCode::Char('x'), KeyModifiers::ALT),
+            Self::ShiftLeft => (KeyCode::Left, KeyModifiers::SHIFT),
+            Self::ShiftRight => (KeyCode::Right, KeyModifiers::SHIFT),
+            Self::ShiftHome => (KeyCode::Home, KeyModifiers::SHIFT),
+            Self::ShiftEnd => (KeyCode::End, KeyModifiers::SHIFT),
+            Self::ControlLeft => (KeyCode::Left, KeyModifiers::CONTROL),
+            Self::ControlRight => (KeyCode::Right, KeyModifiers::CONTROL),
+            Self::ControlShiftLeft => (
+                KeyCode::Left,
+                KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+            ),
+            Self::AltB => (KeyCode::Char('b'), KeyModifiers::ALT),
+            Self::AltF => (KeyCode::Char('f'), KeyModifiers::ALT),
+            Self::ControlA => (KeyCode::Char('a'), KeyModifiers::CONTROL),
+            Self::ControlE => (KeyCode::Char('e'), KeyModifiers::CONTROL),
+            Self::ControlW => (KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Self::AltBackspace => (KeyCode::Backspace, KeyModifiers::ALT),
+            Self::AltD => (KeyCode::Char('d'), KeyModifiers::ALT),
+            Self::ControlDelete => (KeyCode::Delete, KeyModifiers::CONTROL),
+            Self::ControlU => (KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Self::ControlK => (KeyCode::Char('k'), KeyModifiers::CONTROL),
+            Self::ControlD => (KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Self::ControlH => (KeyCode::Char('h'), KeyModifiers::CONTROL),
+            Self::ControlX => (KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Self::ControlV => (KeyCode::Char('v'), KeyModifiers::CONTROL),
+            Self::ControlZ => (KeyCode::Char('z'), KeyModifiers::CONTROL),
+            Self::ControlY => (KeyCode::Char('y'), KeyModifiers::CONTROL),
         }
     }
 

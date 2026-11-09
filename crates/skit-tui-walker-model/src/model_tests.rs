@@ -361,8 +361,25 @@ fn raw_key_inventory_excludes_the_session_clock_dependent_ctrl_c_chord() {
             observed.push((event.code, event.modifiers, event.kind));
         }
     }
-    assert_eq!(observed.len(), 57);
+    // 42 chords in three event kinds. The editing chords reach the text boxes, and Ctrl+C stays
+    // out because its quit arming reads the clock.
+    assert_eq!(observed.len(), 126);
     assert!(observed.contains(&(KeyCode::Char('x'), KeyModifiers::ALT, KeyEventKind::Release)));
+    for (code, modifiers) in [
+        (KeyCode::Left, KeyModifiers::SHIFT),
+        (
+            KeyCode::Left,
+            KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+        ),
+        (KeyCode::Char('b'), KeyModifiers::ALT),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL),
+        (KeyCode::Char('x'), KeyModifiers::CONTROL),
+        (KeyCode::Char('v'), KeyModifiers::CONTROL),
+        (KeyCode::Char('z'), KeyModifiers::CONTROL),
+        (KeyCode::Char('y'), KeyModifiers::CONTROL),
+    ] {
+        assert!(observed.contains(&(code, modifiers, KeyEventKind::Press)));
+    }
     assert!(observed.contains(&(KeyCode::F(2), KeyModifiers::NONE, KeyEventKind::Repeat)));
     assert!(observed.contains(&(KeyCode::BackTab, KeyModifiers::SHIFT, KeyEventKind::Press)));
 }

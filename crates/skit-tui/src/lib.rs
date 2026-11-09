@@ -4,6 +4,7 @@
 
 mod agent_review;
 mod appearance;
+mod editor;
 mod footer;
 mod layout;
 mod local_action;
@@ -13,6 +14,7 @@ mod screen_target;
 mod screens;
 mod session;
 mod status_clock;
+mod system_clipboard;
 mod terminal;
 mod theme;
 mod viewport;
@@ -29,7 +31,6 @@ use skit_ui::{
 #[doc(hidden)]
 pub use agent_review::{
     AGENT_REVIEW_SNAPSHOT_VERSION, AgentReviewSnapshot, AgentReviewSnapshotError,
-    RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION,
 };
 pub use appearance::{Appearance, Background, ColorDepth, ThemeName};
 use layout::{RootLayoutPlan, ViewportProfile};

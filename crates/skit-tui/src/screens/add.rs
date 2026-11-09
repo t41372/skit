@@ -39,7 +39,6 @@ use skit_ui::{
     DraftDeleteOutcome, DraftKind, DraftSummary, KnownEntryKind, PathOutputPolicy, PathPickerState,
     PathSelectionMode, PickerPurpose, ReviewLane, SourceSnapshot,
 };
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -51,10 +50,14 @@ use crate::{
         path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
         select as snapshot_select, value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor, edit_command},
     footer::handle_footer_scroll,
     layout::ViewportProfile,
     local_action::LocalKey,
-    pointer::{ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, PointerPosition},
+    pointer::{
+        ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, PointerPosition,
+        is_primary_drag,
+    },
     rowclip::RowClip,
     session::render_line_input_band,
     theme::{self, Panel, Status, panel_block},
@@ -225,7 +228,7 @@ struct AddSignature {
 pub struct AddScreenSession {
     signature: Option<AddSignature>,
     focus: FocusManager<AddControlId>,
-    inputs: BTreeMap<AddTextField, LineInput>,
+    inputs: BTreeMap<AddTextField, TextEditor>,
     checks: BTreeMap<AddControlId, CheckBoxState>,
     kind_picker: ListPickerState,
     draft_picker: ListPickerState,
@@ -332,7 +335,7 @@ impl AddScreenSession {
             .map(|(id, input)| {
                 Ok(serde_json::json!({
                     "id": snapshot_value("add.input.id", id)?,
-                    "state": snapshot_value("add.input.state", input)?,
+                    "state": input.agent_review_snapshot(),
                 }))
             })
             .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
@@ -680,6 +683,15 @@ impl AddScreenSession {
             {
                 return Some(AddScreenEvent::Changed);
             }
+            // A drag that started in a text box selects in that box and keeps the press armed.
+            if is_primary_drag(mouse)
+                && let Some(AddControlId::Text(field)) = self.click.pressed().cloned()
+                && let Some(editable) = self.editables.get(&field).copied()
+                && let Some(input) = self.inputs.get_mut(&field)
+            {
+                let _ = editable.pointer(input, mouse);
+                return Some(AddScreenEvent::Changed);
+            }
             let target = geometry
                 .hits
                 .iter()
@@ -691,7 +703,7 @@ impl AddScreenSession {
                 && let Some(editable) = self.editables.get(field).copied()
                 && let Some(input) = self.inputs.get_mut(field)
             {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                let _ = editable.pointer(input, mouse);
             }
             let ClickDispatch::Captured(outcome) = self.click.dispatch(mouse, target) else {
                 return None;
@@ -721,10 +733,12 @@ impl AddScreenSession {
                 return None;
             };
             let input = self.inputs.get_mut(&field)?;
-            for character in value.chars() {
-                let _ = input.handle(InputRequest::InsertChar(character));
-            }
-            return Some(AddScreenEvent::Action(text_action(field, input.value())));
+            return Some(match input.paste(&value) {
+                EditResponse::Changed => AddScreenEvent::Action(text_action(field, input.value())),
+                EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                    AddScreenEvent::Changed
+                }
+            });
         }
         let Event::Key(key) = event else {
             return None;
@@ -734,13 +748,10 @@ impl AddScreenSession {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             let text_focused = matches!(self.focus.current(), Some(AddControlId::Text(_)));
-            // Editing keys belong to the focused mature Input. Ctrl+E moves to the end in a
-            // review field. Ctrl+D deletes the next character in a source field.
-            let input_owns_key = text_focused
-                && matches!(
-                    (key.code, state.stage()),
-                    (KeyCode::Char('e'), AddStage::Review) | (KeyCode::Char('d'), AddStage::Source)
-                );
+            // Editing keys belong to the focused text box: Ctrl+E goes to the end of a review
+            // box, and Ctrl+D deletes the next character of a source box. The screen chords that
+            // are not editing keys (Ctrl+N, Ctrl+P, Ctrl+O, Ctrl+S) keep working.
+            let input_owns_key = text_focused && edit_command(&key, false).is_some();
             if !input_owns_key {
                 if let Some(target) = self.advertised_target(&key) {
                     return self.activate(target, state);
@@ -815,15 +826,18 @@ impl AddScreenSession {
                     return Some(AddScreenEvent::Action(AddAction::Continue));
                 }
                 let input = self.inputs.get_mut(&field)?;
-                if let (true, (KeyCode::Char('d'), AddStage::Source)) = (
-                    key.modifiers.contains(KeyModifiers::CONTROL),
-                    (key.code, state.stage()),
-                ) {
-                    let _ = input.handle(InputRequest::DeleteNextChar);
-                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
-                }
-                if input.handle_event(&Event::Key(key)).is_some() {
-                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
+                let event = match input.handle_key(&key) {
+                    EditResponse::Changed => {
+                        Some(AddScreenEvent::Action(text_action(field, input.value())))
+                    }
+                    EditResponse::Consumed => Some(AddScreenEvent::Changed),
+                    EditResponse::Ignored | EditResponse::Boundary => None,
+                };
+                if event.is_some() {
+                    // An edit brings its box back into view, so no key types into a box that
+                    // the wheel scrolled away.
+                    self.ensure_focus_visible();
+                    return event;
                 }
             }
             if id == AddControlId::Storage {
@@ -1026,7 +1040,7 @@ impl AddScreenSession {
     }
 
     fn insert_input(&mut self, field: AddTextField, value: &str) {
-        self.inputs.insert(field, LineInput::new(value.to_owned()));
+        self.inputs.insert(field, TextEditor::single_line(value));
         self.focus.register(AddControlId::Text(field));
     }
 
@@ -1035,7 +1049,23 @@ impl AddScreenSession {
             return;
         };
         if input.value() != value {
-            *input = LineInput::new(value.to_owned());
+            input.replace_text(value);
+        }
+    }
+
+    /// Report whether the cell shows the text of one box of this screen.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        self.editables
+            .values()
+            .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The text box that has the keyboard, when the focus is on one.
+    pub(crate) fn focused_editor(&self) -> Option<&TextEditor> {
+        if let Some(AddControlId::Text(field)) = self.focus.current() {
+            self.inputs.get(field)
+        } else {
+            None
         }
     }
 
@@ -1351,7 +1381,7 @@ mod agent_review_tests {
         };
         session
             .inputs
-            .insert(AddTextField::ReviewName, LineInput::new("name".to_owned()));
+            .insert(AddTextField::ReviewName, TextEditor::single_line("name"));
         session
             .checks
             .insert(AddControlId::Interpolate, CheckBoxState::new(true));

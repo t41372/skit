@@ -39,7 +39,6 @@ use skit_ui::{
     PreferencesControlKind, PreferencesDisplayText, PreferencesRunnerListControl,
     PreferencesTextPlacement, PreferencesView,
 };
-use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -53,8 +52,9 @@ use crate::{
         path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
         select as snapshot_select, value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor},
     footer::ActionFooterStyle,
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down, is_primary_drag},
     rowclip::RowClip,
     session::{radio_option_width, render_line_input_band, render_radio_option},
     theme::{self, Panel, Status, padded_panel},
@@ -97,7 +97,7 @@ mod agent_review_tests {
         );
         first.widgets.insert(
             PreferencesControlId::Editor,
-            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+            PreferencesWidget::Input(TextEditor::single_line("editor")),
         );
         first.editables.insert(
             PreferencesControlId::Language,
@@ -111,7 +111,7 @@ mod agent_review_tests {
         let mut second = PreferencesWidgetSession::default();
         second.widgets.insert(
             PreferencesControlId::Editor,
-            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+            PreferencesWidget::Input(TextEditor::single_line("editor")),
         );
         second.widgets.insert(
             PreferencesControlId::Language,
@@ -292,7 +292,7 @@ enum PreferencesControlShape {
 
 #[derive(Clone, Debug)]
 enum PreferencesWidget {
-    Input(LineInput),
+    Input(TextEditor),
     RunnerList(PreferencesRunnerListControl),
     Choice {
         state: SelectState,
@@ -610,7 +610,7 @@ impl PreferencesWidgetSession {
                 let state = match widget {
                     PreferencesWidget::Input(input) => serde_json::json!({
                         "kind": "input",
-                        "state": snapshot_value("preferences.widget.input", input)?,
+                        "state": input.agent_review_snapshot(),
                     }),
                     PreferencesWidget::Choice {
                         state,
@@ -996,6 +996,16 @@ impl PreferencesWidgetSession {
             {
                 return PreferencesEventHandling::Consumed;
             }
+            // A drag that started in a text box selects in that box and keeps the press armed.
+            if is_primary_drag(mouse)
+                && let Some(PreferencesHit::Control(id)) = self.click.pressed().cloned()
+                && let Some(editable) = self.editables.get(&id).copied()
+                && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(&id)
+            {
+                let _ = editable.pointer(input, mouse);
+                self.pending_ensure_focus = true;
+                return PreferencesEventHandling::Consumed;
+            }
             let dropdown = self.widgets.iter().find_map(|(id, widget)| {
                 let PreferencesWidget::Choice {
                     state,
@@ -1032,7 +1042,7 @@ impl PreferencesWidgetSession {
                 && let Some(editable) = self.editables.get(id).copied()
                 && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(id)
             {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                let _ = editable.pointer(input, mouse);
             }
             return match self.click.update(mouse, target.as_ref()) {
                 ClickOutcome::Armed => PreferencesEventHandling::Consumed,
@@ -1066,13 +1076,17 @@ impl PreferencesWidgetSession {
         }
 
         if let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) {
-            let before = state.value().to_owned();
-            if state.handle_event(&Event::Key(key)).is_some() {
-                return if before == state.value() {
-                    PreferencesEventHandling::Consumed
-                } else {
-                    input_action(focused, state.value().to_owned())
-                };
+            match state.handle_key(&key) {
+                EditResponse::Changed => {
+                    let value = state.value().to_owned();
+                    self.pending_ensure_focus = true;
+                    return input_action(focused, value);
+                }
+                EditResponse::Consumed => {
+                    self.pending_ensure_focus = true;
+                    return PreferencesEventHandling::Consumed;
+                }
+                EditResponse::Ignored | EditResponse::Boundary => {}
             }
         }
 
@@ -1648,10 +1662,33 @@ impl PreferencesWidgetSession {
         let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) else {
             return PreferencesEventHandling::Ignored;
         };
-        for character in value.chars() {
-            let _ = state.handle(tui_input::InputRequest::InsertChar(character));
+        match state.paste(value) {
+            EditResponse::Changed => {
+                let value = state.value().to_owned();
+                self.pending_ensure_focus = true;
+                input_action(focused, value)
+            }
+            EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                PreferencesEventHandling::Consumed
+            }
         }
-        input_action(focused, state.value().to_owned())
+    }
+
+    /// Report whether the cell shows the text of one box of this screen.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        self.editables
+            .values()
+            .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The text box that has the keyboard, when the focused control is one.
+    pub(crate) fn focused_editor(&self, view: &PreferencesView) -> Option<&TextEditor> {
+        match self.widgets.get(&view.focused())? {
+            PreferencesWidget::Input(input) => Some(input),
+            PreferencesWidget::Choice { .. }
+            | PreferencesWidget::Button(_)
+            | PreferencesWidget::RunnerList(_) => None,
+        }
     }
 
     fn activate_hit(
@@ -2777,7 +2814,7 @@ fn control_shape(control: &PreferencesControl) -> PreferencesControlShape {
 fn widget(control: &PreferencesControl, locale: Locale) -> PreferencesWidget {
     match &control.kind {
         PreferencesControlKind::Text(model) => {
-            PreferencesWidget::Input(LineInput::new(model.value.clone()))
+            PreferencesWidget::Input(TextEditor::single_line(&model.value))
         }
         PreferencesControlKind::Choice(choice) => {
             let selected = choice
@@ -2820,7 +2857,7 @@ fn sync_widget(widget: &mut PreferencesWidget, control: &PreferencesControl, loc
         (PreferencesWidget::Input(state), PreferencesControlKind::Text(model))
             if state.value() != model.value =>
         {
-            *state = LineInput::new(model.value.clone());
+            state.replace_text(&model.value);
         }
         (
             PreferencesWidget::Choice {

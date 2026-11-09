@@ -642,8 +642,10 @@ fn c2_memory_picker(root: &Path, draft: Option<&Path>) -> Value {
             "query": {
                 "value": format!("{}-widget", root.display()),
                 "cursor": root.display().to_string().chars().count() + 7,
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
             "current_directory_focused": false,
             "visible_height": 1,
@@ -673,7 +675,7 @@ fn c2_session(root: &Path, draft: Option<&Path>, inputs: Vec<Value>) -> Value {
         "source"
     };
     json!({
-        "schema_version": 1,
+        "schema_version": skit_tui::AGENT_REVIEW_SNAPSHOT_VERSION,
         "preferences": {
             "kind": "preferences",
             "fields": {
@@ -744,6 +746,10 @@ fn c2_session(root: &Path, draft: Option<&Path>, inputs: Vec<Value>) -> Value {
             "fields": {"session": picker.clone(), "geometry": null},
         },
         "file_picker_source": picker["fields"]["memory_source"].clone(),
+        "clipboard": {
+            "kind": "clipboard",
+            "fields": {"state": {"text": "", "pending_export": null}},
+        },
     })
 }
 

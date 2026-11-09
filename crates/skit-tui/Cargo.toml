@@ -13,8 +13,6 @@ ratatui-interact.workspace = true
 ratatui-core.workspace = true
 ratatui-widgets.workspace = true
 ratatui-crossterm = { workspace = true, features = ["serde"] }
-ratatui-textarea.workspace = true
-tui-input = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

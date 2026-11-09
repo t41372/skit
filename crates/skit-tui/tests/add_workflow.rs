@@ -774,15 +774,14 @@ fn add_source_ctrl_d_is_distinct_from_bare_d_and_other_control_keys() {
 
     let mut session = AddScreenSession::default();
     let (_, geometry) = draw_add(&mut session, &state);
+    // A caret move changes no value, so it sends no action.
     assert_eq!(
         session.handle_event(
             Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             &state,
             &geometry,
         ),
-        Some(AddScreenEvent::Action(AddAction::SetSourcePath(
-            "abc".to_owned()
-        )))
+        Some(AddScreenEvent::Changed)
     );
     assert_eq!(
         session.handle_event(

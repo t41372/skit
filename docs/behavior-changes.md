@@ -403,3 +403,65 @@ scroll to show its argument tail, which the version 0.4 demo frame shows without
 recorded demo terminal, Entry settings shows its parameter section and one row past it, and version
 0.4 shows the same rows and two more. In return, the box sets the keys apart from the body as one
 group.
+
+## Every text box edits the same way
+
+Version 0.4 uses the Textual `Input` in every box, and its Description box has one line. Version 0.5
+has one editor for every single-line box and for the multi-line Description and Help boxes. The
+keys, the selection, the clipboard, the undo history, and the paste rules are the same in each box.
+Help lists the keys in an "Editing text" section.
+
+These parts are new in version 0.5:
+
+- `Ctrl+Z` undoes and `Ctrl+Y` redoes in every box. One undo takes back one typed word, one paste,
+  or one delete command. Version 0.4 has no undo in a box.
+- `Alt+D`, `Ctrl+Delete`, and `Alt+Delete` delete the word after the cursor. `Alt+←` and `Alt+→`
+  move by word, as `Ctrl+←`, `Ctrl+→`, `Alt+B`, and `Alt+F` do. In the Add screen of version 0.4,
+  `Alt+←` closes the screen.
+- A double click selects the word under the pointer.
+- `Ctrl+C` copies a selection to the session clipboard and asks the terminal to put it on the
+  system clipboard (OSC 52). Without a selection, `Ctrl+C` keeps the two-press quit. `Ctrl+X` cuts
+  the selection, and `Ctrl+V` pastes the session clipboard. A paste from the terminal itself
+  arrives as a bracketed paste.
+- In a local session, a copy also goes to the clipboard program of the platform: `pbcopy` on
+  macOS, and `wl-copy`, `xclip`, or `xsel` on Linux. Terminal.app ignores OSC 52, and iTerm2 and
+  tmux block it by default, so a local copy still reaches the system clipboard there. An SSH
+  session uses OSC 52 only, because the clipboard of the remote machine is not the clipboard of the
+  person. Windows Terminal takes OSC 52, so Windows uses no program. The program runs in the
+  background, and a missing program is not an error. A copy shows no receipt: skit cannot know
+  whether the terminal or the program put the text on the system clipboard, and the selection
+  stays on the screen.
+- A multi-line box keeps every line of a paste, with each CRLF or CR changed to LF. A single-line box
+  keeps the first line, as version 0.4 does, and a Tab in that line stays in the value.
+- A word follows the Unicode word boundaries (UAX #29), so a slash separates two words and
+  `two.py` is one word.
+
+skit turns on bracketed paste with the other screen modes and turns it off while a run has the
+terminal. crossterm on Windows reads console input records and reports no paste event, and the
+legacy Windows console refuses the mode. skit does not ask for the mode on Windows, so there a
+terminal types a paste as keys. skit reads the keys that arrive together, each one 5 ms or less
+after the key before it, as one burst. A burst that holds a typed character and also a line break
+or a Tab is a paste. It goes to the focused box with the paste rules of that box, so it never runs
+the launch menu and never moves the focus. A key that a person presses alone stays a key, and
+Enter runs the launch menu at once.
+
+These limits remain on Windows:
+
+- A paste of only line breaks or Tabs stays as keys, because a held Enter or Tab makes the same
+  burst. A pasted line break with no other text acts as Enter.
+- A paste with no line break and no Tab stays as typed keys. In a box, the text is the same as
+  after a paste. In the Library, each character acts as its key.
+- A long paste that the terminal sends in parts, with a pause of more than 5 ms between two
+  parts, is more than one burst. A line break at the end of a part can act as Enter.
+- When skit is busy and a person types a character and then Enter before skit reads them, the
+  two keys arrive together, and skit takes them as a paste: the launch menu does not run. Press
+  Enter again.
+
+`a_windows_paste_with_a_line_break_never_runs_the_launch_menu` in `terminal_pty.rs` pins the paste
+on the Windows pseudo-console, and the `terminal.rs` unit tests pin each burst rule on every
+platform.
+
+`tui_text_editing.rs` drives each key group in a real terminal for a launch-menu box, the Add path
+box, the search box, an Entry settings box, and the multi-line Description box.
+`text_editing_surfaces.rs` gives the same keys to the Rename dialog, the Preferences editor box, the
+agent editor, the preset-name dialog, and the environment dialog.

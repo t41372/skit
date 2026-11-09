@@ -1350,8 +1350,9 @@ fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("q / Esc / Ctrl+C Ctrl+C"), "{text}");
-    assert!(text.contains("Quit"), "{text}");
+    // The editing keys come after the commands, so the last row is Redo.
+    assert!(text.contains("Ctrl+Y"), "{text}");
+    assert!(text.contains("Redo"), "{text}");
     assert_ne!(before, at_bottom);
 
     assert_eq!(

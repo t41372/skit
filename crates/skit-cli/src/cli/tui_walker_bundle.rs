@@ -6657,8 +6657,9 @@ fn c3_facts_never_change_stored_files_or_bundle_digest_inputs() {
 /// The cut derived review name reaches the recorded corpus as its typed sentinel.
 ///
 /// The operations author one prompt draft and cut its derived review name with `Control+U`.
-/// The name stays in the serialized input cut buffer after the paste replaces the value, so
-/// the mirror must own that buffer. A raw allocator stem there refuses the whole bundle.
+/// The name stays in the undo history of the input after the paste replaces the value, because
+/// undo can bring it back, so the mirror must own that history entry. A raw allocator stem there
+/// refuses the whole bundle.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
@@ -6678,20 +6679,27 @@ fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
                 continue;
             }
             let value: Value = serde_json::from_slice(bytes).unwrap();
-            let Some(yank) = value.pointer("/value/add/fields/inputs/0/state/yank") else {
+            let Some(state) = value.pointer("/value/add/fields/inputs/0/state") else {
                 continue;
             };
-            let yank = yank.as_str().unwrap();
-            assert!(
-                !yank.contains("skit-new-"),
-                "{profile} {digest} holds a raw allocator cut buffer {yank}"
-            );
-            if yank.starts_with("<draft:") {
-                projected += 1;
+            for list in ["undo", "redo"] {
+                for entry in state[list].as_array().into_iter().flatten() {
+                    let text = entry["value"].as_str().unwrap();
+                    assert!(
+                        !text.contains("skit-new-"),
+                        "{profile} {digest} holds a raw allocator name in its history: {text}"
+                    );
+                    if text.starts_with("<draft:") {
+                        projected += 1;
+                    }
+                }
             }
         }
     }
-    assert!(projected > 0, "no profile recorded a projected cut buffer");
+    assert!(
+        projected > 0,
+        "no profile recorded a projected history entry"
+    );
 }
 
 /// A moved cursor in the derived review name reaches the recorded corpus through the projection.
@@ -6819,8 +6827,8 @@ fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_picked_source_path() 
 /// the host answers with the status that names the missing program. The second run also has
 /// extra arguments with an open quote, and the host fails that effect. The product keeps the
 /// session and shows each localized error, so the walker host must do the same. The first error
-/// holds a line feed, a carriage return, and a C0 control character, because the user pasted
-/// them. No recorded frame cell may hold a control character: a terminal would act on it.
+/// holds a C0 control character, because the user pasted it. No recorded frame cell may hold a
+/// control character: a terminal would act on it.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
@@ -6883,7 +6891,7 @@ fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
         assert!(errors.contains(&missing), "{profile} {errors:?}");
         assert!(errors.contains(quoting.as_ref()), "{profile} {errors:?}");
         // Wide characters leave blank continuation cells, so only the English row reads back
-        // as one string. The terminal drops the control characters from the program name.
+        // as one string. The terminal drops the control character from the program name.
         if locale == skit_i18n::Locale::En {
             assert!(shown, "{profile} never paints the status line");
         }

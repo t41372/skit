@@ -22,7 +22,6 @@ use skit_ui::{
     HealthAction, HealthIssue, HealthIssueKind, HealthView, MirrorHealth, RunnerEditorAction,
     RunnerEditorError, RunnerEditorField, RunnerEditorMode, RunnerEditorView, UvHealth,
 };
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
     agent_review::{
@@ -30,12 +29,13 @@ use crate::{
         node as snapshot_node, rect as snapshot_rect, scroll as snapshot_scroll,
         value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor},
     footer::{
         ActionFooterItem, ActionFooterMouse, ActionFooterSession, ActionFooterStyle,
         action_footer_required_height,
     },
     local_action::LocalKey,
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry},
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_drag},
     session::render_line_input,
     theme::{self, Panel, Status, padded_panel},
 };
@@ -467,8 +467,8 @@ enum RunnerEditorHit {
 /// Reusable mature input session for new, edit, and raw-repair runner flows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunnerEditorSession {
-    name: LineInput,
-    command: LineInput,
+    name: TextEditor,
+    command: TextEditor,
     signature: Option<(String, String, bool)>,
     clicks: ClickRegionRegistry<RunnerEditorHit>,
     click: ClickTracker<RunnerEditorHit>,
@@ -505,8 +505,8 @@ impl RunnerEditorSession {
         Ok(snapshot_node(
             "runner_editor",
             [
-                ("name", snapshot_value("runner_editor.name", name)?),
-                ("command", snapshot_value("runner_editor.command", command)?),
+                ("name", name.agent_review_snapshot()),
+                ("command", command.agent_review_snapshot()),
                 ("signature", serde_json::json!(signature)),
                 ("clicks", runner_editor_clicks_snapshot(clicks)?),
                 (
@@ -642,6 +642,17 @@ impl RunnerEditorSession {
         view: &RunnerEditorView,
     ) -> RunnerEditorEventHandling {
         self.sync(view);
+        // A drag that started in a box selects in that box and keeps the press armed.
+        if let Event::Mouse(mouse) = &event
+            && is_primary_drag(mouse)
+            && let Some(RunnerEditorHit::Field(field)) = self.click.pressed().cloned()
+        {
+            let (editor, editable) = self.field_editor(field);
+            if let Some(editable) = editable {
+                let _ = editable.pointer(editor, mouse);
+                return RunnerEditorEventHandling::Consumed;
+            }
+        }
         if cancels_pointer_press(&event) {
             self.cancel_click();
         }
@@ -667,43 +678,29 @@ impl RunnerEditorSession {
                     }
                     _ => {}
                 }
-                let input = match view.focused() {
-                    RunnerEditorField::Name => &mut self.name,
-                    RunnerEditorField::Command => &mut self.command,
-                };
-                let before = input.value().to_owned();
-                if input.handle_event(&Event::Key(key)).is_none() {
-                    return RunnerEditorEventHandling::Ignored;
-                }
-                if before == input.value() {
-                    RunnerEditorEventHandling::Consumed
-                } else {
-                    RunnerEditorEventHandling::Action(match view.focused() {
-                        RunnerEditorField::Name => {
-                            RunnerEditorAction::SetName(input.value().to_owned())
-                        }
-                        RunnerEditorField::Command => {
-                            RunnerEditorAction::SetCommand(input.value().to_owned())
-                        }
-                    })
+                let field = view.focused();
+                let (input, _) = self.field_editor(field);
+                match input.handle_key(&key) {
+                    EditResponse::Changed => {
+                        RunnerEditorEventHandling::Action(field_action(field, input.value()))
+                    }
+                    EditResponse::Consumed => RunnerEditorEventHandling::Consumed,
+                    EditResponse::Ignored | EditResponse::Boundary => {
+                        RunnerEditorEventHandling::Ignored
+                    }
                 }
             }
             Event::Paste(value) => {
-                let input = match view.focused() {
-                    RunnerEditorField::Name => &mut self.name,
-                    RunnerEditorField::Command => &mut self.command,
-                };
-                for character in value.chars() {
-                    let _ = input.handle(InputRequest::InsertChar(character));
+                let field = view.focused();
+                let (input, _) = self.field_editor(field);
+                match input.paste(&value) {
+                    EditResponse::Changed => {
+                        RunnerEditorEventHandling::Action(field_action(field, input.value()))
+                    }
+                    EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                        RunnerEditorEventHandling::Consumed
+                    }
                 }
-                RunnerEditorEventHandling::Action(match view.focused() {
-                    RunnerEditorField::Name => {
-                        RunnerEditorAction::SetName(input.value().to_owned())
-                    }
-                    RunnerEditorField::Command => {
-                        RunnerEditorAction::SetCommand(input.value().to_owned())
-                    }
-                })
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::Down(_) | MouseEventKind::Up(_) => {
@@ -722,16 +719,14 @@ impl RunnerEditorSession {
                     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
                         && let Some(RunnerEditorHit::Field(field)) = target
                     {
-                        let editable = match field {
-                            RunnerEditorField::Name => self.name_editable,
-                            RunnerEditorField::Command => self.command_editable,
-                        };
-                        let input = match field {
-                            RunnerEditorField::Name => &mut self.name,
-                            RunnerEditorField::Command => &mut self.command,
+                        let (input, editable) = match field {
+                            RunnerEditorField::Name => (&mut self.name, self.name_editable),
+                            RunnerEditorField::Command => {
+                                (&mut self.command, self.command_editable)
+                            }
                         };
                         if let Some(editable) = editable {
-                            let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                            let _ = editable.pointer(input, &mouse);
                         }
                     }
                     match self.click.update(&mouse, target) {
@@ -764,6 +759,8 @@ impl RunnerEditorSession {
         }
     }
 
+    /// Take the values of the view. A box keeps its caret and its history while it holds the
+    /// value already, so the caret does not jump to the end after each typed character.
     fn sync(&mut self, view: &RunnerEditorView) {
         let signature = (
             view.name().to_owned(),
@@ -771,10 +768,57 @@ impl RunnerEditorSession {
             view.name_is_locked(),
         );
         if self.signature.as_ref() != Some(&signature) {
-            self.name = LineInput::new(view.name().to_owned());
-            self.command = LineInput::new(view.command().to_owned());
+            if self.name.value() != view.name() {
+                self.name.replace_text(view.name());
+            }
+            if self.command.value() != view.command() {
+                self.command.replace_text(view.command());
+            }
             self.signature = Some(signature);
         }
+    }
+
+    /// Forget both boxes, so the next dialog starts with no caret, selection, or history of
+    /// this one.
+    pub(crate) fn reset_editors(&mut self) {
+        if self.signature.is_some() {
+            self.name = TextEditor::default();
+            self.command = TextEditor::default();
+            self.signature = None;
+        }
+    }
+
+    /// Report whether the cell shows the text of one box of the dialog.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        [self.name_editable, self.command_editable]
+            .into_iter()
+            .flatten()
+            .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The box that has the keyboard.
+    pub(crate) fn focused_editor(&self, view: &RunnerEditorView) -> &TextEditor {
+        match view.focused() {
+            RunnerEditorField::Name => &self.name,
+            RunnerEditorField::Command => &self.command,
+        }
+    }
+
+    fn field_editor(
+        &mut self,
+        field: RunnerEditorField,
+    ) -> (&mut TextEditor, Option<EditableGeometry>) {
+        match field {
+            RunnerEditorField::Name => (&mut self.name, self.name_editable),
+            RunnerEditorField::Command => (&mut self.command, self.command_editable),
+        }
+    }
+}
+
+fn field_action(field: RunnerEditorField, value: &str) -> RunnerEditorAction {
+    match field {
+        RunnerEditorField::Name => RunnerEditorAction::SetName(value.to_owned()),
+        RunnerEditorField::Command => RunnerEditorAction::SetCommand(value.to_owned()),
     }
 }
 
@@ -871,8 +915,8 @@ mod agent_review_tests {
         );
 
         let mut editor = RunnerEditorSession {
-            name: LineInput::new("name".to_owned()),
-            command: LineInput::new("command".to_owned()),
+            name: TextEditor::single_line("name"),
+            command: TextEditor::single_line("command"),
             signature: Some(("name".to_owned(), "command".to_owned(), true)),
             clicks: editor_clicks,
             name_editable: Some(EditableGeometry::new(Rect::new(1, 1, 4, 1), 2, false)),

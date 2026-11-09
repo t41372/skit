@@ -11,8 +11,8 @@ fn c2_session_schema_node_and_nested_picker_corruption_refusals() {
     for mut invalid in [
         Value::Null,
         json!({}),
-        json!({"schema_version": 2}),
-        json!({"schema_version": "1"}),
+        json!({"schema_version": 1}),
+        json!({"schema_version": "2"}),
     ] {
         assert!(host.path_map.project_session_value(&mut invalid).is_err());
     }
@@ -23,6 +23,7 @@ fn c2_session_schema_node_and_nested_picker_corruption_refusals() {
         "run_modal",
         "add_overlay",
         "file_picker_source",
+        "clipboard",
     ] {
         let mut invalid = valid.clone();
         invalid.as_object_mut().unwrap().remove(owner);
@@ -556,8 +557,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -595,8 +598,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -636,8 +641,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": 3,
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -660,7 +667,7 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
     );
     assert_eq!(
         moved_session["add"]["fields"]["inputs"][0]["state"],
-        json!({"value": "<draft:0>", "cursor": 1, "yank": "", "last_was_cut": false})
+        json!({"value": "<draft:0>", "cursor": 1, "anchor": null, "undo": [], "redo": [], "group": null})
     );
 
     // A typed character changes the name, so the name is user text from then on and keeps its
@@ -677,8 +684,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": edited,
                 "cursor": edited.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -765,8 +774,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );

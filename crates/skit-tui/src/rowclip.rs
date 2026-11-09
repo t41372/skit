@@ -7,10 +7,10 @@ use ratatui_core::{
     text::{Line, Span, Text},
     widgets::Widget,
 };
-use ratatui_textarea::TextArea as RichTextArea;
 use ratatui_widgets::{block::Block, borders::Borders, paragraph::Paragraph};
 use unicode_segmentation::UnicodeSegmentation as _;
-use unicode_width::UnicodeWidthStr as _;
+
+use crate::editor::{TextEditor, grapheme_cells};
 
 /// Return the virtual screen row occupied by one editor cursor.
 pub(crate) const fn editor_cursor_virtual_row(control_start: usize, cursor_row: usize) -> usize {
@@ -188,30 +188,43 @@ impl RowClip {
     }
 }
 
+/// The looks of one multi-line box.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TextAreaStyles {
+    /// The text.
+    pub(crate) base: Style,
+    /// The cell under the caret.
+    pub(crate) caret: Style,
+    /// The selected text. A box without the focus shows no selection.
+    pub(crate) selection: Option<Style>,
+}
+
 /// Build only the terminal-width fragments of visible textarea rows.
 ///
-/// The textarea keeps the complete value and edit history. This adapter reads at most the requested
-/// logical rows and allocates at most `width` display cells for each result row. It also keeps the
-/// native cursor and selection precedence.
+/// The editor keeps the complete value and edit history. This adapter reads at most the requested
+/// logical rows and allocates at most `width` display cells for each result row. The caret cell
+/// wins over the selection.
 pub(crate) fn bounded_textarea_lines(
-    state: &RichTextArea<'_>,
+    state: &TextEditor,
     first_row: usize,
     row_count: usize,
     left_cell: usize,
     width: usize,
-    selection_style: Style,
+    styles: TextAreaStyles,
 ) -> Vec<Line<'static>> {
     let cursor = state.cursor();
     let context = TextAreaLineContext {
-        cursor: (cursor.0, cursor.1),
-        selection: state.selection_range(),
+        cursor: (cursor.line, cursor.column),
+        selection: styles.selection.and_then(|_| {
+            state
+                .selection()
+                .map(|(start, end)| ((start.line, start.column), (end.line, end.column)))
+        }),
         left_cell,
         right_cell: left_cell.saturating_add(width),
-        tab_length: usize::from(state.tab_length()),
-        base_style: state.style(),
-        cursor_line_style: state.cursor_line_style(),
-        cursor_style: state.cursor_style(),
-        selection_style,
+        base_style: styles.base,
+        cursor_style: styles.caret,
+        selection_style: styles.selection.unwrap_or(styles.base),
     };
     state
         .lines()
@@ -228,19 +241,13 @@ struct TextAreaLineContext {
     selection: Option<((usize, usize), (usize, usize))>,
     left_cell: usize,
     right_cell: usize,
-    tab_length: usize,
     base_style: Style,
-    cursor_line_style: Style,
     cursor_style: Style,
     selection_style: Style,
 }
 
 fn visible_textarea_line(line: &str, row: usize, context: &TextAreaLineContext) -> Line<'static> {
-    let base_style = if row == context.cursor.0 {
-        context.base_style.patch(context.cursor_line_style)
-    } else {
-        context.base_style
-    };
+    let base_style = context.base_style;
     let mut display_column = 0_usize;
     let mut spans = Vec::new();
     let mut graphemes = line.graphemes(true).peekable();
@@ -251,11 +258,7 @@ fn visible_textarea_line(line: &str, row: usize, context: &TextAreaLineContext) 
         let grapheme_start = logical_column;
         logical_column = logical_column.saturating_add(grapheme.chars().count());
         line_length = logical_column;
-        let grapheme_width = if grapheme == "\t" && context.tab_length > 0 {
-            context.tab_length - (display_column % context.tab_length)
-        } else {
-            grapheme.width()
-        };
+        let grapheme_width = grapheme_cells(grapheme, display_column);
         let grapheme_end = display_column.saturating_add(grapheme_width);
         if grapheme_end > context.left_cell && display_column < context.right_cell {
             let visible_start = display_column.max(context.left_cell);
@@ -264,7 +267,13 @@ fn visible_textarea_line(line: &str, row: usize, context: &TextAreaLineContext) 
                 textarea_grapheme_style(row, grapheme_start, logical_column, context, base_style);
             let fully_visible = visible_start == display_column && visible_end == grapheme_end;
             if fully_visible && grapheme != "\t" {
-                push_textarea_span(&mut spans, grapheme.to_owned(), style);
+                // A terminal draws no control character. It takes one cell, as its width says.
+                let shown = if grapheme.contains(char::is_control) {
+                    "\u{FFFD}"
+                } else {
+                    grapheme
+                };
+                push_textarea_span(&mut spans, shown.to_owned(), style);
             } else if visible_start < visible_end {
                 push_textarea_span(&mut spans, " ".repeat(visible_end - visible_start), style);
             }
@@ -333,7 +342,6 @@ fn push_textarea_span(spans: &mut Vec<Span<'static>>, text: String, style: Style
 mod tests {
     use super::*;
     use ratatui_core::style::{Color, Modifier};
-    use ratatui_textarea::CursorMove;
 
     fn row_text(buffer: &Buffer, row: u16) -> String {
         (0..buffer.area.width)
@@ -375,17 +383,60 @@ mod tests {
         );
     }
 
+    fn styles(focused: bool) -> TextAreaStyles {
+        TextAreaStyles {
+            base: Style::default(),
+            caret: Style::default().bg(Color::Red),
+            selection: focused.then(|| Style::default().bg(Color::Blue)),
+        }
+    }
+
     #[test]
     fn one_visible_grapheme_does_not_allocate_one_span_per_codepoint() {
         let value = format!("a{}", "\u{301}".repeat(10_000));
-        let mut state = RichTextArea::new(vec![value]);
-        state.move_cursor(CursorMove::Head);
+        let mut state = TextEditor::multi_line(&value);
+        let _ = state.apply(crate::editor::EditCommand::Move {
+            motion: crate::editor::Motion::LineStart,
+            select: false,
+        });
 
-        let lines = bounded_textarea_lines(&state, 0, 1, 0, 4, Style::default().bg(Color::Blue));
+        let lines = bounded_textarea_lines(&state, 0, 1, 0, 4, styles(true));
 
         assert_eq!(lines.len(), 1);
         let span_count = lines[0].spans.len();
         assert_eq!(span_count, 1, "one terminal grapheme must use one span");
+    }
+
+    // Ways this can fail: a control character draws nothing, so the cells after it move left; an
+    // unfocused box still shows its selection; the selection reaches past the line end.
+    #[test]
+    fn control_characters_take_their_cell_and_only_a_focused_box_shows_its_selection() {
+        let mut state = TextEditor::multi_line("a\u{1b}b\nc");
+        let _ = state.apply(crate::editor::EditCommand::Move {
+            motion: crate::editor::Motion::TextStart,
+            select: true,
+        });
+        let focused = bounded_textarea_lines(&state, 0, 2, 0, 8, styles(true));
+        let text = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(text(&focused[0]), "a\u{FFFD}b ");
+        assert_eq!(focused[0].spans[0].style, Style::default().bg(Color::Red));
+        assert_eq!(focused[0].spans[1].style, Style::default().bg(Color::Blue));
+        assert_eq!(focused[1].spans[0].style, Style::default().bg(Color::Blue));
+
+        let unfocused = bounded_textarea_lines(&state, 0, 2, 0, 8, styles(false));
+        assert_eq!(text(&unfocused[0]), "a\u{FFFD}b");
+        assert!(
+            unfocused[1]
+                .spans
+                .iter()
+                .all(|span| span.style == Style::default()),
+            "{unfocused:?}"
+        );
     }
 
     #[test]

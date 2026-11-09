@@ -945,10 +945,10 @@ pub(crate) fn source_path_cursor_corpus_operations() -> Vec<CorpusOperation> {
 
 /// The interpreter that [`refused_run_corpus_operations`] pastes into the entry settings.
 ///
-/// It holds a line feed, a carriage return, and one C0 control character, as the nightly walk
-/// that found the defect pasted them.
+/// It holds one C0 control character, as the nightly walk that found the defect pasted one. It
+/// has no line break, because a single-line box keeps only the first line of a paste.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) const MISSING_PROGRAM: &str = "one\ntwo\r\u{3}é";
+pub(crate) const MISSING_PROGRAM: &str = "one\u{3}é";
 
 /// The text that [`refused_run_corpus_operations`] adds to the extra arguments of the run form.
 ///

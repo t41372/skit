@@ -1,11 +1,71 @@
 //! Shared terminal pointer geometry.
 
 use ratatui_core::layout::Rect;
-use ratatui_crossterm::crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
-use ratatui_textarea::{CursorMove, TextArea as RichTextArea};
-use tui_input::{Input, InputRequest};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
+
+use crate::editor::{TextEditor, TextPosition, display_column, grapheme_cells};
+
+/// The modifier that marks the second press of a double click.
+///
+/// A terminal reports no click count. The session counts the presses itself and marks the second
+/// press with a modifier that no terminal reports for a pointer event, so every screen can give the
+/// press to its box unchanged.
+pub(crate) const DOUBLE_PRESS: KeyModifiers = KeyModifiers::HYPER;
+
+/// Two primary presses on one cell of a text box, with only the release between them, make a
+/// double click.
+///
+/// Only a text box uses a double click, so a press anywhere else leaves no state: a click on a
+/// button ends where the same command by key ends. The terminal loop also ends a sequence when the
+/// second press comes too late. A walker or a test that drives the session directly gets the same
+/// answer for the same events every time.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PressSequence {
+    /// The cell of the last primary press and whether that press was already the second one.
+    last: Option<(u16, u16, bool)>,
+}
+
+impl PressSequence {
+    /// Follow one event, and mark the second press of a double click with [`DOUBLE_PRESS`].
+    ///
+    /// `on_text_box` tells whether a primary press lands on a text box.
+    pub(crate) fn follow(&mut self, event: &mut Event, on_text_box: bool) {
+        let Event::Mouse(mouse) = event else {
+            self.last = None;
+            return;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if !on_text_box => self.last = None,
+            MouseEventKind::Down(MouseButton::Left) => {
+                let double = matches!(
+                    self.last,
+                    Some((column, row, false)) if column == mouse.column && row == mouse.row
+                );
+                if double {
+                    mouse.modifiers |= DOUBLE_PRESS;
+                }
+                self.last = Some((mouse.column, mouse.row, double));
+            }
+            MouseEventKind::Up(MouseButton::Left) => {}
+            _ => self.last = None,
+        }
+    }
+
+    /// Forget the last press, so the next press is a first press.
+    pub(crate) fn end(&mut self) {
+        self.last = None;
+    }
+
+    pub(crate) fn snapshot(self) -> serde_json::Value {
+        self.last.map_or(serde_json::Value::Null, |(column, row, second)| {
+            serde_json::json!({"column": column, "row": row, "second": second})
+        })
+    }
+}
 
 /// The last cell that the pointer reported, for the hover look of chips and buttons.
 ///
@@ -197,24 +257,75 @@ impl EditableGeometry {
         self.secret
     }
 
-    /// Move the input cursor to the nearest grapheme boundary at the clicked cell.
-    pub(crate) fn place_cursor(&self, input: &mut Input, column: u16, row: u16) -> bool {
-        if !contains(self.content, column, row) {
-            return false;
-        }
+    /// Report whether the cell shows the text of this box.
+    pub(crate) const fn position_contains(self, column: u16, row: u16) -> bool {
+        contains(self.content, column, row)
+    }
+
+    /// The caret position at one cell, or nothing when the cell is outside the box.
+    pub(crate) fn position_at(
+        &self,
+        editor: &TextEditor,
+        column: u16,
+        row: u16,
+    ) -> Option<TextPosition> {
+        contains(self.content, column, row).then(|| self.clamped_position(editor, column))
+    }
+
+    /// The caret position at the nearest cell of the box, for a drag that leaves the box.
+    fn clamped_position(&self, editor: &TextEditor, column: u16) -> TextPosition {
+        let column = column.clamp(
+            self.content.x,
+            self.content.right().saturating_sub(1).max(self.content.x),
+        );
         let visual_cell = self
             .visual_scroll
             .saturating_add(usize::from(column.saturating_sub(self.content.x)));
-        let cursor = cursor_for_visual_cell(input.value(), visual_cell, self.secret);
-        let _ = input.handle(InputRequest::SetCursor(cursor));
-        true
+        TextPosition::new(
+            0,
+            cursor_for_visual_cell(editor.value(), visual_cell, self.secret),
+        )
     }
+
+    /// Give one primary press or drag to `editor`, and report whether the box took it.
+    ///
+    /// A press puts the caret at the cell, and the second press of a double click selects the
+    /// word there. A drag moves the caret and keeps the anchor of the press, so it selects.
+    pub(crate) fn pointer(&self, editor: &mut TextEditor, mouse: &MouseEvent) -> bool {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(position) = self.position_at(editor, mouse.column, mouse.row) else {
+                    return false;
+                };
+                press(editor, position, mouse);
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                editor.drag_to(self.clamped_position(editor, mouse.column));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn press(editor: &mut TextEditor, position: TextPosition, mouse: &MouseEvent) {
+    if mouse.modifiers.contains(DOUBLE_PRESS) {
+        editor.select_word_at(position);
+    } else {
+        editor.press_at(position);
+    }
+}
+
+/// Report whether `mouse` is a primary drag.
+pub(crate) const fn is_primary_drag(mouse: &MouseEvent) -> bool {
+    matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left))
 }
 
 /// Persistent viewport coordinates for one multiline editor.
 ///
-/// `ratatui-textarea` keeps these coordinates private. Keep the same alignment rule here so a
-/// terminal cell can map back to the logical line and character that the editor rendered.
+/// The renderer and the pointer use these coordinates, so a terminal cell can map back to the
+/// logical line and character that the renderer drew.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TextAreaViewport {
     top_row: usize,
@@ -227,21 +338,16 @@ pub(crate) struct TextAreaGeometry {
     content: Rect,
     first_row: usize,
     left_cell: usize,
-    tab_length: usize,
 }
 
 impl TextAreaViewport {
-    pub(crate) fn align(&mut self, state: &RichTextArea<'_>, width: usize, height: usize) {
+    pub(crate) fn align(&mut self, state: &TextEditor, width: usize, height: usize) {
         let cursor = state.cursor();
-        let (row, column) = (cursor.0, cursor.1);
-        let visual_column =
-            textarea_display_column(&state.lines()[row], column, usize::from(state.tab_length()));
-        self.top_row = aligned_scroll(self.top_row, row, height);
-        self.left_cell = textarea_scroll_boundary(
-            &state.lines()[row],
-            aligned_scroll(self.left_cell, visual_column, width),
-            usize::from(state.tab_length()),
-        );
+        let line = &state.lines()[cursor.line];
+        let visual_column = display_column(line, cursor.column);
+        self.top_row = aligned_scroll(self.top_row, cursor.line, height);
+        self.left_cell =
+            textarea_scroll_boundary(line, aligned_scroll(self.left_cell, visual_column, width));
     }
 
     pub(crate) const fn top_row(self) -> usize {
@@ -252,17 +358,11 @@ impl TextAreaViewport {
         self.left_cell
     }
 
-    pub(crate) const fn geometry(
-        self,
-        content: Rect,
-        skipped_rows: usize,
-        tab_length: usize,
-    ) -> TextAreaGeometry {
+    pub(crate) const fn geometry(self, content: Rect, skipped_rows: usize) -> TextAreaGeometry {
         TextAreaGeometry {
             content,
             first_row: self.top_row.saturating_add(skipped_rows),
             left_cell: self.left_cell,
-            tab_length,
         }
     }
 }
@@ -280,76 +380,67 @@ impl TextAreaGeometry {
         self.left_cell
     }
 
-    pub(crate) const fn tab_length(self) -> usize {
-        self.tab_length
+    /// Report whether the cell shows the text of this box.
+    pub(crate) const fn position_contains(self, column: u16, row: u16) -> bool {
+        contains(self.content, column, row)
     }
 
-    /// Move the editor cursor to the nearest character boundary at the clicked cell.
-    pub(crate) fn place_cursor(self, state: &mut RichTextArea<'_>, column: u16, row: u16) -> bool {
-        if !contains(self.content, column, row) {
-            return false;
+    /// The caret position at one cell, or nothing when the cell is outside the box.
+    pub(crate) fn position_at(
+        self,
+        editor: &TextEditor,
+        column: u16,
+        row: u16,
+    ) -> Option<TextPosition> {
+        contains(self.content, column, row).then(|| self.clamped_position(editor, column, row))
+    }
+
+    /// The caret position at the nearest cell of the box, for a drag that leaves the box.
+    fn clamped_position(self, editor: &TextEditor, column: u16, row: u16) -> TextPosition {
+        let column = column.clamp(
+            self.content.x,
+            self.content.right().saturating_sub(1).max(self.content.x),
+        );
+        let line = if row < self.content.y {
+            self.first_row
+                .saturating_sub(usize::from(self.content.y - row))
+        } else {
+            self.first_row
+                .saturating_add(usize::from(row - self.content.y))
         }
-        let logical_row = self
-            .first_row
-            .saturating_add(usize::from(row.saturating_sub(self.content.y)))
-            .min(state.lines().len().saturating_sub(1));
+        .min(editor.lines().len().saturating_sub(1));
         let visual_cell = self
             .left_cell
             .saturating_add(usize::from(column.saturating_sub(self.content.x)));
-        let logical_column = cursor_for_textarea_visual_cell(
-            &state.lines()[logical_row],
-            visual_cell,
-            self.tab_length,
-        );
-        let first_row = logical_row.min(usize::from(u16::MAX));
-        state.move_cursor(CursorMove::Jump(
-            u16::try_from(first_row).expect("the clamped row fits"),
-            0,
-        ));
-        for _ in first_row..logical_row {
-            state.move_cursor(CursorMove::Down);
+        TextPosition::new(
+            line,
+            cursor_for_textarea_visual_cell(&editor.lines()[line], visual_cell),
+        )
+    }
+
+    /// Give one primary press or drag to `editor`, and report whether the box took it.
+    pub(crate) fn pointer(self, editor: &mut TextEditor, mouse: &MouseEvent) -> bool {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(position) = self.position_at(editor, mouse.column, mouse.row) else {
+                    return false;
+                };
+                press(editor, position, mouse);
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                editor.drag_to(self.clamped_position(editor, mouse.column, mouse.row));
+                true
+            }
+            _ => false,
         }
-        for _ in 0..logical_column {
-            state.move_cursor(CursorMove::Forward);
-        }
-        true
     }
 }
 
-pub(crate) fn textarea_display_column(
-    line: &str,
-    logical_column: usize,
-    tab_length: usize,
-) -> usize {
-    let mut display_column = 0_usize;
-    let mut codepoints = 0_usize;
-    for grapheme in line.graphemes(true) {
-        if codepoints >= logical_column {
-            break;
-        }
-        let next_codepoints = codepoints.saturating_add(grapheme.chars().count());
-        if logical_column < next_codepoints {
-            break;
-        }
-        codepoints = next_codepoints;
-        display_column = if grapheme == "\t" && tab_length > 0 {
-            display_column.saturating_add(tab_length - (display_column % tab_length))
-        } else {
-            display_column.saturating_add(grapheme.width())
-        };
-    }
-    display_column
-}
-
-fn textarea_scroll_boundary(line: &str, wanted: usize, tab_length: usize) -> usize {
+fn textarea_scroll_boundary(line: &str, wanted: usize) -> usize {
     let mut boundary = 0_usize;
     for grapheme in line.graphemes(true) {
-        let width = if grapheme == "\t" && tab_length > 0 {
-            tab_length - (boundary % tab_length)
-        } else {
-            grapheme.width()
-        };
-        let next = boundary.saturating_add(width);
+        let next = boundary.saturating_add(grapheme_cells(grapheme, boundary));
         if next > wanted {
             break;
         }
@@ -358,15 +449,11 @@ fn textarea_scroll_boundary(line: &str, wanted: usize, tab_length: usize) -> usi
     boundary
 }
 
-fn cursor_for_textarea_visual_cell(value: &str, visual_cell: usize, tab_length: usize) -> usize {
+fn cursor_for_textarea_visual_cell(value: &str, visual_cell: usize) -> usize {
     let mut cells = 0_usize;
     let mut codepoints = 0_usize;
     for grapheme in value.graphemes(true) {
-        let width = if grapheme == "\t" && tab_length > 0 {
-            tab_length - (cells % tab_length)
-        } else {
-            grapheme.width()
-        };
+        let width = grapheme_cells(grapheme, cells);
         let grapheme_codepoints = grapheme.chars().count();
         let next = cells.saturating_add(width);
         if grapheme == "\t" {
@@ -414,8 +501,14 @@ pub(crate) fn display_cursor(value: &str, cursor: usize, secret: bool) -> usize 
     }
 }
 
+/// The first visible cell of a single-line box that shows the caret.
+///
+/// The caret always keeps a free cell of its own. At the end of a long value it stands after the
+/// last character, not on it, as version 0.4 showed it.
 pub(crate) fn display_scroll(value: &str, cursor: usize, width: usize, secret: bool) -> usize {
-    let wanted = display_cursor(value, cursor, secret).saturating_sub(width);
+    let wanted = display_cursor(value, cursor, secret)
+        .saturating_add(1)
+        .saturating_sub(width);
     let mut scroll = 0_usize;
     for grapheme in value.graphemes(true) {
         if scroll >= wanted {
@@ -458,28 +551,147 @@ fn cursor_for_visual_cell(value: &str, visual_cell: usize, secret: bool) -> usiz
 mod tests {
     use super::*;
 
+    // Ways this can fail: the caret at the end of a long value stands on the last character
+    // instead of a free cell; the scroll starts inside a wide or combined grapheme.
     #[test]
-    fn display_scroll_matches_tui_input_without_splitting_a_grapheme() {
-        for (value, width, secret) in [
-            ("abcdef", 3, false),
-            ("a界b", 2, false),
-            ("界a", 2, false),
-            ("e\u{301}xyz", 2, false),
-            ("👨‍👩‍👧‍👦xy", 2, false),
-            ("界a", 1, true),
+    fn display_scroll_keeps_a_free_caret_cell_without_splitting_a_grapheme() {
+        for (value, width, secret, expected) in [
+            ("abcdef", 3, false, 4),
+            ("abc", 3, false, 1),
+            ("ab", 3, false, 0),
+            ("a界b", 2, false, 3),
+            ("界a", 2, false, 2),
+            ("e\u{301}xyz", 2, false, 3),
+            ("👨‍👩‍👧‍👦xy", 2, false, 3),
+            ("界a", 1, true, 2),
+            ("", 1, false, 0),
         ] {
-            let input = Input::new(value.to_owned());
-            let expected = if secret {
-                secret_display(value).width().saturating_sub(width)
-            } else {
-                input.visual_scroll(width)
-            };
+            let cursor = value.chars().count();
+            let scroll = display_scroll(value, cursor, width, secret);
             assert_eq!(
-                display_scroll(value, input.cursor(), width, secret),
-                expected,
+                scroll, expected,
                 "value={value:?} width={width} secret={secret}"
             );
+            assert!(
+                display_cursor(value, cursor, secret) - scroll < width,
+                "the caret has no free cell: value={value:?} width={width}"
+            );
         }
+    }
+
+    // Ways this can fail: the second press on one cell is not marked; a press on another cell,
+    // a third press, or any other event in between still counts as a double click.
+    #[test]
+    fn a_second_press_on_the_same_cell_is_marked_as_a_double_click() {
+        let mouse = |kind, column| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let marked = |event: &Event| matches!(event, Event::Mouse(mouse) if mouse.modifiers.contains(DOUBLE_PRESS));
+        let mut sequence = PressSequence::default();
+        let mut follow = |event: Event| {
+            let mut event = event;
+            sequence.follow(&mut event, true);
+            marked(&event)
+        };
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let up = MouseEventKind::Up(MouseButton::Left);
+        assert!(!follow(mouse(down, 4)));
+        assert!(!follow(mouse(up, 4)));
+        assert!(follow(mouse(down, 4)));
+        assert!(!follow(mouse(up, 4)));
+        assert!(
+            !follow(mouse(down, 4)),
+            "a third press is a first press again"
+        );
+        assert!(!follow(mouse(down, 5)), "another cell is a first press");
+        assert!(!follow(mouse(MouseEventKind::Moved, 5)));
+        assert!(!follow(mouse(down, 5)), "a move ends the sequence");
+        assert!(!follow(Event::FocusLost));
+        assert!(!follow(mouse(down, 5)), "another event ends the sequence");
+        let mut outside = PressSequence::default();
+        let mut first = mouse(down, 1);
+        outside.follow(&mut first, true);
+        let mut button = mouse(down, 1);
+        outside.follow(&mut button, false);
+        assert!(
+            !marked(&button),
+            "a press outside a text box is no second press"
+        );
+        assert_eq!(outside.snapshot(), serde_json::Value::Null);
+        let mut ended = PressSequence::default();
+        let mut first = mouse(down, 1);
+        ended.follow(&mut first, true);
+        assert_eq!(
+            ended.snapshot(),
+            serde_json::json!({"column": 1, "row": 2, "second": false})
+        );
+        ended.end();
+        assert_eq!(ended.snapshot(), serde_json::Value::Null);
+        let mut second = mouse(down, 1);
+        ended.follow(&mut second, true);
+        assert!(!marked(&second), "an ended sequence starts again");
+    }
+
+    // Ways this can fail: a press or a drag lands outside the text or inside a grapheme; a drag
+    // outside the box does not reach the nearest cell; a double press does not select a word.
+    #[test]
+    fn line_and_area_geometry_turn_presses_and_drags_into_editor_selections() {
+        let event = |kind, column, row, modifiers| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        };
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        let line = EditableGeometry::new(Rect::new(10, 3, 5, 1), 2, false);
+        let mut editor = TextEditor::single_line("ab界cdef");
+        assert!(!line.pointer(&mut editor, &event(down, 9, 3, KeyModifiers::NONE)));
+        assert!(!line.pointer(
+            &mut editor,
+            &event(MouseEventKind::Moved, 10, 3, KeyModifiers::NONE)
+        ));
+        assert!(line.pointer(&mut editor, &event(down, 10, 3, KeyModifiers::NONE)));
+        assert_eq!(editor.cursor(), TextPosition::new(0, 2));
+        assert!(line.pointer(&mut editor, &event(drag, 40, 9, KeyModifiers::NONE)));
+        assert_eq!(editor.selected_text().as_deref(), Some("界cd"));
+        assert!(line.pointer(&mut editor, &event(down, 13, 3, DOUBLE_PRESS)));
+        assert_eq!(editor.selected_text().as_deref(), Some("cdef"));
+        assert_eq!(line.position_at(&editor, 15, 3), None);
+
+        let area = TextAreaGeometry {
+            content: Rect::new(2, 5, 4, 2),
+            first_row: 1,
+            left_cell: 0,
+        };
+        let mut text = TextEditor::multi_line(
+            "zero
+one two
+three
+	x",
+        );
+        assert!(area.pointer(&mut text, &event(down, 3, 6, KeyModifiers::NONE)));
+        assert_eq!(text.cursor(), TextPosition::new(2, 1));
+        assert!(area.pointer(&mut text, &event(drag, 0, 2, KeyModifiers::NONE)));
+        assert_eq!(text.cursor(), TextPosition::new(0, 0));
+        assert!(area.pointer(&mut text, &event(drag, 9, 9, KeyModifiers::NONE)));
+        assert_eq!(text.cursor(), TextPosition::new(3, 0));
+        assert!(area.pointer(&mut text, &event(down, 2, 5, DOUBLE_PRESS)));
+        assert_eq!(text.selected_text().as_deref(), Some("one"));
+        assert!(!area.pointer(&mut text, &event(down, 2, 7, KeyModifiers::NONE)));
+        assert!(!area.pointer(
+            &mut text,
+            &event(MouseEventKind::Moved, 2, 5, KeyModifiers::NONE)
+        ));
+        assert_eq!(cursor_for_textarea_visual_cell("\tx", 2), 0);
+        assert_eq!(cursor_for_textarea_visual_cell("\tx", 4), 1);
+        assert!(is_primary_drag(&event(drag, 0, 0, KeyModifiers::NONE)));
+        assert!(!is_primary_drag(&event(down, 0, 0, KeyModifiers::NONE)));
     }
 
     #[test]
@@ -555,18 +767,20 @@ mod tests {
 
     #[test]
     fn textarea_viewport_tracks_a_cursor_beyond_both_visible_edges() {
-        let mut state = RichTextArea::new(vec![
-            "zero".to_owned(),
-            "one".to_owned(),
-            "two".to_owned(),
-            "0123456789".to_owned(),
-        ]);
-        state.move_cursor(CursorMove::Jump(3, 8));
+        let mut state = TextEditor::multi_line("zero\none\ntwo\n0123456789");
+        let _ = state.apply(crate::editor::EditCommand::Move {
+            motion: crate::editor::Motion::CharLeft,
+            select: false,
+        });
+        let _ = state.apply(crate::editor::EditCommand::Move {
+            motion: crate::editor::Motion::CharLeft,
+            select: false,
+        });
         let mut viewport = TextAreaViewport::default();
 
         viewport.align(&state, 4, 2);
 
-        assert_eq!(viewport.geometry(Rect::new(4, 5, 4, 2), 1, 4).first_row, 3);
+        assert_eq!(viewport.geometry(Rect::new(4, 5, 4, 2), 1).first_row, 3);
         assert_eq!(viewport.left_cell, 5);
     }
 

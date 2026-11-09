@@ -29,7 +29,6 @@ use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_interact::components::{CheckBox, CheckBoxState};
-use ratatui_textarea::TextArea as RichTextArea;
 use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
     scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -37,19 +36,19 @@ use ratatui_widgets::{
 use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
 use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, SettingsView};
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
     agent_review::{
         AgentReviewNode, AgentReviewSnapshotError, node as snapshot_node, rect as snapshot_rect,
-        textarea as snapshot_textarea, value as snapshot_value,
+        value as snapshot_value,
     },
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry, TextAreaGeometry, TextAreaViewport},
+    editor::{EditResponse, TextEditor},
+    pointer::{
+        ClickOutcome, ClickTracker, EditableGeometry, TextAreaGeometry, TextAreaViewport,
+        is_primary_drag,
+    },
     rowclip::{RowClip, editor_cursor_virtual_row},
-    session::{
-        TextAreaEventHandling, edit_textarea, new_textarea, render_line_input_band,
-        render_textarea_band, textarea_control_height, textarea_text,
-    },
+    session::{render_line_input_band, render_textarea_band, textarea_control_height},
     theme::{self, Panel, padded_panel},
     viewport::VirtualScrollState,
 };
@@ -217,8 +216,8 @@ struct ControlDraw<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct SettingsScreenSession {
     signature: Option<Vec<(String, ControlShape)>>,
-    inputs: BTreeMap<String, LineInput>,
-    bodies: BTreeMap<String, Box<RichTextArea<'static>>>,
+    inputs: BTreeMap<String, TextEditor>,
+    bodies: BTreeMap<String, TextEditor>,
     body_viewports: BTreeMap<String, TextAreaViewport>,
     input_editables: BTreeMap<String, EditableGeometry>,
     body_editables: BTreeMap<String, TextAreaGeometry>,
@@ -228,8 +227,6 @@ pub struct SettingsScreenSession {
     visible_height: usize,
     spans: BTreeMap<String, (usize, usize)>,
     rendered: BTreeMap<String, Rect>,
-    undo_group: usize,
-    redo_group: usize,
     aligned: Option<Alignment>,
     click: ClickTracker<SettingsControlId>,
 }
@@ -275,8 +272,6 @@ impl SettingsScreenSession {
             visible_height,
             spans,
             rendered,
-            undo_group,
-            redo_group,
             aligned,
             click,
         } = self;
@@ -285,13 +280,13 @@ impl SettingsScreenSession {
             .map(|(key, input)| {
                 Ok(serde_json::json!({
                     "key": key,
-                    "state": snapshot_value("settings.input", input)?,
+                    "state": input.agent_review_snapshot(),
                 }))
             })
             .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
         let bodies = bodies
             .iter()
-            .map(|(key, body)| serde_json::json!({"key": key, "state": snapshot_textarea(body)}))
+            .map(|(key, body)| serde_json::json!({"key": key, "state": body.agent_review_snapshot()}))
             .collect::<Vec<_>>();
         let body_viewports = body_viewports
             .iter()
@@ -359,8 +354,6 @@ impl SettingsScreenSession {
                 ("visible_height", serde_json::json!(visible_height)),
                 ("spans", snapshot_value("settings.spans", spans)?),
                 ("rendered", serde_json::json!(rendered)),
-                ("undo_group", serde_json::json!(undo_group)),
-                ("redo_group", serde_json::json!(redo_group)),
                 (
                     "aligned",
                     aligned
@@ -430,12 +423,13 @@ impl SettingsScreenSession {
                 match shape(field) {
                     ControlShape::Body => {
                         self.bodies
-                            .insert(field.key.clone(), Box::new(new_textarea(&value)));
+                            .insert(field.key.clone(), TextEditor::multi_line(&value));
                         self.body_viewports
                             .insert(field.key.clone(), TextAreaViewport::default());
                     }
                     ControlShape::Line { .. } => {
-                        self.inputs.insert(field.key.clone(), LineInput::new(value));
+                        self.inputs
+                            .insert(field.key.clone(), TextEditor::single_line(&value));
                     }
                     ControlShape::Options { multiple: true, .. } => {
                         self.option_cursors.insert(field.key.clone(), 0);
@@ -452,14 +446,14 @@ impl SettingsScreenSession {
         for field in fields(view) {
             let value = field.value().as_text();
             if let Some(body) = self.bodies.get_mut(&field.key)
-                && textarea_text(body) != value
+                && body.text() != value.as_str()
             {
-                **body = new_textarea(&value);
+                body.replace_text(&value);
             }
             if let Some(input) = self.inputs.get_mut(&field.key)
                 && input.value() != value
             {
-                *input = LineInput::new(value);
+                input.replace_text(&value);
             }
         }
     }
@@ -502,7 +496,7 @@ impl SettingsScreenSession {
         if matches!(height.cmp(&self.visible_height), Ordering::Greater)
             && let Some(body) = self.bodies.get(focused)
         {
-            let cursor = editor_cursor_virtual_row(start, body.cursor().0);
+            let cursor = editor_cursor_virtual_row(start, body.cursor().line);
             let next = cursor
                 .saturating_add(1)
                 .saturating_sub(self.visible_height)
@@ -524,8 +518,10 @@ impl SettingsScreenSession {
     /// Dispatch one terminal event through the focused settings control.
     ///
     /// `None` means no control claimed the event, so the caller maps it through the shared command
-    /// registry. Every chord the footer advertises reaches the registry that way: a control never
-    /// sees a `Ctrl` chord except the text undo pair, so `Ctrl+S` cannot be eaten by a text box.
+    /// registry. The focused control gets a key first: a text box keeps every editing key, and it
+    /// ignores the screen chords (`Ctrl+S`, `Ctrl+N`, `Ctrl+R`, `Ctrl+O`), so they reach the
+    /// registry. A key that the control does not use never scrolls the page past a text box: only
+    /// Page Up and Page Down scroll.
     #[must_use]
     pub fn handle_event(
         &mut self,
@@ -560,14 +556,34 @@ impl SettingsScreenSession {
             }
             _ => {}
         }
-        let undo_pair = matches!(key.code, KeyCode::Char('z' | 'y'));
-        if key.modifiers.contains(KeyModifiers::CONTROL) && !undo_pair {
-            return None;
-        }
         let focused = view.focused();
         let field = view.field(focused)?;
-        self.handle_field_key(focused, field, key)
-            .or_else(|| self.scroll_key(key))
+        if let Some(event) = self.handle_field_key(focused, field, key) {
+            return Some(event);
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return None;
+        }
+        self.scroll_key(key)
+    }
+
+    /// Report whether the cell shows the text of one box of this screen.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        self.input_editables
+            .values()
+            .any(|geometry| geometry.position_contains(column, row))
+            || self
+                .body_editables
+                .values()
+                .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The text box that has the keyboard, when the focused control is one.
+    pub(crate) fn focused_editor(&self, view: &SettingsView) -> Option<&TextEditor> {
+        let focused = view.focused();
+        self.inputs
+            .get(focused)
+            .or_else(|| self.bodies.get(focused))
     }
 
     fn handle_field_key(
@@ -648,6 +664,13 @@ impl SettingsScreenSession {
         {
             return Some(SettingsScreenEvent::Changed);
         }
+        // A drag that started in a text box selects in that box and keeps the press armed.
+        if is_primary_drag(mouse)
+            && let Some(SettingsControlId::Field(key)) = self.click.pressed().cloned()
+            && self.point_field(&key, mouse)
+        {
+            return Some(SettingsScreenEvent::Changed);
+        }
         let target = geometry
             .hits
             .iter()
@@ -657,16 +680,7 @@ impl SettingsScreenSession {
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && let Some(SettingsControlId::Field(key)) = target
         {
-            if let Some(editable) = self.input_editables.get(key).copied()
-                && let Some(input) = self.inputs.get_mut(key)
-            {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
-            }
-            if let Some(editable) = self.body_editables.get(key).copied()
-                && let Some(body) = self.bodies.get_mut(key)
-            {
-                let _ = editable.place_cursor(body, mouse.column, mouse.row);
-            }
+            let _ = self.point_field(key, mouse);
         }
         let target = match self.click.update(mouse, target) {
             ClickOutcome::Armed => return Some(SettingsScreenEvent::Changed),
@@ -702,63 +716,77 @@ impl SettingsScreenSession {
         }
     }
 
+    /// Give one primary press or drag to the text box of field `key`.
+    fn point_field(&mut self, key: &str, mouse: &MouseEvent) -> bool {
+        let pointed = if let Some(editable) = self.input_editables.get(key).copied()
+            && let Some(input) = self.inputs.get_mut(key)
+        {
+            editable.pointer(input, mouse)
+        } else if let Some(editable) = self.body_editables.get(key).copied()
+            && let Some(body) = self.bodies.get_mut(key)
+        {
+            editable.pointer(body, mouse)
+        } else {
+            false
+        };
+        if pointed {
+            self.aligned = None;
+        }
+        pointed
+    }
+
     fn handle_paste(&mut self, view: &SettingsView, value: &str) -> Option<SettingsScreenEvent> {
         let focused = view.focused().to_owned();
-        if let Some(body) = self.bodies.get_mut(&focused) {
-            if value.is_empty() {
-                return None;
-            }
-            body.insert_str(value);
-            self.aligned = None;
-            self.undo_group = 1;
-            self.redo_group = 0;
-            return set_field(&focused, FieldValue::text(textarea_text(body)));
+        let editor = if let Some(body) = self.bodies.get_mut(&focused) {
+            body
+        } else {
+            self.inputs.get_mut(&focused)?
+        };
+        if editor.paste(value) != EditResponse::Changed {
+            return None;
         }
-        let input = self.inputs.get_mut(&focused)?;
-        for character in value.chars() {
-            let _ = input.handle(InputRequest::InsertChar(character));
-        }
-        set_field(&focused, FieldValue::text(input.value()))
+        let text = editor.text().into_owned();
+        self.aligned = None;
+        set_field(&focused, FieldValue::text(text))
     }
 
     fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let body = self.bodies.get_mut(key)?;
-        let before = textarea_text(body);
-        let before_cursor = body.cursor();
-        match edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group) {
-            TextAreaEventHandling::Ignored => return None,
-            TextAreaEventHandling::VerticalBoundary => return nav(event),
-            TextAreaEventHandling::Consumed => {}
-        }
-        let after = textarea_text(body);
-        if body.cursor() != before_cursor {
-            self.aligned = None;
-        }
-        Some(if before == after {
-            SettingsScreenEvent::Changed
-        } else {
-            SettingsScreenEvent::Action(SettingsAction::SetField {
-                key: key.to_owned(),
-                value: FieldValue::text(after),
-            })
-        })
+        let response = body.handle_key(&event);
+        let text = body.text().into_owned();
+        self.edited(key, response, text, event)
     }
 
     fn edit_line(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let input = self.inputs.get_mut(key)?;
-        let before = input.value().to_owned();
-        if input.handle_event(&Event::Key(event)).is_none() {
-            // A single-line box does not use the vertical arrows, so they move the keyboard.
-            return nav(event);
+        let response = input.handle_key(&event);
+        let text = input.value().to_owned();
+        self.edited(key, response, text, event)
+    }
+
+    /// Turn the answer of a text box into a screen event.
+    ///
+    /// Every key that the box owns brings the box back into view, so no key types into a box
+    /// that the wheel scrolled away. A single-line box does not use the vertical arrows, and a
+    /// multi-line box gives them up at its first and last line, so they move the keyboard.
+    fn edited(
+        &mut self,
+        key: &str,
+        response: EditResponse,
+        text: String,
+        event: KeyEvent,
+    ) -> Option<SettingsScreenEvent> {
+        match response {
+            EditResponse::Changed => {
+                self.aligned = None;
+                set_field(key, FieldValue::text(text))
+            }
+            EditResponse::Consumed => {
+                self.aligned = None;
+                Some(SettingsScreenEvent::Changed)
+            }
+            EditResponse::Ignored | EditResponse::Boundary => nav(event),
         }
-        Some(if before == input.value() {
-            SettingsScreenEvent::Changed
-        } else {
-            SettingsScreenEvent::Action(SettingsAction::SetField {
-                key: key.to_owned(),
-                value: FieldValue::text(input.value()),
-            })
-        })
     }
 
     fn scroll_key(&mut self, key: KeyEvent) -> Option<SettingsScreenEvent> {
@@ -927,7 +955,6 @@ fn text_area_geometry_snapshot(geometry: TextAreaGeometry) -> serde_json::Value 
         "content": snapshot_rect(geometry.content()),
         "first_row": geometry.first_row(),
         "left_cell": geometry.left_cell(),
-        "tab_length": geometry.tab_length(),
     })
 }
 
@@ -979,10 +1006,10 @@ mod agent_review_tests {
         };
         session
             .inputs
-            .insert("line".to_owned(), LineInput::new("value".to_owned()));
+            .insert("line".to_owned(), TextEditor::single_line("value"));
         session
             .bodies
-            .insert("body".to_owned(), Box::new(new_textarea("body")));
+            .insert("body".to_owned(), TextEditor::multi_line("body"));
         let body_viewport = TextAreaViewport::default();
         session
             .body_viewports
@@ -993,7 +1020,7 @@ mod agent_review_tests {
         );
         session.body_editables.insert(
             "body".to_owned(),
-            body_viewport.geometry(Rect::new(1, 3, 4, 2), 1, 4),
+            body_viewport.geometry(Rect::new(1, 3, 4, 2), 1),
         );
         session.option_cursors.insert("options".to_owned(), 1);
         session.scroll.set_line_count(10);
@@ -1002,8 +1029,6 @@ mod agent_review_tests {
         session
             .rendered
             .insert("line".to_owned(), Rect::new(1, 2, 3, 4));
-        session.undo_group = 1;
-        session.redo_group = 2;
         let press = ratatui_crossterm::crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 0,
@@ -1675,7 +1700,7 @@ mod tests {
         SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
         TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
-    use crate::theme::{ACCENT, SELECT_BG};
+    use crate::theme::SELECT_BG;
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
     /// padding. Every geometry assertion here uses it, so a regression is one a viewer would see.
@@ -2217,15 +2242,30 @@ mod tests {
             "the clipped first row returned:\n{frame}"
         );
         assert!(
-            middle
-                .iter()
-                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            middle.iter().any(|cell| cell.symbol() != " "
+                && cell.fg == SELECT_BG
+                && cell
+                    .modifier
+                    .contains(ratatui_core::style::Modifier::REVERSED)),
             "the selection style is missing from the middle row:\n{frame}"
         );
-        assert!(
-            last.iter()
-                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
-            "the focused cursor style is missing from the last row:\n{frame}"
+        // The terminal draws the caret of the focused box at its hardware cursor.
+        let last_row = rows
+            .iter()
+            .position(|row| std::ptr::eq(*row, *last))
+            .unwrap();
+        let symbols = last.iter().map(|cell| cell.symbol()).collect::<Vec<_>>();
+        let last_column = symbols
+            .windows(4)
+            .position(|window| window == ["l", "a", "s", "t"])
+            .unwrap();
+        assert_eq!(
+            terminal.backend().cursor_position(),
+            ratatui_core::layout::Position::new(
+                u16::try_from(last_column + 4).unwrap(),
+                u16::try_from(last_row).unwrap()
+            ),
+            "the focused caret has no hardware cursor on the last row:\n{frame}"
         );
 
         assert_eq!(
@@ -2586,7 +2626,7 @@ mod tests {
             key(KeyCode::Tab, KeyModifiers::NONE),
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
-        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().line, 2);
         for row in [1, 0] {
             assert_eq!(
                 dispatch(
@@ -2598,7 +2638,7 @@ mod tests {
                 Some(SettingsScreenEvent::Changed)
             );
             assert_eq!(view.focused(), DESCRIPTION_KEY);
-            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().line, row);
         }
         assert_eq!(
             dispatch(
@@ -2630,7 +2670,7 @@ mod tests {
             .expect("description has a next focus stop")
             .to_string();
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
-        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().line, 2);
         assert_eq!(
             dispatch(
                 &mut session,
@@ -2662,10 +2702,11 @@ mod tests {
                 Some(SettingsScreenEvent::Changed)
             );
             assert_eq!(view.focused(), DESCRIPTION_KEY);
-            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
-            assert!(session.bodies[DESCRIPTION_KEY].selection_range().is_some());
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().line, row);
+            assert!(session.bodies[DESCRIPTION_KEY].selection().is_some());
         }
-        let selection = session.bodies[DESCRIPTION_KEY].selection_range();
+        // A plain Up on the first line ends the selection and keeps the keyboard in the box,
+        // as a text field does; only the next Up leaves the box.
         assert_eq!(
             dispatch(
                 &mut session,
@@ -2676,7 +2717,7 @@ mod tests {
             Some(SettingsScreenEvent::Changed)
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
-        assert_eq!(session.bodies[DESCRIPTION_KEY].selection_range(), selection);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].selection(), None);
 
         // On a closed option set the arrows walk the options and clamp at both ends.
         view.update(SettingsAction::Focus {
@@ -3849,14 +3890,12 @@ mod tests {
                 && hit.area.bottom() <= geometry.body.bottom(),
             "the textarea published a ghost hit outside its viewport: {hit:?}"
         );
+        let cursor = terminal.backend().cursor_position();
         assert!(
-            (hit.area.y..hit.area.bottom()).any(|row| {
-                (hit.area.x..hit.area.right()).any(|column| {
-                    let cell = &buffer[(column, row)];
-                    cell.fg == Color::Black && cell.bg == ACCENT
-                })
-            }),
-            "the visible tail lost its focused caret style"
+            hit.area
+                .contains(ratatui_core::layout::Position::new(cursor.x, cursor.y))
+                && buffer[(cursor.x.saturating_sub(1), cursor.y)].symbol() == "L",
+            "the visible tail lost its hardware cursor: {cursor:?}"
         );
         assert_eq!(
             view.field(DESCRIPTION_KEY).unwrap().value().as_text(),

@@ -426,23 +426,17 @@ pub(crate) fn selection() -> Style {
     }
 }
 
-/// The cursor cell of a text area.
-pub(crate) fn caret(focused: bool) -> Style {
+/// Selected text in a text box.
+///
+/// The skit theme shows the colors of a selected row. It gives them in swapped order with reverse
+/// video, so a color terminal shows the row colors and `NO_COLOR` still shows the selection.
+pub(crate) fn text_selection() -> Style {
     match current() {
-        Theme::Skit(_) => {
-            if focused {
-                Style::default().fg(Color::Black).bg(fixed(ACCENT))
-            } else {
-                text()
-            }
-        }
-        Theme::Terminal(_) => {
-            if focused {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                text()
-            }
-        }
+        Theme::Skit(_) => Style::default()
+            .fg(fixed(SELECT_BG))
+            .bg(fixed(SELECT_FG))
+            .add_modifier(Modifier::REVERSED),
+        Theme::Terminal(_) => Style::default().add_modifier(Modifier::REVERSED),
     }
 }
 

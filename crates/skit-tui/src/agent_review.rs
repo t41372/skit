@@ -15,7 +15,6 @@ use ratatui_interact::{
     state::FocusManager,
     traits::ClickRegionRegistry,
 };
-use ratatui_textarea::TextArea as RichTextArea;
 use serde::Serialize;
 
 use crate::local_action::LocalKey;
@@ -24,12 +23,11 @@ use crate::local_action::{
 };
 use crate::screens::add::add_action_snapshot;
 
-/// `ratatui-textarea` crate name recorded beside opaque editor state.
-pub const RATATUI_TEXTAREA_CRATE: &str = "ratatui-textarea";
-/// Locked `ratatui-textarea` version whose `Debug` representation is recorded.
-pub const RATATUI_TEXTAREA_VERSION: &str = "0.9.4";
 /// Schema version for the canonical terminal-session snapshot.
-pub const AGENT_REVIEW_SNAPSHOT_VERSION: u32 = 1;
+///
+/// Version 2 records every text box with the shared editor state (value, caret, selection anchor,
+/// and undo history), and adds the session clipboard and the press sequence of a double click.
+pub const AGENT_REVIEW_SNAPSHOT_VERSION: u32 = 2;
 
 /// A deterministic, typed node in the canonical terminal-session snapshot.
 #[derive(Clone, Debug, Serialize)]
@@ -69,6 +67,8 @@ pub struct AgentReviewSnapshot {
     top_level_click: AgentReviewNode,
     pointer: AgentReviewNode,
     local_actions: AgentReviewNode,
+    clipboard: AgentReviewNode,
+    presses: AgentReviewNode,
 }
 
 impl AgentReviewSnapshot {
@@ -101,6 +101,8 @@ impl AgentReviewSnapshot {
         top_level_click: AgentReviewNode,
         pointer: AgentReviewNode,
         local_actions: AgentReviewNode,
+        clipboard: AgentReviewNode,
+        presses: AgentReviewNode,
     ) -> Self {
         Self {
             schema_version: AGENT_REVIEW_SNAPSHOT_VERSION,
@@ -131,6 +133,8 @@ impl AgentReviewSnapshot {
             top_level_click,
             pointer,
             local_actions,
+            clipboard,
+            presses,
         }
     }
 }
@@ -350,15 +354,6 @@ pub(crate) fn checkbox(state: &CheckBoxState) -> serde_json::Value {
     })
 }
 
-pub(crate) fn textarea(state: &RichTextArea<'_>) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "opaque_debug",
-        "crate": RATATUI_TEXTAREA_CRATE,
-        "version": RATATUI_TEXTAREA_VERSION,
-        "debug": format!("{state:?}"),
-    })
-}
-
 pub(crate) const fn local_key(key: LocalKey) -> &'static str {
     match key {
         LocalKey::Enter => "enter",
@@ -464,8 +459,6 @@ mod tests {
         AddControlId, LocalActionInventory, LocalActionOutcome, LocalActionTarget,
         LocalAdvertisedAction,
     };
-
-    use super::{RATATUI_TEXTAREA_CRATE, RATATUI_TEXTAREA_VERSION};
 
     #[test]
     fn utf8_paths_keep_exact_native_spelling() {
@@ -714,6 +707,7 @@ mod tests {
                 "add_geometry",
                 "add_overlay",
                 "clicks",
+                "clipboard",
                 "confirm_discard",
                 "confirm_remove",
                 "file_picker_source",
@@ -726,6 +720,7 @@ mod tests {
                 "path_suggestions",
                 "pointer",
                 "preferences",
+                "presses",
                 "quit_armed_at",
                 "quit_toast",
                 "report",
@@ -739,16 +734,6 @@ mod tests {
                 "settings_prompt_overlay",
                 "top_level_click",
             ]
-        );
-    }
-
-    #[test]
-    fn opaque_textarea_contract_pins_the_locked_dependency() {
-        assert_eq!(RATATUI_TEXTAREA_CRATE, "ratatui-textarea");
-        assert_eq!(RATATUI_TEXTAREA_VERSION, "0.9.4");
-        assert!(
-            include_str!("../../../Cargo.lock")
-                .contains("name = \"ratatui-textarea\"\nversion = \"0.9.4\"")
         );
     }
 }

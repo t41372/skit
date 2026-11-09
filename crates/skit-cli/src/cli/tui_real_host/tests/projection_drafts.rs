@@ -416,8 +416,10 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
             "state": {
                 "value": raw,
                 "cursor": draft.display().to_string().chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -462,8 +464,10 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
             "state": {
                 "value": raw,
                 "cursor": 0,
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -486,7 +490,7 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
     );
     assert_eq!(
         moved_session["add"]["fields"]["inputs"][0]["state"],
-        json!({"value": expected, "cursor": 0, "yank": "", "last_was_cut": false})
+        json!({"value": expected, "cursor": 0, "anchor": null, "undo": [], "redo": [], "group": null})
     );
 
     // A typed character changes the path, so the path is user text from then on.
@@ -502,8 +506,10 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
             "state": {
                 "value": edited,
                 "cursor": edited.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
