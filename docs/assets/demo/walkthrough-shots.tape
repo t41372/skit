@@ -92,6 +92,10 @@ Sleep 2s
 
 # ---------------------------------------------------------------- run form
 
+# Each change to the query selects the first row, so the cleared search selected banner.
+# Down selects greet. Its argparse flags fill the launch menu, and --name shows World.
+Down
+Sleep 1s
 Enter
 Wait+Screen /World/
 Sleep 2s
