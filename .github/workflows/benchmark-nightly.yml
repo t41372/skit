@@ -28,9 +28,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Python and uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.12.3"
+          version: "0.13.7"
           python-version: "3.13"
           activate-environment: true
           # This job installs no package with uv, so uv never makes its cache directory. The
@@ -39,13 +39,13 @@ jobs:
       - name: Verify benchmark Python 3.13
         run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
       - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "26"
       - name: Install strace
         run: sudo apt-get update -q && sudo apt-get install -y -q strace
       - name: Install hyperfine
-        uses: ./.github/actions/install-hyperfine
+        uses: $/.github/actions/install-hyperfine
       - name: Build the measured binary and harness
         run: cargo build --locked --release -p skit-cli-rs -p skit-benchmarks
       - name: Run Criterion subjects
@@ -59,7 +59,7 @@ jobs:
         run: cat .bench/results.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark data
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-results-full
           include-hidden-files: true

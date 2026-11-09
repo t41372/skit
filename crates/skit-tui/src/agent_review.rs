@@ -27,7 +27,7 @@ use crate::screens::add::add_action_snapshot;
 /// `ratatui-textarea` crate name recorded beside opaque editor state.
 pub const RATATUI_TEXTAREA_CRATE: &str = "ratatui-textarea";
 /// Locked `ratatui-textarea` version whose `Debug` representation is recorded.
-pub const RATATUI_TEXTAREA_VERSION: &str = "0.9.2";
+pub const RATATUI_TEXTAREA_VERSION: &str = "0.9.4";
 /// Schema version for the canonical terminal-session snapshot.
 pub const AGENT_REVIEW_SNAPSHOT_VERSION: u32 = 1;
 
@@ -737,10 +737,10 @@ mod tests {
     #[test]
     fn opaque_textarea_contract_pins_the_locked_dependency() {
         assert_eq!(RATATUI_TEXTAREA_CRATE, "ratatui-textarea");
-        assert_eq!(RATATUI_TEXTAREA_VERSION, "0.9.2");
+        assert_eq!(RATATUI_TEXTAREA_VERSION, "0.9.4");
         assert!(
             include_str!("../../../Cargo.lock")
-                .contains("name = \"ratatui-textarea\"\nversion = \"0.9.2\"")
+                .contains("name = \"ratatui-textarea\"\nversion = \"0.9.4\"")
         );
     }
 }

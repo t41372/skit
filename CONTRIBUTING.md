@@ -10,14 +10,14 @@ Install the pinned Rust toolchain from `rust-toolchain.toml`. Cargo selects it w
 repository. Install these development tools when you need their gates:
 
 ```bash
-cargo install cargo-llvm-cov --version 0.8.7 --locked
+cargo install cargo-llvm-cov --version 0.9.1 --locked
 cargo install cargo-audit --version 0.22.2 --locked
 cargo install cargo-deny --version 0.20.2 --locked
-cargo install zizmor --version 1.29.0 --locked
+cargo install zizmor --version 1.32.0 --locked
 ```
 
-The documentation site needs Node.js 26.7.0 and npm 12.0.2 or later. The macro benchmark needs
-`hyperfine` and `jq`. Wheel builds use `uvx --from maturin==1.14.1`; the product does not need a
+The documentation site needs Node.js 26.13.0 and npm 12.2.2 or later. The macro benchmark needs
+`hyperfine` and `jq`. Wheel builds use `uvx --from maturin==1.16.0`; the product does not need a
 Python runtime.
 
 ## Start development

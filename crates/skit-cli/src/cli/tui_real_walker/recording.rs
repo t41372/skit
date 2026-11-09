@@ -146,7 +146,7 @@ pub(super) fn record_corpus_profile(
         let sink_ref = sink
             .as_mut()
             .expect("the corpus sink exists before trace finish");
-        engine.start(sink_ref).map_err(&context)?;
+        engine.start(sink_ref).map_err(context)?;
         for (index, operation) in operations.iter().enumerate() {
             engine
                 .run_operation(operation.clone(), sink_ref)
@@ -165,7 +165,7 @@ pub(super) fn record_corpus_profile(
             .iter()
             .map(corpus_operation_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(&context)?;
+            .map_err(context)?;
         let final_liveness = corpus_operation_value(&CorpusOperation::FinalLiveness)
             .expect("the fixed final-liveness operation serializes");
         let facts = engine.host().inner.leak_oracle_facts();
@@ -173,7 +173,7 @@ pub(super) fn record_corpus_profile(
             .take()
             .expect("the corpus sink is consumed exactly once")
             .finish(operation_values, final_liveness)
-            .map_err(&context)?;
+            .map_err(context)?;
         Ok((trace, facts))
     })();
     drop(sink);

@@ -10,22 +10,22 @@ expect_text() {
   fi
 }
 
-expect_text Cargo.toml 'tree-sitter = "0.27.0"'
-setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
+expect_text Cargo.toml 'tree-sitter = "0.27.2"'
+setup_uv_pin='astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3'
 test "$(grep -rF "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
-  echo 'every setup-uv use must share the pinned v10.0.1 action' >&2
+  echo 'every setup-uv use must share the pinned v10.3.3 action' >&2
   exit 1
 }
 if grep -rE 'astral-sh/setup-uv@' .github/workflows |
-  grep -qv '20cfd1bf945f4377ade1205e4dbc17946fc9a30d'; then
+  grep -qv '68559e99cc807c1eb7e9238fd43a15bba460eec2'; then
   echo 'a workflow uses a stale or unpinned setup-uv action' >&2
   exit 1
 fi
-expect_text .github/workflows/ci.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
+expect_text .github/workflows/ci.yml 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3'
 expect_text .github/workflows/ci.yml 'workflow_dispatch:'
-expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3'
-expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
-expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@5.0.1'
+expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3'
+expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3'
+expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@6.0.0'
 expect_text .github/workflows/codspeed.yml 'cargo codspeed build -m simulation --locked --workspace --all-features'
 expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run --workspace'
 if grep -Eq '^[[:space:]]*run:[[:space:]]*cargo codspeed run[[:space:]]*$' \
@@ -53,7 +53,7 @@ if grep -Eq 'enable-cache:[[:space:]]*true|uses:[[:space:]]*actions/cache@' \
   echo 'the ref-selectable benchmark workflow must not save a cache after running either side' >&2
   exit 1
 fi
-expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2'
+expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3'
 expect_text .github/workflows/release.yml 'workflow_dispatch:'
 expect_text .github/workflows/release.yml "if: github.event_name == 'push'"
 expect_text .github/workflows/release.yml "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
@@ -71,12 +71,12 @@ expect_text .github/workflows/release.yml "grep -Eq '/tests/corpus/'"
 expect_text .github/workflows/release.yml 'needs: [verify-artifacts]'
 expect_text pyproject.toml '{ path = "tests/corpus/**/*", format = "sdist" }'
 expect_text .github/workflows/ci.yml 'cargo test --locked -p skit-language --test corpus'
-expect_text .github/workflows/ci.yml 'fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0'
-expect_text .github/workflows/ci.yml 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0'
-expect_text .github/workflows/ci.yml 'node-version: "26.7.0"'
+expect_text .github/workflows/ci.yml 'fish-actions/install-fish@4bb37a71daebb76c6fb7d83771cff31b8a78c28e # v1.2.0'
+expect_text .github/workflows/ci.yml 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0'
+expect_text .github/workflows/ci.yml 'node-version: "26.13.0"'
 expect_text .github/workflows/ci.yml 'run: node --version'
 expect_text .github/workflows/ci.yml 'echo "SKIT_REQUIRE_NODE_RUNTIME=1" >> "$GITHUB_ENV"'
-expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.0.2'
+expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.2.2'
 expect_text .github/workflows/ci.yml 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text crates/skit-runtime/src/uv.rs 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text .github/workflows/ci.yml "throw 'the native Windows uv gate ran zero tests'"
@@ -84,7 +84,7 @@ expect_text .github/workflows/ci.yml 'test_the_preamble_runs_on_every_supported_
 expect_text .github/workflows/ci.yml 'the complete POSIX shell gate ran zero tests'
 expect_text .github/workflows/ci.yml 'the CPython 3.13 compile gate ran zero tests'
 fish_action_line="$(
-  grep -Fn 'uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0' \
+  grep -Fn 'uses: fish-actions/install-fish@4bb37a71daebb76c6fb7d83771cff31b8a78c28e # v1.2.0' \
     .github/workflows/ci.yml | cut -d: -f1
 )"
 test "$(printf '%s\n' "$fish_action_line" | sed '/^$/d' | wc -l)" -eq 1 || {
@@ -121,7 +121,7 @@ test "$fish_action_line" -lt "$fish_flag_line" && test "$fish_flag_line" -lt "$f
   exit 1
 }
 node_action_line="$(
-  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+  grep -Fn 'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0' \
     .github/workflows/ci.yml | cut -d: -f1
 )"
 node_check_line="$(grep -Fn 'run: node --version' .github/workflows/ci.yml | cut -d: -f1)"
@@ -138,10 +138,10 @@ test "$node_action_line" -lt "$node_check_line" && test "$node_check_line" -lt "
   exit 1
 }
 docs_node_line="$(
-  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+  grep -Fn 'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0' \
     .github/workflows/docs.yml | cut -d: -f1
 )"
-docs_npm_line="$(grep -Fn 'run: npm install --global npm@12.0.2' \
+docs_npm_line="$(grep -Fn 'run: npm install --global npm@12.2.2' \
   .github/workflows/docs.yml | cut -d: -f1)"
 docs_ci_line="$(grep -Fn 'run: npm ci' .github/workflows/docs.yml | cut -d: -f1)"
 test "$(printf '%s\n' "$docs_npm_line" | sed '/^$/d' | wc -l)" -eq 1 &&
@@ -198,8 +198,13 @@ test "$(grep -lF 'sys.version_info[:2] == (3, 13)' \
   echo 'every benchmark workflow must verify Python 3.13 before measurement' >&2
   exit 1
 }
-expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
+expect_text CONTRIBUTING.md 'Node.js 26.13.0 and npm 12.2.2 or later'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
+# A release download can fail for a moment (HTTP 504 on the 2026-11-08 nightly), so curl tries
+# again. The digest check stays the gate on what gets installed.
+hyperfine_action=.github/actions/install-hyperfine/action.yml
+expect_text "$hyperfine_action" 'curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o hyperfine.tgz'
+expect_text "$hyperfine_action" '  hyperfine.tgz" | sha256sum -c -'
 
 # The complete UI walk is expensive, so pull requests opt in with one label. Scheduled and manual
 # runs always execute. A failed walk must keep its replay data even when GIF rendering also fails.
@@ -257,7 +262,7 @@ if grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]+write([[:space:]]|$)' "$ui_walk
   exit 1
 fi
 expect_text "$ui_walker_workflow" 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
-expect_text "$ui_walker_workflow" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_text "$ui_walker_workflow" 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_CASES: "2"'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_STEPS: "100"'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_PROFILES: "complete"'
@@ -335,7 +340,7 @@ fi
 
 upload_step='Upload UI walker artifacts'
 expect_ui_step_text "$upload_step" 'if: ${{ !cancelled() }}'
-expect_ui_step_text "$upload_step" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_ui_step_text "$upload_step" 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2'
 expect_ui_step_text "$upload_step" 'path: target/ui-walker-artifacts/'
 expect_ui_step_text "$upload_step" 'if-no-files-found: error'
 
@@ -397,11 +402,13 @@ for demo in \
   done
 done
 
+# A repository action is not a third-party action. The `$/` self-repository form loads it from
+# the commit that runs, and the `./` form loads it from the checked-out files.
 while IFS= read -r use; do
   echo "GitHub action is not pinned to a full commit: $use" >&2
   exit 1
 done < <(
   sed -nE 's/^[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*/\1/p' .github/workflows/*.yml |
-    grep -v '^\./' |
+    grep -Ev '^(\./|\$/)' |
     grep -Ev '@[0-9a-f]{40}$' || true
 )

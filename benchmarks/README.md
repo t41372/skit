@@ -19,7 +19,7 @@ The shell files are thin front doors. All parsing, validation, orchestration, st
 reporting live in the typed `skit-benchmarks` crate. The pipeline does not contain a Python
 implementation or Python tooling. Python files are permitted only as measured script subjects.
 
-The macro suites need a POSIX host, Python, uv, and Hyperfine. CI installs Hyperfine 1.20.0 from
+The macro suites need a POSIX host, Python, uv, and Hyperfine. CI installs Hyperfine 2.0.0 from
 the checksum-pinned repository action. The full profile also uses Node and `strace`. An optional
 tool that is absent causes a recorded skip. It never causes a silent missing metric. Linux x86_64
 on `ubuntu-24.04` is the reference platform.

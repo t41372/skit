@@ -30,7 +30,10 @@ use unicode_width::UnicodeWidthStr as _;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control, styles_over};
+use pty::{
+    AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control, styles_over,
+    terminal_parser,
+};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
     let directory = data.join("scripts/demo");
@@ -566,7 +569,7 @@ impl LiveTui {
         let (rows, columns) = (self.rows, self.columns);
         self.pty
             .wait_for_after_rendered(checkpoint, needle, |bytes| {
-                let mut screen = vt100::Parser::new(rows, columns, 0);
+                let mut screen = terminal_parser(rows, columns);
                 screen.process(bytes);
                 format!(
                     "{}\n{}",
@@ -1967,7 +1970,7 @@ fn a_run_that_ends_the_session_leaves_the_cursor_below_its_output() {
     let (code, output) = tui.wait_for_exit_status_after(run);
     assert_eq!(code, 0, "{output}");
 
-    let mut terminal = vt100::Parser::new(tui.rows, tui.columns, 0);
+    let mut terminal = terminal_parser(tui.rows, tui.columns);
     terminal.process(&tui.raw_after(0));
     terminal.process(b"PROMPT$ ");
     let screen = terminal.screen().contents();

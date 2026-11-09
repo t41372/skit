@@ -50,6 +50,7 @@
 use std::{
     collections::BTreeSet,
     io::{Read as _, Write as _},
+    num::NonZeroU16,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver},
@@ -662,12 +663,27 @@ pub(crate) fn strip_terminal_control(input: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
+/// Make an emulated terminal of `rows` by `columns` cells with no scrollback.
+///
+/// A terminal grid has at least one row and one column.
+pub(crate) fn terminal_parser(rows: u16, columns: u16) -> vt100::Parser {
+    let rows = NonZeroU16::new(rows).expect("a terminal has at least one row");
+    let columns = NonZeroU16::new(columns).expect("a terminal has at least one column");
+    vt100::Parser::new(rows, columns, 0)
+}
+
+/// The rows and columns of an emulated terminal grid.
+pub(crate) fn screen_size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, columns) = screen.size();
+    (rows.get(), columns.get())
+}
+
 /// Replay terminal output and return only the current terminal grid.
 ///
 /// This applies cursor movement, erase commands, and alternate-screen changes. Use it for a
 /// full-screen assertion. [`strip_terminal_control`] is only a history view.
 pub(crate) fn final_terminal_screen(input: &[u8], rows: u16, columns: u16) -> String {
-    let mut terminal = vt100::Parser::new(rows, columns, 0);
+    let mut terminal = terminal_parser(rows, columns);
     terminal.process(input);
     terminal.screen().contents()
 }

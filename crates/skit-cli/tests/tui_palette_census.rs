@@ -29,7 +29,7 @@ use tempfile::TempDir;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, TerminalColors};
+use pty::{AnswerQueries, PtyChild, TerminalColors, screen_size, terminal_parser};
 
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 100;
@@ -549,7 +549,7 @@ fn quit(child: &mut PtyChild, screen: &str) {
 
 /// Whether the output leaves the terminal on the alternate screen, where the interface draws.
 fn in_interface(raw: &[u8]) -> bool {
-    let mut parser = vt100::Parser::new(ROWS, COLUMNS, 0);
+    let mut parser = terminal_parser(ROWS, COLUMNS);
     parser.process(raw);
     parser.screen().alternate_screen()
 }
@@ -563,7 +563,7 @@ fn wait_for_screen(child: &mut PtyChild, screen: &Screen, needle: &str) {
     loop {
         child.settle();
         let raw = child.raw_after(0);
-        let mut parser = vt100::Parser::new(screen.rows, screen.columns, 0);
+        let mut parser = terminal_parser(screen.rows, screen.columns);
         parser.process(&raw);
         let shown = parser.screen().contents();
         if shown.contains(needle) {
@@ -716,7 +716,7 @@ fn write_last_run(state: &Path, slug: &str, exit: i64) {
 
 /// The screen that `raw` leaves on a terminal of the given size.
 fn replay(raw: &[u8], rows: u16, columns: u16) -> vt100::Parser {
-    let mut parser = vt100::Parser::new(rows, columns, 0);
+    let mut parser = terminal_parser(rows, columns);
     parser.process(raw);
     assert!(
         parser.screen().alternate_screen(),
@@ -764,7 +764,7 @@ impl CellView {
 }
 
 fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<CellView> {
-    let (_, columns) = screen.size();
+    let (_, columns) = screen_size(screen);
     (0..columns)
         .map(|column| screen.cell(row, column).unwrap())
         .filter(|cell| !cell.is_wide_continuation())
@@ -979,7 +979,7 @@ fn census_terminal_theme_with_no_color() {
 /// A site that bypasses the theme shows up here: the terminal theme uses only the default
 /// colors, the 16 ANSI colors as hues, and reverse video for any background.
 fn terminal_rule_breaks(screen: &vt100::Screen, name: &str) -> Vec<String> {
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let mut breaks = std::collections::BTreeSet::new();
     for row in 0..rows {
         for column in 0..columns {
@@ -1088,7 +1088,7 @@ fn shown(environment: &Environment, name: &str) -> vt100::Parser {
 /// The cells that show the first occurrence of `needle` on the screen.
 fn cells_of(parser: &vt100::Parser, needle: &str) -> Vec<vt100::Cell> {
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     for row in 0..rows {
         let text = screen.contents_between(row, 0, row, columns);
         if let Some(byte) = text.find(needle) {
@@ -1158,7 +1158,7 @@ fn skit_theme_hints_are_dim_default_text() {
 fn skit_theme_scrollbars_use_the_version_0_4_color() {
     let settings = shown(&TRUECOLOR, "entry-settings");
     let screen = settings.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let bar = (0..rows)
         .map(|row| screen.cell(row, columns - 1).unwrap().clone())
         .filter(|cell| ["▲", "▼", "█", "║"].contains(&cell.contents()))
@@ -1193,7 +1193,7 @@ fn skit_theme_widget_labels_use_the_default_foreground() {
 fn colors_on(environment: &Environment, name: &str) -> Vec<String> {
     let parser = shown(environment, name);
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     (0..rows)
         .flat_map(|row| (0..columns).map(move |column| (row, column)))
         .flat_map(|(row, column)| {
@@ -1518,7 +1518,7 @@ fn terminal_theme_footer_labels_stay_plain_in_a_wide_script() {
     quit(&mut child, library.name);
     let parser = replay(&raw, library.rows, library.columns);
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let row = (0..rows)
         .rev()
         .find(|row| {
@@ -1839,7 +1839,7 @@ fn a_late_color_answer_never_becomes_keys() {
     }
     child.settle_quiet(Duration::from_millis(500));
     let raw = child.raw_after(0);
-    let mut parser = vt100::Parser::new(library.rows, library.columns, 0);
+    let mut parser = terminal_parser(library.rows, library.columns);
     parser.process(&raw);
     let shown = parser.screen().contents();
     assert!(

@@ -28,13 +28,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-codspeed@5.0.1
+          tool: cargo-codspeed@6.0.0
       - name: Build instrumented benchmarks
         run: cargo codspeed build -m simulation --locked --workspace --all-features
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: simulation
           run: cargo codspeed run --workspace

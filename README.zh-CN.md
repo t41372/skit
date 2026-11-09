@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
-[![Rust 1.98.1](https://img.shields.io/badge/rust-1.98.1-orange)](https://www.rust-lang.org/)
+[![Rust 1.99.1](https://img.shields.io/badge/rust-1.99.1-orange)](https://www.rust-lang.org/)
 [![TUI: Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -99,7 +99,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## 安装
 
-skit 使用 [uv](https://docs.astral.sh/uv/) 0.12.3。如果没有安装 uv，skit 会先征得你同意，再把这个版本下载到自己的私有目录。skit 不会改动你的 `PATH` 或全局环境。仍建议参考[官方文档](https://docs.astral.sh/uv/getting-started/installation/)在系统中安装 uv。
+skit 使用 [uv](https://docs.astral.sh/uv/) 0.13.7。如果没有安装 uv，skit 会先征得你同意，再把这个版本下载到自己的私有目录。skit 不会改动你的 `PATH` 或全局环境。仍建议参考[官方文档](https://docs.astral.sh/uv/getting-started/installation/)在系统中安装 uv。
 
 ```bash
 # 用 uv tool 从 PyPI 安装 skit（包名是 skit-cli，装好的命令是 skit）

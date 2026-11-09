@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
-[![Rust 1.98.1](https://img.shields.io/badge/rust-1.98.1-orange)](https://www.rust-lang.org/)
+[![Rust 1.99.1](https://img.shields.io/badge/rust-1.99.1-orange)](https://www.rust-lang.org/)
 [![TUI: Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -113,7 +113,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## Install
 
-skit uses [uv](https://docs.astral.sh/uv/) 0.12.3. If uv is not installed, skit asks for
+skit uses [uv](https://docs.astral.sh/uv/) 0.13.7. If uv is not installed, skit asks for
 consent and then downloads this version into its private directory. skit does not change your
 `PATH` or global environment. A system-wide
 [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.

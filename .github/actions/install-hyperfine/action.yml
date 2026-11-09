@@ -1,16 +1,18 @@
 name: Install hyperfine (pinned)
 description: >-
-  Install hyperfine 1.20.0 from its release archive and verify the fixed SHA-256 digest.
+  Install hyperfine 2.0.0 from its release archive and verify the fixed SHA-256 digest.
 runs:
   using: composite
   steps:
     - name: Download, verify, install
       shell: bash
       run: |
-        curl -sSfL -o hyperfine.tgz \
-          "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
-        echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
+        # A release download can fail for a moment (HTTP 504 on the 2026-11-08 nightly), so curl
+        # tries again. The digest check below still decides what gets installed.
+        curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o hyperfine.tgz \
+          "https://github.com/sharkdp/hyperfine/releases/download/v2.0.0/hyperfine-v2.0.0-x86_64-unknown-linux-gnu.tar.gz"
+        echo "ae2beda2ac99c098427e4f755244552daf20e514422889cca6d44421e2d93c87  hyperfine.tgz" | sha256sum -c -
         tar xzf hyperfine.tgz
-        install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
-        rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
+        install -m 0755 hyperfine-v2.0.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
+        rm -rf hyperfine.tgz hyperfine-v2.0.0-x86_64-unknown-linux-gnu
         hyperfine --version

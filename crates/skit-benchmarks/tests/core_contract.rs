@@ -25,6 +25,13 @@ fn metric(value: f64, unit: &str) -> Metric {
     }
 }
 
+/// One Hyperfine 2 export with one result that has no custom name and one run.
+fn single_run_export(command: &str, seconds: &str, unit: &str, exit_code: &str) -> String {
+    format!(
+        r#"{{"schema_version":2,"results":[{{"command":"{command}","measurements":[{{"time_wall_clock":{{"value":{seconds},"unit":"{unit}"}},"exit_code":{exit_code}}}]}}]}}"#
+    )
+}
+
 fn meta() -> Meta {
     Meta {
         generated_at: "2026-08-08T12:00:00Z".to_owned(),
@@ -111,21 +118,28 @@ fn hyperfine_builder_and_parser_keep_real_argv_and_full_samples() {
     );
 
     let export = r#"{
+      "schema_version": 2,
+      "primary_metric": "time_wall_clock",
       "results": [{
-        "command": "startup.version",
-        "times": [0.001, 0.002, 0.004],
-        "exit_codes": [0, 0, 0]
+        "command": "'/tmp/skit path/skit' --version",
+        "name": "startup.version",
+        "measurements": [
+          {"time_wall_clock": {"value": 0.001, "unit": "second"}, "exit_code": 0},
+          {"time_wall_clock": {"value": 0.002, "unit": "second"}, "exit_code": 0},
+          {"time_wall_clock": {"value": 0.004, "unit": "second"}, "exit_code": 0}
+        ]
       }]
     }"#;
     let samples = parse_export(export).unwrap();
     assert_eq!(samples["startup.version"], [0.001, 0.002, 0.004]);
-    let zero = parse_export(r#"{"results":[{"command":"instant","times":[0.0]}]}"#).unwrap();
+    // Hyperfine leaves out the name when it is the command.
+    let zero = parse_export(&single_run_export("instant", "0.0", "second", "0")).unwrap();
     assert_eq!(zero["instant"], [0.0]);
     let metrics = metrics_from_export(&samples).unwrap();
     assert_eq!(metrics["startup.version.median_ms"].value, 2.0);
     assert_eq!(metrics["startup.version.median_ms"].p95, Some(4.0));
-    assert!(parse_export(r#"{"results":[{"command":"x","times":[1],"exit_codes":[1]}]}"#).is_err());
-    assert!(parse_export(r#"{"results":[{"command":"x","times":[-1]}]}"#).is_err());
+    assert!(parse_export(&single_run_export("x", "1", "second", "1")).is_err());
+    assert!(parse_export(&single_run_export("x", "-1", "second", "0")).is_err());
     assert!(validate_case_names(&samples, &[Case::new("missing", ["true"])]).is_err());
     assert!(
         build_argv(
@@ -164,19 +178,34 @@ fn hyperfine_refuses_every_ambiguous_case_and_export_shape() {
     ));
 
     for export in [
-        r#"{"results":[]}"#,
-        r#"{"results":[{"command":"","times":[1]}]}"#,
-        r#"{"results":[{"command":"missing-times","times":[]}]}"#,
+        r#"{"schema_version":2,"results":[]}"#.to_owned(),
+        single_run_export("", "1", "second", "0"),
+        r#"{"schema_version":2,"results":[{"command":"missing-times","measurements":[]}]}"#
+            .to_owned(),
+        single_run_export("milliseconds", "1", "millisecond", "0"),
+        single_run_export("signal", "1", "second", "null"),
     ] {
         assert!(matches!(
-            parse_export(export),
+            parse_export(&export),
             Err(HyperfineError::Shape(_))
         ));
     }
+    // A Hyperfine 1 export has no schema version and another result shape.
     assert!(matches!(
-        parse_export(
-            r#"{"results":[{"command":"same","times":[1]},{"command":"same","times":[2]}]}"#
-        ),
+        parse_export(r#"{"results":[{"command":"x","times":[1],"exit_codes":[0]}]}"#),
+        Err(HyperfineError::Json(_))
+    ));
+    let schema_one = single_run_export("x", "1", "second", "0")
+        .replace(r#""schema_version":2"#, r#""schema_version":1"#);
+    assert!(matches!(
+        parse_export(&schema_one),
+        Err(HyperfineError::Shape(reason)) if reason.contains("schema 1")
+    ));
+    let run = r#"{"time_wall_clock":{"value":1,"unit":"second"},"exit_code":0}"#;
+    assert!(matches!(
+        parse_export(&format!(
+            r#"{{"schema_version":2,"results":[{{"command":"a","name":"same","measurements":[{run}]}},{{"command":"b","name":"same","measurements":[{run}]}}]}}"#
+        )),
         Err(HyperfineError::Shape(reason)) if reason.contains("duplicate hyperfine case")
     ));
 }

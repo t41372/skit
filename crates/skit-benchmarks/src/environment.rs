@@ -186,14 +186,13 @@ pub fn collect_meta(
     python: Option<&Path>,
     uv: Option<&Path>,
 ) -> Result<Meta, EnvironmentError> {
-    let system = System::new_all();
-    let os = System::name().unwrap_or_else(|| env::consts::OS.to_owned());
+    // sysinfo returns an error on a platform that it does not support. The host facts then use
+    // the values of an empty probe: no CPU brand, one CPU, and no memory.
+    let system = System::new_all().ok();
+    let os = System::name().unwrap_or_else(|_| env::consts::OS.to_owned());
     let architecture = System::cpu_arch();
-    let first_brand = system
-        .cpus()
-        .first()
-        .map(|cpu| cpu.brand().trim())
-        .unwrap_or("");
+    let cpus = system.as_ref().map_or(&[][..], System::cpus);
+    let first_brand = cpus.first().map(|cpu| cpu.brand().trim()).unwrap_or("");
     let cpu = cpu_brand(first_brand, &architecture).to_owned();
     let git = which::which("git").map_err(|_| EnvironmentError::MissingTool("git"))?;
     let host_env = host_probe_environment();
@@ -234,10 +233,10 @@ pub fn collect_meta(
         skit_version,
         host: HostInfo {
             os: os.clone(),
-            kernel: System::kernel_version().unwrap_or_else(|| "unknown".to_owned()),
+            kernel: System::kernel_version().unwrap_or_else(|_| "unknown".to_owned()),
             cpu,
-            cpu_count: system.cpus().len().max(1),
-            mem_total_mib: memory_mebibytes(system.total_memory()),
+            cpu_count: cpus.len().max(1),
+            mem_total_mib: memory_mebibytes(system.as_ref().map_or(0, System::total_memory)),
             platform_key: platform_key(&os, &architecture),
             ci_runner: non_empty_env_value(env::var(CI_RUNNER_VAR).ok()),
             ci_image_version: non_empty_env_value(env::var(CI_IMAGE_VERSION_VAR).ok()),

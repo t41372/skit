@@ -1,4 +1,4 @@
-FROM rust:1.98.1-bookworm AS builder
+FROM rust:1.99.1-bookworm AS builder
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
@@ -6,9 +6,9 @@ COPY crates ./crates
 COPY skills ./skills
 RUN cargo build --locked --release -p skit-cli-rs
 
-FROM ghcr.io/charmbracelet/vhs:v0.11.0
+FROM ghcr.io/charmbracelet/vhs:v0.12.1
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /uvx /usr/local/bin/
 COPY --from=builder /src/target/release/skit /usr/local/bin/skit
 
 RUN apt-get update \

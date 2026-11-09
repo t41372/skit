@@ -41,7 +41,7 @@ Issues = "https://github.com/t41372/skit/issues"
 Documentation = "https://t41372.github.io/skit/"
 
 [build-system]
-requires = ["maturin>=1.14.1,<2"]
+requires = ["maturin>=1.16.0,<2"]
 build-backend = "maturin"
 
 [tool.maturin]

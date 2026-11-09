@@ -14,7 +14,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// The uv version that the private bootstrap installs.
-pub const UV_VERSION: &str = "0.12.3";
+pub const UV_VERSION: &str = "0.13.7";
 
 const OFFICIAL_BASE: &str = "https://github.com/astral-sh/uv/releases/download";
 const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
@@ -22,35 +22,35 @@ const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
 const CHECKSUMS: &[(&str, &str)] = &[
     (
         "aarch64-apple-darwin",
-        "546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843",
+        "81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731",
     ),
     (
         "x86_64-apple-darwin",
-        "4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b",
+        "20c47e4c1f630b8abaff8c291fa9b9aa300fef92c4fbff95adf198b55287cda7",
     ),
     (
         "aarch64-unknown-linux-gnu",
-        "bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2",
+        "71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc",
     ),
     (
         "x86_64-unknown-linux-gnu",
-        "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101",
+        "c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83",
     ),
     (
         "aarch64-unknown-linux-musl",
-        "fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e",
+        "2d3ec076a0c4c0e8250bb6418c44080828b544f1a3be0b6e46adf9fb6923de45",
     ),
     (
         "x86_64-unknown-linux-musl",
-        "0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3",
+        "287491da03f2a785c70fa75b13e1f849918c2f2b5415fe84876b8214eeb792f9",
     ),
     (
         "aarch64-pc-windows-msvc",
-        "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb",
+        "505d9e65e7692bac3ddf98c66754aa26c5050c409c184af30a881a0a72cc85e3",
     ),
     (
         "x86_64-pc-windows-msvc",
-        "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e",
+        "0cdc5b38fe5a8168ed6a25814f5ba43c21d313dd3187314fccb37b7cec46e021",
     ),
 ];
 
@@ -501,8 +501,9 @@ fn executable_from_zip(archive: &[u8], name: &str) -> Result<Vec<u8>, UvBootstra
     let mut archive = zip::ZipArchive::new(reader).map_err(archive_error)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(archive_error)?;
+        let path = entry.name().map_err(archive_error)?;
         if !entry.is_dir()
-            && Path::new(entry.name())
+            && Path::new(&*path)
                 .file_name()
                 .is_some_and(|item| item == name)
         {
