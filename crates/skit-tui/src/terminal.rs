@@ -110,7 +110,7 @@ fn enter_screen_modes(out: &mut impl Write) -> io::Result<()> {
 
 /// Leave every screen mode of a session.
 ///
-/// The suspend before a host effect and the final restore share this set. Mouse capture, focus
+/// The suspend before a run or an editor and the final restore share this set. Mouse capture, focus
 /// reporting, and bracketed paste are not part of the alternate screen. After
 /// `LeaveAlternateScreen` alone, the terminal keeps them on, and a child process on the same
 /// terminal then receives mouse and focus reports and paste markers as input.
@@ -197,6 +197,35 @@ impl TerminalInput {
         self.queued.extend(after);
         Ok(self.queued.pop_front())
     }
+}
+
+/// Return the status that says why the line break of `event` did not act as Enter.
+///
+/// With no bracketed paste, [`TerminalInput`] puts each paste event together from typed keys, and
+/// the line break of such a paste never acts as Enter. A tool can also type text and Enter that
+/// fast, for example a text expander or the auto-type of a password manager. Without this
+/// warning, that Enter does nothing, and nothing on the screen tells why. The warning stays until
+/// the next key, which then acts as usual. A box that keeps more lines takes the line break as
+/// text, so it gets no warning.
+fn guessed_paste_warning(
+    input: &TerminalInput,
+    event: &event::Event,
+    session: &TuiSession,
+    state: &LibraryState,
+    locale: Locale,
+) -> Option<Action> {
+    let event::Event::Paste(text) = event else {
+        return None;
+    };
+    (input.fold_pastes && text.contains('\n') && session.focused_box_keeps_one_line(state)).then(
+        || Action::SetStatus {
+            kind: StatusKind::Warning,
+            message: Message::new(
+                "skit took this input as a paste, so its line break did not act as Enter.",
+            )
+            .localize(locale),
+        },
+    )
 }
 
 /// Turn the keys of one burst into the paste event that bracketed paste reports.
@@ -447,7 +476,7 @@ where
     )
 }
 
-/// Run the terminal frontend with a check that occurs before terminal suspension.
+/// Run the terminal frontend with a check that occurs before the host serves an effect.
 ///
 /// The check must be local and read-only. A refusal stays on the active screen as a localized
 /// status. The host does not receive the refused effect.
@@ -563,12 +592,14 @@ where
         }
         let effect = state.update(action);
         if !matches!(effect, Effect::None) {
+            // The session has not claimed the terminal yet, so it has nothing to give away.
             let (quit, outcome) = drain_host_effects_observed(
                 &mut state,
                 &mut host,
                 effect,
                 &mut locale,
                 &mut observe,
+                &mut |_| Ok(()),
             )?;
             if quit || outcome.is_some() {
                 return Ok(outcome);
@@ -629,6 +660,7 @@ where
         if presses.starts_new_sequence(&event, Instant::now()) {
             session.end_press_sequence();
         }
+        let paste_warning = guessed_paste_warning(&input, &event, &session, &state, locale);
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
         export_clipboard(&mut session, &mut io::stdout(), &system_clipboard)?;
         redraw = request_redraw(redraw, dispatched.redraw);
@@ -665,6 +697,10 @@ where
                 break outcome;
             }
         }
+        if let Some(warning) = paste_warning {
+            let _ = state.update(warning);
+            redraw = true;
+        }
     };
     terminal.show_cursor()?;
     Ok(outcome)
@@ -686,6 +722,12 @@ enum HostedActionStep<O> {
 ///
 /// The transition callback is the terminal boundary. Production leaves and re-enters every screen
 /// mode there. Tests use the same path with a recorded fake lifecycle.
+///
+/// The session leaves its screen only for an effect that needs the terminal
+/// ([`Effect::needs_the_terminal`]): a run or an editor. Every other effect is served on the
+/// screen, as version 0.4 does. Leaving the screen shows the shell, and the return waits until the
+/// terminal reports the cursor position, which takes one round trip over SSH. A preset save, a
+/// reload, or a key in a pattern field must not make the screen flash.
 fn advance_hosted_action<F, P, E, O>(
     state: &mut LibraryState,
     action: Action,
@@ -715,9 +757,23 @@ where
             if !accept_host_effect(state, &effect, preflight, *locale) {
                 return Ok(HostedActionStep::Continue);
             }
-            transition(HostedTerminalTransition::Suspend)?;
-            let (quit, host_outcome) =
-                drain_host_effects_observed(state, host, effect, locale, observe)?;
+            // A chained effect can need the terminal after one that does not, so the session
+            // leaves its screen just before the first such effect, and at most once.
+            let mut suspended = false;
+            let (quit, host_outcome) = drain_host_effects_observed(
+                state,
+                host,
+                effect,
+                locale,
+                observe,
+                &mut |effect: &Effect| {
+                    if !suspended && effect.needs_the_terminal() {
+                        transition(HostedTerminalTransition::Suspend)?;
+                        suspended = true;
+                    }
+                    Ok(())
+                },
+            )?;
             if outcome.is_none() {
                 outcome = host_outcome;
             }
@@ -727,7 +783,9 @@ where
             if outcome.is_some() {
                 return Ok(HostedActionStep::Finish(outcome));
             }
-            transition(HostedTerminalTransition::Resume)?;
+            if suspended {
+                transition(HostedTerminalTransition::Resume)?;
+            }
             Ok(HostedActionStep::Continue)
         }
     }
@@ -769,7 +827,7 @@ fn add_workflow_outcome(action: &Action) -> Option<AddWorkflowOutcome> {
 /// Return the status action that the hosted terminal shows when a preflight check refuses an
 /// effect.
 ///
-/// The terminal shows it before it suspends, and the effect never reaches the host. A walker
+/// The terminal shows it on its screen, and the effect never reaches the host. A walker
 /// host uses the same action, so a walk answers the refusal as the product answers it.
 #[must_use]
 pub fn preflight_refusal_status(error: &impl Localize, locale: Locale) -> Action {
@@ -823,16 +881,21 @@ where
     E: Localize,
 {
     let (quit, _): (bool, Option<()>) =
-        drain_host_effects_observed(state, host, effect, locale, &mut |_| None)?;
+        drain_host_effects_observed(state, host, effect, locale, &mut |_| None, &mut |_| Ok(()))?;
     Ok(quit)
 }
 
+/// Serve one effect and every effect that its answer starts, in order.
+///
+/// `before_host` sees each effect just before the host serves it, so the caller can give the
+/// terminal away first.
 fn drain_host_effects_observed<F, E, O>(
     state: &mut LibraryState,
     host: &mut F,
     mut effect: Effect,
     locale: &mut Locale,
     observe: &mut impl FnMut(&Action) -> Option<O>,
+    before_host: &mut impl FnMut(&Effect) -> io::Result<()>,
 ) -> Result<(bool, Option<O>), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -843,21 +906,24 @@ where
         match effect {
             Effect::None => return Ok((false, outcome)),
             Effect::Quit => return Ok((true, outcome)),
-            current => match host(current) {
-                Ok(action) => {
-                    if outcome.is_none() {
-                        outcome = observe(&action);
+            current => {
+                before_host(&current)?;
+                match host(current) {
+                    Ok(action) => {
+                        if outcome.is_none() {
+                            outcome = observe(&action);
+                        }
+                        if let Some(next_locale) = action_locale(&action) {
+                            *locale = next_locale;
+                        }
+                        effect = state.update(action);
                     }
-                    if let Some(next_locale) = action_locale(&action) {
-                        *locale = next_locale;
+                    Err(error) => {
+                        state.update(host_failure_status(&error, *locale));
+                        return Ok((false, outcome));
                     }
-                    effect = state.update(action);
                 }
-                Err(error) => {
-                    state.update(host_failure_status(&error, *locale));
-                    return Ok((false, outcome));
-                }
-            },
+            }
         }
     }
     Err(TuiError::EffectCycle)
@@ -980,6 +1046,7 @@ where
         if presses.starts_new_sequence(&event, Instant::now()) {
             session.end_press_sequence();
         }
+        let paste_warning = guessed_paste_warning(&input, &event, &session, &state, locale);
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
         export_clipboard(&mut session, &mut io::stdout(), &system_clipboard)?;
         redraw = request_redraw(redraw, dispatched.redraw);
@@ -994,6 +1061,10 @@ where
                     }
                 }
             }
+        }
+        if let Some(warning) = paste_warning {
+            let _ = state.update(warning);
+            redraw = true;
         }
     };
     terminal.show_cursor()?;
@@ -1647,6 +1718,24 @@ mod tests {
         Ok(Action::ClearStatus)
     }
 
+    /// A Library with one selected Python entry, so `Action::Edit` asks the host for the editor.
+    fn library_with_one_script() -> LibraryState {
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, StorageMode};
+
+        LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        })
+    }
+
     #[test]
     fn terminal_takes_an_event_for_every_wait_the_loop_can_choose() {
         use std::cell::Cell;
@@ -1865,6 +1954,7 @@ mod tests {
             Effect::Reload,
             &mut locale,
             &mut add_workflow_outcome,
+            &mut |_| Ok(()),
         )
         .unwrap();
 
@@ -1980,9 +2070,7 @@ mod tests {
         );
         assert!(transitions.borrow().is_empty());
 
-        // The same recorder is live when an actual host effect crosses the terminal boundary.
-        // This distinguishes the two local actions above from an accidentally suppressed
-        // transition callback.
+        // A host effect that needs no terminal is served on the screen.
         let mut continuing_state = LibraryState::default();
         let mut continuing_host = harmless_host;
         let mut no_outcome = |_action: &Action| None::<()>;
@@ -1999,6 +2087,25 @@ mod tests {
             .unwrap(),
             HostedActionStep::Continue
         );
+        assert!(transitions.borrow().is_empty());
+
+        // The same recorder is live when an effect gives the terminal to another program. This
+        // distinguishes the actions above from an accidentally suppressed transition callback.
+        let mut editing_state = library_with_one_script();
+        let mut editing_host = harmless_host;
+        assert_eq!(
+            advance_hosted_action(
+                &mut editing_state,
+                Action::Edit,
+                &mut preflight,
+                &mut editing_host,
+                &mut locale,
+                &mut no_outcome,
+                &mut record_transition,
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
         assert_eq!(
             &*transitions.borrow(),
             &[
@@ -2008,19 +2115,65 @@ mod tests {
         );
     }
 
+    // Ways this can fail: an effect that needs no terminal leads to one that does, and the
+    // session serves the second one on its screen, so the editor draws over the interface; or
+    // the session leaves its screen twice in one chain.
+    #[test]
+    fn a_chain_leaves_the_screen_just_before_its_first_effect_that_needs_the_terminal() {
+        let mut state = library_with_one_script();
+        let mut locale = Locale::En;
+        let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
+        let mut no_outcome = |_action: &Action| None::<()>;
+        let events = std::cell::RefCell::new(Vec::new());
+        // The reload answers with a request for the editor, and the editor ends the chain.
+        let mut host = |effect: Effect| -> Result<Action, HostError> {
+            events.borrow_mut().push(format!("host {effect:?}"));
+            Ok(match effect {
+                Effect::Reload => Action::Edit,
+                _ => Action::ClearStatus,
+            })
+        };
+        assert_eq!(
+            advance_hosted_action(
+                &mut state,
+                Action::Reload,
+                &mut preflight,
+                &mut host,
+                &mut locale,
+                &mut no_outcome,
+                &mut |transition| {
+                    events.borrow_mut().push(format!("{transition:?}"));
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
+        assert_eq!(
+            *events.borrow(),
+            [
+                "host Reload".to_owned(),
+                "Suspend".to_owned(),
+                "host Edit { selector: \"alpha\" }".to_owned(),
+                "Resume".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn hosted_action_step_finishes_for_quit_or_outcome_independently() {
         let mut locale = Locale::En;
         let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
 
-        let mut quit_state = LibraryState::default();
+        // A run that ends the session quits while the run has the terminal.
+        let mut quit_state = library_with_one_script();
         let mut quit_host = |_effect| -> Result<Action, HostError> { Ok(Action::Quit) };
         let mut no_outcome = |_action: &Action| None::<()>;
         let mut transitions = Vec::new();
         assert_eq!(
             advance_hosted_action(
                 &mut quit_state,
-                Action::Reload,
+                Action::Edit,
                 &mut preflight,
                 &mut quit_host,
                 &mut locale,
@@ -2052,6 +2205,7 @@ mod tests {
         };
         let mut observe = add_workflow_outcome;
         transitions.clear();
+        // The add commit needs no terminal, so the session finishes on its screen.
         assert_eq!(
             advance_hosted_action(
                 &mut outcome_state,
@@ -2068,16 +2222,16 @@ mod tests {
             .unwrap(),
             HostedActionStep::Finish(Some(AddWorkflowOutcome::Completed(slug)))
         );
-        assert_eq!(transitions, [HostedTerminalTransition::Suspend]);
+        assert!(transitions.is_empty());
 
-        let mut continuing_state = LibraryState::default();
+        let mut continuing_state = library_with_one_script();
         let mut continuing_host = harmless_host;
         let mut no_outcome = |_action: &Action| None::<()>;
         transitions.clear();
         assert_eq!(
             advance_hosted_action(
                 &mut continuing_state,
-                Action::Reload,
+                Action::Edit,
                 &mut preflight,
                 &mut continuing_host,
                 &mut locale,

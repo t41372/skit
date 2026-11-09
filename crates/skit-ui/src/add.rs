@@ -1368,6 +1368,24 @@ pub enum AddEffect {
     Cancel,
 }
 
+impl AddEffect {
+    /// Whether the host needs the terminal for this step: the two steps that open the editor.
+    #[must_use]
+    pub const fn needs_the_terminal(&self) -> bool {
+        match self {
+            Self::AuthorDraft { .. } | Self::EditSource { .. } => true,
+            Self::InspectSource { .. }
+            | Self::DeleteDraft { .. }
+            | Self::Commit { .. }
+            | Self::ConsumeDraft(_)
+            | Self::DraftKept(_)
+            | Self::RememberRunner(_)
+            | Self::Complete(_)
+            | Self::Cancel => false,
+        }
+    }
+}
+
 /// Complete add reducer. It never performs file or repository I/O itself.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AddWorkflowState {

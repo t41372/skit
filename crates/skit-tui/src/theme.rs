@@ -165,12 +165,22 @@ pub(crate) fn panel_border(panel: Panel) -> Style {
 }
 
 pub(crate) fn panel_block(label: String, panel: Panel) -> Block<'static> {
-    Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(panel_border(panel))
-        .title_style(title())
-        .title(format!(" {label} "))
+        .title_style(title());
+    match padded_title(&label) {
+        Some(title) => block.title(title),
+        None => block,
+    }
+}
+
+/// The title of a box border: the label with one space on each side.
+///
+/// An empty label gives no title. A title of spaces would cut a gap into the top border.
+pub(crate) fn padded_title(label: &str) -> Option<String> {
+    (!label.is_empty()).then(|| format!(" {label} "))
 }
 
 pub(crate) fn padded_panel(label: String, panel: Panel) -> Block<'static> {

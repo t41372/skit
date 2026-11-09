@@ -332,6 +332,30 @@ These receipts are new. Version 0.4 is silent at each of them:
 - A choice in the preset picker shows `✓ Preset applied.`, or `✓ Last values restored.` for the
   `↩ last values` row (`src/skit/tui_form.py:761-779` applies the values without a word).
 
+## An edit that changes nothing says so
+
+Version 0.4 reports a save after every edit, also when the editor changed nothing. `skit edit`
+prints `Saved <name>.` and a hint that names `skit params` (`src/skit/cli.py:2731-2741`), and the
+`e` key of the Library shows `Edited <name>.` (`src/skit/tui.py:874-902`).
+
+Version 0.5 compares the source before and after the editor. When the bytes are the same,
+`skit edit` prints `No changes to <name>.` and no hint, and the Library shows the same words as an
+information status. A real change still prints `Saved <name>.` and the hint, and the Library shows
+`✓ Source saved`. An editor can write the file again with the same bytes, as `:wq` in vim does with
+no change. That edit changed nothing, so it also reports no changes.
+
+skit can compare only what it can read. When it cannot read the source before or after the editor,
+for example an original that its owner can write but not read, `skit edit` prints
+`skit could not read <path>, so it cannot tell whether <name> changed.` and exits with 0, as before.
+The Library shows the same words as a warning.
+
+The Library reports an edit only in its status line, as version 0.4 does. The report of `skit edit`
+is for the shell, and the Library does not print it there.
+`edit_reports_no_changes_when_the_editor_saves_the_source_as_it_was`,
+`edit_says_so_when_it_cannot_read_the_source_to_compare`,
+`the_editor_key_reports_a_saved_source_only_when_the_editor_changed_it`, and
+`the_editor_key_says_so_when_it_cannot_read_the_source_to_compare` pin this on the real binary.
+
 ## A run from the interface reports its outcome on both sides of the screen
 
 Version 0.4 prints `── Run <name> ──` before a run from the Library (`src/skit/tui.py:829`,
@@ -436,6 +460,15 @@ The parameter declarations that the script's block keeps are "parameter definiti
 contracts stay: the `form` setting with its values `tui` and `plain`, the JSON keys, and the flag
 names. `every_catalog_row_calls_the_parameter_screen_the_launch_menu` pins the catalog.
 
+## The add summary names the copy mode in Chinese
+
+Version 0.4 puts the stored mode value into the translated add summary, so a Chinese summary reads
+`已加入:greet (copy 模式)` (`src/skit/cli.py:2218-2225`). Version 0.5 gives each mode its own
+sentence. The copy mode is `复制模式` in Simplified Chinese and `複製模式` in Traditional Chinese, the
+words that the other catalog rows use. The reference mode keeps `reference 模式`, the name of its
+`--ref` flag, as every other row does. The English summary does not change.
+`the_add_summary_names_the_storage_mode_in_each_locale` pins this.
+
 ## The footer keeps its border
 
 Version 0.4 docks a bare `KeysBar` with no border under every screen
@@ -501,13 +534,15 @@ These limits remain on Windows:
   after a paste. In the Library, each character acts as its key.
 - A long paste that the terminal sends in parts, with a pause of more than 5 ms between two
   parts, is more than one burst. A line break at the end of a part can act as Enter.
-- When skit is busy and a person types a character and then Enter before skit reads them, the
-  two keys arrive together, and skit takes them as a paste: the launch menu does not run. Press
-  Enter again.
+- A tool that types text and Enter at once, such as a text expander or the auto-type of a password
+  manager, makes the same burst as a paste. So does a person who types a character and then Enter
+  while skit is busy. skit takes the burst as a paste, so its Enter does not act. When the focused
+  box keeps one line, the status line says so until the next key, and the next Enter acts as usual.
 
 `a_windows_paste_with_a_line_break_never_runs_the_launch_menu` in `terminal_pty.rs` pins the paste
-on the Windows pseudo-console, and the `terminal.rs` unit tests pin each burst rule on every
-platform.
+on the Windows pseudo-console. `a_windows_path_typed_with_enter_in_one_burst_says_why_enter_did_nothing`
+and `a_windows_launch_menu_value_typed_with_enter_in_one_burst_says_why_enter_did_nothing` pin the
+warning in both event loops. The `terminal.rs` unit tests pin each burst rule on every platform.
 
 `tui_text_editing.rs` drives each key group in a real terminal for a launch-menu box, the Add path
 box, the search box, an Entry settings box, the multi-line Description box, and the Search box of

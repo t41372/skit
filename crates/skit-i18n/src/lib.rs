@@ -755,9 +755,14 @@ const CATALOG: &[Translation] = &[
         "無法儲存參數組合，因為該項目沒有參數",
     ),
     row!(
-        "Added: {} ({} mode)",
-        "已加入:{} ({} 模式)",
-        "已加入:{} ({} 模式)",
+        "Added: {} (copy mode)",
+        "已加入:{} (复制模式)",
+        "已加入:{} (複製模式)",
+    ),
+    row!(
+        "Added: {} (reference mode)",
+        "已加入:{} (reference 模式)",
+        "已加入:{} (reference 模式)",
     ),
     row!("Added: {}", "已加入:{}", "已加入:{}"),
     row!("Description: {}", "说明:{}", "說明:{}"),
@@ -3989,6 +3994,12 @@ const CATALOG: &[Translation] = &[
     ),
     row!("No such file: {}", "找不到文件：{}", "找不到檔案：{}"),
     row!("Saved {}.", "已保存 {}。", "已儲存 {}。"),
+    row!("No changes to {}.", "{} 没有改动。", "{} 沒有變更。"),
+    row!(
+        "skit could not read {}, so it cannot tell whether {} changed.",
+        "skit 读不了 {}，没法判断 {} 有没有改动。",
+        "skit 讀不到 {}，沒辦法判斷 {} 有沒有變更。",
+    ),
     row!(
         "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
         "skit 会在运行时自动校对参数差异;可用 skit params {} 查看管理中的参数",
@@ -4271,6 +4282,11 @@ const CATALOG: &[Translation] = &[
         "Press Ctrl+C again to quit",
         "再按一次 Ctrl+C 退出",
         "再按一次 Ctrl+C 離開",
+    ),
+    row!(
+        "skit took this input as a paste, so its line break did not act as Enter.",
+        "skit 把这段输入当成粘贴，里面的换行不算按 Enter。",
+        "skit 把這段輸入當成貼上，裡面的換行不算按 Enter。",
     ),
     row!(
         "The runner row changed before it could be saved; inspect again.",

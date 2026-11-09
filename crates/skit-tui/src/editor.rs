@@ -287,6 +287,11 @@ impl TextEditor {
         }
     }
 
+    /// Report whether the box keeps only the first line of a paste.
+    pub(crate) const fn keeps_one_line(&self) -> bool {
+        !self.multiline
+    }
+
     /// Replace the whole text with a value that another owner set, and forget the history.
     ///
     /// A screen calls this when the model holds a value that the box did not make. The caret goes

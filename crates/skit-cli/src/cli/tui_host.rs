@@ -23,12 +23,12 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::run::{RunClock, RunInvocation, RunPorts, RunServices};
 
 use super::{
-    AddHostContext, CliError, CliHealthInspector, EditRuntime, HumanStyle, PreferenceHost,
-    active_locale, edit_with_runtime, entry_parameters, human_error_width, human_output_width,
-    paint_for_output, refuse_empty_preset_schema, remove_with_state_dir, resolve_editor_argv_with,
-    tui_add_effect_at, tui_complete_at, tui_open_with_context, tui_preferences_effect_at,
-    tui_preflight_effect_with_probe, tui_preview_settings_resync, tui_rerun_with_services,
-    tui_rerunnable, tui_save_runner_at, tui_submit_at, user_home,
+    AddHostContext, CliError, CliHealthInspector, EditRuntime, EditedSource, HumanStyle,
+    PreferenceHost, active_locale, edit_with_runtime, entry_parameters, human_error_width,
+    human_output_width, paint_for_output, refuse_empty_preset_schema, remove_with_state_dir,
+    resolve_editor_argv_with, tui_add_effect_at, tui_complete_at, tui_open_with_context,
+    tui_preferences_effect_at, tui_preflight_effect_with_probe, tui_preview_settings_resync,
+    tui_rerun_with_services, tui_rerunnable, tui_save_runner_at, tui_submit_at, user_home,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -775,7 +775,7 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
             }
             UiEffect::Edit { selector } => {
                 let argv = self.editor_argv();
-                edit_with_runtime(
+                let edited = edit_with_runtime(
                     self.service,
                     store,
                     &selector,
@@ -788,21 +788,51 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                         locale,
                     ),
                 )?;
+                // The interface reports the edit in its status line. The report of `skit edit`
+                // would go to the shell, where the person sees it only after skit ends.
+                let (message, kind) = match edited {
+                    Some(EditedSource {
+                        changed: Some(false),
+                        entry,
+                        ..
+                    }) => (
+                        format_text(locale, "No changes to {}.", &[&entry.meta.name]),
+                        StatusKind::Info,
+                    ),
+                    Some(EditedSource {
+                        changed: None,
+                        entry,
+                        path,
+                        ..
+                    }) => (
+                        format_text(
+                            locale,
+                            "skit could not read {}, so it cannot tell whether {} changed.",
+                            &[&path.display(), &entry.meta.name],
+                        ),
+                        StatusKind::Warning,
+                    ),
+                    // `no_input` refuses a name that no entry has, so `None` does not come back.
+                    Some(EditedSource {
+                        changed: Some(true),
+                        ..
+                    })
+                    | None => ("Source saved".to_owned(), StatusKind::Success),
+                };
                 tui_complete_at(
                     self.service,
                     &self.roots.state,
                     &self.roots.config,
                     self.clock.now_utc(),
-                    "Source saved",
-                    StatusKind::Success,
+                    &message,
+                    kind,
                 )
             }
             UiEffect::Remove { selector } => {
                 let held = self.service.show(&selector)?;
-                let name = remove_with_state_dir(self.service, &held, &self.roots.state)?;
-                self.platform
-                    .output
-                    .success(&format_text(locale, "Removed: {}", &[&name]));
+                // The status line reports the removal. The interface keeps its screen for this
+                // effect, so it writes nothing to the terminal.
+                remove_with_state_dir(self.service, &held, &self.roots.state)?;
                 tui_complete_at(
                     self.service,
                     &self.roots.state,
@@ -829,7 +859,6 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                     &values,
                     locale,
                     self.clock.now_utc(),
-                    self.platform.output,
                     run_services
                         .as_ref()
                         .map(|services| (services, &self.run_exit)),
@@ -847,7 +876,7 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::{Cell, RefCell},
+        cell::RefCell,
         collections::{BTreeMap, VecDeque},
         ffi::OsString,
         io::{self, IsTerminal as _},
@@ -894,7 +923,8 @@ mod tests {
         EditorLauncher, HostEnvironment, HostOutput, ProductRoots, SystemEnvironment,
         SystemTerminalCapability, TerminalCapability, TuiHost, TuiPlatform,
     };
-    // The preference-file recorder, its contract, and the launch failure contract are Unix-only.
+    // The preference-file recorder, its contract, the launch failure contract, and the clock that a
+    // run moves on are Unix-only.
     #[cfg(unix)]
     use super::{PreferenceFiles, SYSTEM_FILE_ALLOCATOR, SYSTEM_PREFERENCE_FILES};
     use crate::run::{RunClock, RunError, RunPorts};
@@ -904,6 +934,8 @@ mod tests {
     use skit_runtime::LaunchError;
     #[cfg(unix)]
     use skit_store::AgentSkillInstallPoint;
+    #[cfg(unix)]
+    use std::cell::Cell;
 
     /// Read the run form of one presented screen. Another action returns nothing.
     fn presented_run_form(action: UiAction) -> Option<Box<RunFormView>> {
@@ -1477,15 +1509,19 @@ mod tests {
         }
     }
 
+    // The clock that a run moves on, and its launch runner, serve only a Unix test.
+    #[cfg(unix)]
     #[derive(Debug)]
     struct MutableClock(Cell<OffsetDateTime>);
 
+    #[cfg(unix)]
     impl RunClock for MutableClock {
         fn now_utc(&self) -> OffsetDateTime {
             self.0.get()
         }
     }
 
+    #[cfg(unix)]
     #[derive(Debug)]
     struct AdvancingLaunchRunner<'a> {
         inner: &'a RecordingLaunchRunner,
@@ -1493,6 +1529,7 @@ mod tests {
         completed_at: Cell<OffsetDateTime>,
     }
 
+    #[cfg(unix)]
     impl LaunchRunner for AdvancingLaunchRunner<'_> {
         fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
             let result = self.inner.run(plan);
@@ -1939,14 +1976,8 @@ mod tests {
             FormStateService::new(FileFormStateStore::new(&roots.state)).last_run(&removed.slug),
             LastRunState::default()
         );
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [OutputEvent::Success(format_text(
-                Locale::ZhTw,
-                "Removed: {}",
-                &[&"Removed"]
-            ))]
-        );
+        // The status line reports the removal. Nothing goes to the shell.
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
         for poison in ["poison-data", "poison-state", "poison-config"] {
             assert!(!sandbox.path().join(poison).exists());
         }
@@ -2480,7 +2511,11 @@ mod tests {
                 selector: stored.slug.as_str().to_owned(),
             })
             .unwrap(),
-            skit_ui::Action::Complete { .. }
+            skit_ui::Action::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Source saved"
         ));
         assert_eq!(
             std::fs::read(store.payload_path(&stored).unwrap()).unwrap(),
@@ -2497,21 +2532,12 @@ mod tests {
         assert!(calls[0].1.starts_with(roots.data.join("drafts")));
         assert_eq!(calls[1].1, std::fs::canonicalize(&external).unwrap());
         assert_eq!(calls[2].1, store.payload_path(&stored).unwrap());
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Stored"])),
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
-                    &[&"Stored"],
-                )),
-            ]
-        );
+        // The interface reports the edit in its status line. Nothing goes to the shell.
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
     }
 
     #[test]
-    fn reference_python_edit_routes_each_receipt_through_host_output() {
+    fn reference_python_edit_names_its_original_and_reports_in_the_status() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let source = sandbox.path().join("reference.py");
@@ -2552,31 +2578,29 @@ mod tests {
         )
         .unwrap();
 
-        host.serve(Effect::Edit {
-            selector: entry.slug.as_str().to_owned(),
-        })
-        .unwrap();
+        let edited = host
+            .serve(Effect::Edit {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
 
+        assert_eq!(completion_message(edited).as_deref(), Some("Source saved"));
+        // The line before the editor names the file that the editor changes. The report of
+        // `skit edit` stays out of the shell.
         assert_eq!(
             output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Referenced"])),
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
-                    &[&"Referenced"],
-                )),
-            ]
+            [OutputEvent::Detail(format_text(
+                Locale::En,
+                "Editing the original file (reference mode): {}",
+                &[&source.display()],
+            ))]
         );
     }
 
+    // The prompt notice of `skit edit` ("Detected but not yet managed") is a line for the shell.
+    // The interface reports a prompt edit in its status line on any terminal.
     #[test]
-    fn injected_terminal_capability_owns_the_reference_prompt_receipt() {
+    fn a_reference_prompt_edit_reports_in_the_status_on_any_terminal() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let source = sandbox.path().join("reference.md");
@@ -2619,22 +2643,25 @@ mod tests {
         )
         .unwrap();
 
-        host.serve(Effect::Edit {
-            selector: entry.slug.as_str().to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Prompt"])),
-            ]
-        );
+        let saved = host
+            .serve(Effect::Edit {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(
+            saved,
+            UiAction::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Source saved"
+        ));
+        let opened = [OutputEvent::Detail(format_text(
+            Locale::En,
+            "Editing the original file (reference mode): {}",
+            &[&source.display()],
+        ))];
+        assert_eq!(output.0.borrow().as_slice(), opened);
 
         let noninteractive_output = RecordingOutput::default();
         let noninteractive_host = TuiHost::new(
@@ -2651,31 +2678,27 @@ mod tests {
             ),
         )
         .unwrap();
-        noninteractive_host
+        // The editor writes the bytes that the first edit left, so this edit changes nothing.
+        let unchanged = noninteractive_host
             .serve(Effect::Edit {
                 selector: entry.slug.as_str().to_owned(),
             })
             .unwrap();
-        assert_eq!(
-            noninteractive_output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Prompt"])),
-                OutputEvent::Plain(format_text(
-                    Locale::En,
-                    "Detected but not yet managed: {} (use --add to manage them)",
-                    &[&"fresh"],
-                )),
-            ]
-        );
+        assert!(matches!(
+            unchanged,
+            UiAction::Complete {
+                ref message,
+                kind: StatusKind::Info,
+                ..
+            } if message == "No changes to Prompt."
+        ));
+        assert_eq!(noninteractive_output.0.borrow().as_slice(), opened);
     }
 
+    // The interface keeps its screen for a rename, so the receipt of `skit rename` would write
+    // over its cells. The status line reports the rename instead.
     #[test]
-    fn rename_submit_routes_its_receipt_through_host_output() {
+    fn rename_submit_reports_in_the_status_and_writes_nothing() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let store = FileStore::new(&roots.data);
@@ -2699,17 +2722,14 @@ mod tests {
                 values: BTreeMap::from([("name".to_owned(), FieldValue::text("After"))]),
             })
             .unwrap(),
-            skit_ui::Action::Complete { .. }
+            skit_ui::Action::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Entry renamed"
         ));
-        let renamed = service.show("After").unwrap();
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [OutputEvent::Plain(format_text(
-                Locale::En,
-                "Renamed: {} ({})",
-                &[&renamed.meta.name, &renamed.slug],
-            ))]
-        );
+        assert_eq!(service.show("After").unwrap().slug, entry.slug);
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
     }
 
     #[test]
@@ -2892,7 +2912,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     // Ways this can fail: a run that ends the session hands 0 to the shell, a later run keeps the
     // code of an earlier one, the failure line is missing from the terminal, or a run that
     // succeeds leaves no result line, so only a failure says how the run ended.
@@ -3004,6 +3023,10 @@ mod tests {
         assert!(!events.contains(&failure_line), "{events:?}");
     }
 
+    // Unix only: the test host runs the command through `sh`, and the test types the extra
+    // arguments with Unix quotes. A Windows build splits the extra arguments with Windows rules,
+    // where `'` is an ordinary character (`split_editable_arguments`).
+    #[cfg(unix)]
     #[test]
     fn command_submit_and_rerun_use_the_exact_plan_and_persisted_invocation() {
         let sandbox = TempDir::new().unwrap();

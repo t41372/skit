@@ -1762,6 +1762,42 @@ pub enum Effect {
     },
 }
 
+impl Effect {
+    /// Whether the host needs the terminal to serve this effect.
+    ///
+    /// A run gives the terminal to the script or the agent, and an edit gives it to the editor.
+    /// A frontend that draws on the terminal steps aside for these effects only. The host serves
+    /// every other effect without the terminal: it writes nothing there and reads nothing from
+    /// it, so the frontend keeps its screen.
+    #[must_use]
+    pub fn needs_the_terminal(&self) -> bool {
+        match self {
+            Self::Rerun { .. } | Self::Edit { .. } => true,
+            Self::Submit { purpose, .. } => match purpose {
+                // The add form runs the add command, which can ask questions and prints its
+                // summary.
+                FormPurpose::Run | FormPurpose::Add => true,
+                FormPurpose::Settings
+                | FormPurpose::Preferences
+                | FormPurpose::Runners
+                | FormPurpose::Rename => false,
+            },
+            Self::Add(effects) => effects.iter().any(AddEffect::needs_the_terminal),
+            Self::None
+            | Self::Reload
+            | Self::Quit
+            | Self::Open { .. }
+            | Self::CountRunGlob { .. }
+            | Self::SaveRunPreset { .. }
+            | Self::HealthRebuild
+            | Self::PreviewSettingsResync { .. }
+            | Self::SaveRunner { .. }
+            | Self::Preferences(_)
+            | Self::Remove { .. } => false,
+        }
+    }
+}
+
 /// Serializable state rendered by Ratatui today and available to a future Tauri shell.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct LibraryState {

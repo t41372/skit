@@ -205,11 +205,11 @@ fn exact_text_and_longest_first_rendering_are_deterministic() {
 #[test]
 fn formatted_messages_translate_the_template_without_translating_user_values() {
     assert_eq!(
-        format_text(Locale::ZhTw, "Added: {} ({} mode)", &[&"Library", &"copy"]),
-        "已加入:Library (copy 模式)"
+        format_text(Locale::ZhTw, "Added: {} (copy mode)", &[&"Library"]),
+        "已加入:Library (複製模式)"
     );
     assert_eq!(
-        format_text(Locale::En, "Added: {} ({} mode)", &[&"Alpha", &"copy"]),
+        format_text(Locale::En, "Added: {} (copy mode)", &[&"Alpha"]),
         "Added: Alpha (copy mode)"
     );
     assert_eq!(
@@ -880,17 +880,26 @@ fn every_tui_completion_status_has_two_complete_translations() {
 /// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:595-632` and the same
 /// msgids in `zh_TW`. The verbs and the colon widths are the oracle's, never
 /// house style: `已加入:` with an ASCII colon, `管理中的参数:`, and the
-/// full-width colon that the secrets note really uses. One word differs from the
-/// oracle: the receipt says `说明:` because the whole catalog uses `说明` for a
-/// description, where version 0.4 mixed `说明` and `描述`.
+/// full-width colon that the secrets note really uses. Two parts differ from the
+/// oracle. The receipt says `说明:` because the whole catalog uses `说明` for a
+/// description, where version 0.4 mixed `说明` and `描述`. And the mode note
+/// names the copy mode in Chinese: version 0.4 put the stored value into the
+/// sentence (`(copy 模式)`), and the catalog calls that mode `复制模式`. The
+/// reference mode keeps the name of its `--ref`/`--reference` flag, as every
+/// other catalog row does.
 #[test]
 fn the_add_receipt_block_keeps_the_version_0_4_wording() {
     for (key, zh_cn, zh_tw) in [
         ("Added: {}", "已加入:x", "已加入:x"),
         (
-            "Added: {} ({} mode)",
-            "已加入:x (y 模式)",
-            "已加入:x (y 模式)",
+            "Added: {} (copy mode)",
+            "已加入:x (复制模式)",
+            "已加入:x (複製模式)",
+        ),
+        (
+            "Added: {} (reference mode)",
+            "已加入:x (reference 模式)",
+            "已加入:x (reference 模式)",
         ),
         ("Description: {}", "说明:x", "說明:x"),
         ("Managed parameters: {}", "管理中的参数:x", "管理中的參數:x"),

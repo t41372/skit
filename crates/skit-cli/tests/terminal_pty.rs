@@ -517,6 +517,12 @@ fn run_pty(
     )
 }
 
+/// Run `skit` with `args` on a terminal, write each item of `input` after a quiet moment, and wait
+/// for the end.
+///
+/// With `answer_cursor_query`, the terminal answers the first cursor question once. A Windows test
+/// needs that answer, because the pseudo-console asks that question when it opens (invariant 3 in
+/// `support/pty.rs`).
 fn run_pty_configured(
     args: &[&str],
     data: &Path,
@@ -672,6 +678,11 @@ impl LiveTui {
         self.pty.send(bytes);
     }
 
+    /// Write a key whose host effect gives the terminal to a run or an editor.
+    ///
+    /// The session leaves its screen for the effect, and on its return it asks where the cursor
+    /// is. Any other effect stays on the screen and asks nothing: send its key with
+    /// [`Self::send`] and wait for the screen.
     fn send_effect_key(&mut self, bytes: &[u8]) {
         let checkpoint = self.checkpoint();
         self.send(bytes);
@@ -1078,7 +1089,7 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"a");
+    tui.send(b"a");
     tui.wait_for_after(open, "Add an entry");
 
     // Enter the real kept-draft path in the focused Source path field. This uses the same
@@ -1087,14 +1098,14 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let typing = tui.checkpoint();
     tui.send(draft_input.as_bytes());
     tui.wait_for_after(typing, &draft_input);
-    let resume = tui.checkpoint();
-    tui.send(b"\r\x1b[1;1R");
+    tui.send(b"\r");
     // The review of a new draft names the entry, not its temporary file.
-    tui.wait_for_after(resume, "Add skit-new-ship");
+    wait_for_screen(&mut tui, "the review of the draft", |screen| {
+        screen.contains("Add skit-new-ship")
+    });
 
     let submit = tui.checkpoint();
     tui.send(&[0x13]);
-    tui.send(b"\x1b[1;1R");
     let receipt = tui.wait_for_after(submit, "Entry added");
     assert!(receipt.contains("Library"), "{receipt}");
 
@@ -1438,7 +1449,7 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "Run p");
     // The title can arrive before the rest of the frame, so wait for the field the assertion
     // reads.
@@ -1503,7 +1514,7 @@ fn test_run_with_zero_runners_offers_the_new_agent_modal() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
 
     let cancel = tui.checkpoint();
@@ -1546,13 +1557,13 @@ fn test_run_with_zero_runners_define_agent_then_run() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
     tui.send(b"mycli");
     tui.send(b"\t");
     tui.send(command.as_bytes());
     let save = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     let form = tui.wait_for_after(save, "Run p");
     assert!(
         compact_terminal_text(&form).contains("mycli"),
@@ -1615,7 +1626,7 @@ fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
     tui.send(b"mycli");
     tui.send(b"\t");
@@ -1634,9 +1645,10 @@ fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     let config_path = sandbox.config.path().join("config.toml");
     let config_before_save = fs::read(&config_path).unwrap();
 
-    let save = tui.checkpoint();
-    tui.send_effect_key(b"\r");
-    let refused = tui.wait_for_after(save, "already exists");
+    tui.send(b"\r");
+    let refused = wait_for_screen(&mut tui, "the refused save", |screen| {
+        screen.contains("already exists")
+    });
     let compact_refused = compact_terminal_text(&refused);
     assert!(
         compact_refused.contains("Newagent(runner)"),
@@ -1787,9 +1799,15 @@ fn bare_add_uses_the_typed_workflow_and_returns_the_created_entry() {
     );
     tui.wait_for("Source path");
     tui.send(path_input.as_bytes());
-    let review = tui.checkpoint();
+    // A person presses Enter after the path is in the box. On Windows, a line break that arrives in
+    // the same burst as typed text is a paste, and a paste never continues.
+    wait_for_screen(&mut tui, "the typed path", |screen| {
+        screen.contains(&path_input)
+    });
     tui.send(b"\r");
-    tui.wait_for_after(review, "[Ctrl+S] Add");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
     tui.send(b"\x13");
     let (code, output) = tui.wait_for_exit_status_after(0);
 
@@ -1877,9 +1895,10 @@ fn a_typed_name_and_description_reach_the_entry_of_a_path() {
     tui.send(b"My tool");
     tui.send(b"\t");
     tui.send(b"Does one thing.");
-    let review = tui.checkpoint();
     tui.send(b"\r");
-    tui.wait_for_after(review, "[Ctrl+S] Add");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
     assert!(screen.contains("My tool"), "{screen}");
@@ -2054,6 +2073,10 @@ fn a_new_prompt_draft_is_named_from_its_first_words() {
 
 /// F2 opens a small Rename dialog whose footer names Enter, and Enter renames the entry
 /// (A11 and C8 of the 2026-11 audit: Enter only moved the focus in a whole-screen form).
+///
+/// The rename stays on the interface screen, so it must report only in the status line. The
+/// receipt of `skit rename` (`Renamed: <name> (<slug>)`) printed there writes over the cells of the
+/// interface.
 #[cfg(unix)]
 #[test]
 fn rename_dialog_renames_the_entry_on_enter() {
@@ -2082,14 +2105,22 @@ fn rename_dialog_renames_the_entry_on_enter() {
     );
 
     let typed = tui.checkpoint();
-    tui.send(b"\x7f\x7f\x7f\x7fRenamed");
-    tui.wait_for_after(typed, "Renamed");
+    tui.send(b"\x7f\x7f\x7f\x7fWeekly report");
+    tui.wait_for_after(typed, "Weekly report");
     let renamed = tui.checkpoint();
     tui.send(b"\r");
-    tui.wait_for_after(renamed, "Entry renamed");
+    let receipt = wait_for_screen(&mut tui, "the receipt", |screen| {
+        screen.contains("✓ Entry renamed")
+    });
+    assert!(!receipt.contains("Renamed: "), "{receipt}");
+    let written = tui.visible_after(renamed);
+    assert!(
+        !written.contains("Renamed: "),
+        "the rename printed a receipt over the interface: {written:?}"
+    );
 
     let entry = FileStore::new(data.path()).resolve("demo").unwrap();
-    assert_eq!(entry.meta.name, "Renamed");
+    assert_eq!(entry.meta.name, "Weekly report");
 }
 
 /// Run one command on a pty, answer the cursor query, and return what it drew.
@@ -2463,7 +2494,9 @@ fn a_windows_console_outside_windows_terminal_gets_no_color_question() {
 /// of `Bob\rCarol` arrives as Enter. skit reads the keys that arrive together as one paste, so the
 /// launch menu must not run, and the box keeps the first line, as a bracketed paste does on Unix.
 /// The one write puts every key of the paste into the console at once, as a terminal does. Esc
-/// then cancels the launch menu with 130; a run would have ended the session with 0.
+/// then cancels the launch menu with 130; a run would have ended the session with 0. The
+/// pseudo-console asks where the cursor is when it opens, and it does nothing more until it gets
+/// the answer, so the terminal answers that question first.
 #[cfg(windows)]
 #[test]
 fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
@@ -2478,7 +2511,7 @@ fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
         state.path(),
         config.path(),
         &[b"Bob\rCarol", b"\x1b"],
-        false,
+        true,
         |command| command.env_remove("WT_SESSION"),
     );
     let history = strip_terminal_control(&output);
@@ -2491,6 +2524,86 @@ fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
         !history.contains("Carol"),
         "the box kept the second line of the paste:\n{history}"
     );
+}
+
+/// A tool can type text and Enter as fast as a terminal types a paste, for example a text expander
+/// or the auto-type of a password manager. A Windows console has no bracketed paste, so skit takes
+/// those keys as a paste, and the Enter does not act. The status line must say why, and the next
+/// Enter must act. `skit add` and the launch menu of `skit run` have separate event loops, so each
+/// loop has a test.
+///
+/// Ways this can fail: the Enter does nothing and nothing on the screen says why; the warning
+/// shows but the next Enter does nothing too; the warning stays after the next key.
+#[cfg(windows)]
+#[test]
+fn a_windows_path_typed_with_enter_in_one_burst_says_why_enter_did_nothing() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let source = data.path().join("typed-add.sh");
+    fs::write(&source, b"#!/bin/sh\necho typed\n").unwrap();
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("Source path");
+    let mut burst = source.display().to_string().into_bytes();
+    burst.push(b'\r');
+    tui.send(&burst);
+    let screen = wait_for_screen(&mut tui, "the warning", |screen| {
+        screen.contains("took this input as a paste")
+    });
+    assert!(
+        !screen.contains("[Ctrl+S] Add"),
+        "the Enter of the burst opened the review:\n{screen}"
+    );
+    tui.send(b"\r");
+    let screen = wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
+    assert!(
+        !screen.contains("took this input as a paste"),
+        "the warning stayed after the next key:\n{screen}"
+    );
+}
+
+/// The launch menu of `skit run` answers the same burst with the same warning, and the next Enter
+/// runs the entry. See [`a_windows_path_typed_with_enter_in_one_burst_says_why_enter_did_nothing`].
+#[cfg(windows)]
+#[test]
+fn a_windows_launch_menu_value_typed_with_enter_in_one_burst_says_why_enter_did_nothing() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+
+    let mut tui = LiveTui::spawn_command(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    wait_for_screen(&mut tui, "the launch menu", |screen| {
+        screen.contains("Run Demo")
+    });
+    tui.send(b"Bob\r");
+    wait_for_screen(&mut tui, "the warning", |screen| {
+        screen.contains("took this input as a paste")
+    });
+    assert_eq!(tui.pty.try_exit_code(), None, "the burst ran the entry");
+    let run = tui.checkpoint();
+    tui.send(b"\r");
+    let (code, output) = tui.wait_for_exit_status_after(run);
+    assert_eq!(code, 0, "the next Enter did not run the entry:\n{output}");
 }
 
 /// A Windows command that prints `ready-42` when it starts and then waits for half a minute.
@@ -2683,7 +2796,7 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("greet");
     let settings_checkpoint = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     let settings = tui.wait_for_after(settings_checkpoint, "NAME");
     assert!(
         settings.contains("Entry settings · greet"),
@@ -2734,7 +2847,7 @@ fn the_resync_reports_a_dropped_parameter_before_the_save_and_keeps_other_edits(
     let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("greet");
     let opened = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     let settings = tui.wait_for_after(opened, "GONE");
     assert!(
         compact_terminal_text(&settings).contains("GONEint3"),
@@ -2745,9 +2858,10 @@ fn the_resync_reports_a_dropped_parameter_before_the_save_and_keeps_other_edits(
     tui.send(b"-x");
     tui.wait_for_after(0, "greet-x");
 
-    let resynced = tui.checkpoint();
-    tui.send_effect_key(b"\x12");
-    tui.wait_for_after(resynced, "no longer exists in the script.");
+    tui.send(b"\x12");
+    wait_for_screen(&mut tui, "the resync report", |screen| {
+        screen.contains("no longer exists in the script.")
+    });
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
     assert!(
@@ -2765,7 +2879,7 @@ fn the_resync_reports_a_dropped_parameter_before_the_save_and_keeps_other_edits(
     );
 
     let saved = tui.checkpoint();
-    tui.send_effect_key(b"\x13");
+    tui.send(b"\x13");
     tui.wait_for_after(saved, "Settings saved");
     let quit = tui.checkpoint();
     tui.send(b"q");
@@ -2803,11 +2917,11 @@ fn the_resync_reports_a_matching_script_and_unticking_takes_the_report_back() {
     let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("greet");
     let opened = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     tui.wait_for_after(opened, "GONE");
 
     let resynced = tui.checkpoint();
-    tui.send_effect_key(b"\x12");
+    tui.send(b"\x12");
     tui.wait_for_after(resynced, "still matches the script.");
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
@@ -2861,7 +2975,7 @@ fn unticking_the_resync_gives_back_an_edit_on_a_dropped_row() {
     let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("greet");
     let opened = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     tui.wait_for_after(opened, "GONE");
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
@@ -2877,9 +2991,10 @@ fn unticking_the_resync_gives_back_an_edit_on_a_dropped_row() {
         "the click did not untick the keep box:\n{screen}"
     );
 
-    let resynced = tui.checkpoint();
-    tui.send_effect_key(b"\x12");
-    tui.wait_for_after(resynced, "no longer exists in the script.");
+    tui.send(b"\x12");
+    wait_for_screen(&mut tui, "the resync report", |screen| {
+        screen.contains("no longer exists in the script.")
+    });
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
     assert!(
@@ -2902,7 +3017,7 @@ fn unticking_the_resync_gives_back_an_edit_on_a_dropped_row() {
     tui.send(b"n");
     tui.settle();
     let saved = tui.checkpoint();
-    tui.send_effect_key(b"\x13");
+    tui.send(b"\x13");
     tui.wait_for_after(saved, "Settings saved");
     let quit = tui.checkpoint();
     tui.send(b"q");
@@ -2934,7 +3049,7 @@ fn a_flooded_prompt_offers_the_variable_picker_in_the_footer() {
     let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("Flood");
     let opened = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     tui.wait_for_after(opened, "Renaming");
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
@@ -2996,7 +3111,7 @@ fn a_name_added_to_a_prompt_becomes_a_placeholder_when_the_body_names_it() {
     let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("Review");
     let opened = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     tui.wait_for_after(opened, "Renaming");
     tui.settle();
     let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
@@ -3010,7 +3125,7 @@ fn a_name_added_to_a_prompt_becomes_a_placeholder_when_the_body_names_it() {
     tui.send(b"topic extra");
     tui.wait_for_after(0, "topic extra");
     let saved = tui.checkpoint();
-    tui.send_effect_key(b"\x13");
+    tui.send(b"\x13");
     tui.wait_for_after(saved, "Settings saved");
     let quit = tui.checkpoint();
     tui.send(b"q");
@@ -3089,7 +3204,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         config.path(),
-        &[b"x", b"\x1b[A", b"h", b"\x1b[1;1R", b"\x1b", b"q"],
+        &[b"x", b"\x1b[A", b"h", b"\x1b", b"q"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -3103,7 +3218,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         &invalid_config,
-        &[b",", b"\x1b[1;1R", b"q", b"\x1b", b"q"],
+        &[b",", b"q", b"\x1b", b"q"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -3116,7 +3231,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         config.path(),
-        &[b"\r", b"\x1b[1;1R", b"\x12"],
+        &[b"\r", b"\x12"],
     );
     assert_eq!(code, 0, "{output}");
 }
@@ -3687,9 +3802,10 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
     );
     tui.wait_for("Source path");
     tui.send(source_input.as_slice());
-    let review = tui.checkpoint();
     tui.send(b"\r");
-    tui.wait_for_after(review, "[Ctrl+S] Add");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
     tui.send(b"\x13");
     let (code, output) = tui.wait_for_exit_status_after(0);
     assert_eq!(code, 0, "{output}");

@@ -2739,6 +2739,12 @@ impl TuiSession {
         }
     }
 
+    /// Report whether the text box that receives the next paste keeps only its first line.
+    pub(crate) fn focused_box_keeps_one_line(&self, state: &LibraryState) -> bool {
+        self.focused_text_editor(state)
+            .is_some_and(TextEditor::keeps_one_line)
+    }
+
     /// The text box that receives the next key, when one has the keyboard.
     fn focused_text_editor(&self, state: &LibraryState) -> Option<&TextEditor> {
         match state.modal() {
@@ -3398,7 +3404,6 @@ impl TuiSession {
                 let placeholder = text(locale, "Select");
                 let labels = choice_labels(options, preset_index == Some(index), locale);
                 let region = Select::new(&labels, state)
-                    .label("")
                     .placeholder(&placeholder)
                     .style(select_style)
                     .render_stateful(frame, area);

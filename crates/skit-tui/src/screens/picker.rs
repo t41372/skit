@@ -1049,9 +1049,9 @@ impl FilePickerSession {
     #[must_use]
     pub fn new(contract: PathPickerState) -> Self {
         let start = nearest_directory(contract.start_dir().to_path_buf());
-        let mut explorer = FileExplorerState::new(start);
+        let mut explorer = explorer_in(start);
         explorer.show_hidden = contract.show_hidden() || search_shows_hidden(contract.query());
-        let io_error = explorer.load_entries().err().map(|error| error.to_string());
+        let io_error = read_directory(&mut explorer);
         Self::from_explorer(contract, explorer, io_error, None)
     }
 
@@ -1060,7 +1060,7 @@ impl FilePickerSession {
         memory_source: MemoryFilePickerSource,
     ) -> Self {
         let start = memory_source.nearest_directory(contract.start_dir());
-        let mut explorer = FileExplorerState::new(start);
+        let mut explorer = explorer_in(start);
         explorer.show_hidden = contract.show_hidden() || search_shows_hidden(contract.query());
         memory_source.load_entries(&mut explorer);
         Self::from_explorer(contract, explorer, None, Some(memory_source))
@@ -1453,13 +1453,29 @@ impl FilePickerSession {
             source.load_entries(&mut self.explorer);
             self.io_error = None;
         } else {
-            self.io_error = self
-                .explorer
-                .load_entries()
-                .err()
-                .map(|error| error.to_string());
+            self.io_error = read_directory(&mut self.explorer);
         }
     }
+}
+
+/// Read the current directory of `explorer` from the filesystem, and return the read error.
+///
+/// When a read fails, ratatui-interact does not change the entries, cursor, scroll, or filter.
+/// Before the first read, the list is empty and has no `..` row. After that, the list belongs to
+/// the directory that the user left. So after a failed read the picker keeps only the `..` row:
+/// the list shows nothing from another directory, and the user can go back.
+fn read_directory(explorer: &mut FileExplorerState) -> Option<String> {
+    let error = explorer.load_entries().err()?;
+    explorer.entries = explorer
+        .current_dir
+        .parent()
+        .map(|parent| FileEntry::parent_dir(parent.to_path_buf()))
+        .into_iter()
+        .collect();
+    explorer.cursor_index = 0;
+    explorer.scroll = 0;
+    explorer.filtered_indices = None;
+    Some(error.to_string())
 }
 
 /// Report whether a search shows hidden files: a search that starts with "." looks for them.
@@ -2151,6 +2167,18 @@ fn nearest_directory(mut path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+/// Make an explorer state that opens in `directory` exactly as the picker names it.
+///
+/// `FileExplorerState::new` changes a path that is not a clean absolute path. It uses the
+/// canonical path, or an absolute path when the directory does not exist. On Windows, `/` is not
+/// absolute, so it becomes `\\?\D:\`, and the in-memory path `/fixtures` becomes `D:\fixtures`,
+/// which is not in the tree. The picker sets its own directory path, as `enter` and `go_up` do.
+fn explorer_in(directory: PathBuf) -> FileExplorerState {
+    let mut explorer = FileExplorerState::new(directory.clone());
+    explorer.current_dir = directory;
+    explorer
 }
 
 fn apply_filter(explorer: &mut FileExplorerState) {

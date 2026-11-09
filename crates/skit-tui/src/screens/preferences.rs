@@ -1476,11 +1476,16 @@ impl PreferencesWidgetSession {
             } => {
                 let placeholder = text(locale, "Select");
                 if clip.is_full() {
-                    let region = Select::new(labels, state)
-                        .label(&label)
+                    let select = Select::new(labels, state)
                         .placeholder(&placeholder)
-                        .style(theme::select_style())
-                        .render_stateful(frame, area);
+                        .style(theme::select_style());
+                    // The widget pads its label with a space on each side, also an empty one.
+                    let select = if label.is_empty() {
+                        select
+                    } else {
+                        select.label(&label)
+                    };
+                    let region = select.render_stateful(frame, area);
                     theme::patch_idle_border(frame.buffer_mut(), region.area, state.focused);
                     // The widget draws its label in the border color, which is the accent when
                     // the select has the focus.
@@ -1511,7 +1516,7 @@ impl PreferencesWidgetSession {
                             Span::styled(display, display_style),
                             Span::styled(format!(" {}", style.dropdown_indicator), border),
                         ])),
-                        Line::from(format!(" {label} ")),
+                        Line::from(theme::padded_title(&label).unwrap_or_default()),
                         border,
                         0,
                     );

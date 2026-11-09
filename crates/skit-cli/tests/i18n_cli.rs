@@ -208,6 +208,58 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .stdout(predicate::str::contains("\"kind\":\"command\""));
 }
 
+// Ways this can fail: a translated add summary keeps the English word of the storage mode, as in
+// "已加入:alpha (copy 模式)", so half of the sentence stays English; the English summary changes; or
+// the two modes read the same.
+#[test]
+fn the_add_summary_names_the_storage_mode_in_each_locale() {
+    for (locale, copied, linked) in [
+        (
+            "en",
+            "Added: alpha (copy mode)",
+            "Added: beta (reference mode)",
+        ),
+        (
+            "zh-CN",
+            "已加入:alpha (复制模式)",
+            "已加入:beta (reference 模式)",
+        ),
+        (
+            "zh-TW",
+            "已加入:alpha (複製模式)",
+            "已加入:beta (reference 模式)",
+        ),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let source = state.path().join("tool.sh");
+        fs::write(&source, "#!/bin/sh\nprintf ok\n").unwrap();
+        let add = |name: &str, reference: bool| {
+            let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+            command
+                .env("SKIT_DATA_DIR", data.path())
+                .env("SKIT_STATE_DIR", state.path())
+                .env("SKIT_CONFIG_DIR", config.path())
+                .env("SKIT_LANG", locale)
+                .arg("add")
+                .arg(&source)
+                .args(["--name", name, "--no-input"]);
+            if reference {
+                command.arg("--ref");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{locale}: {output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+
+        let summary = add("alpha", false);
+        assert!(summary.contains(copied), "{locale}: {summary}");
+        let summary = add("beta", true);
+        assert!(summary.contains(linked), "{locale}: {summary}");
+    }
+}
+
 #[test]
 fn scalar_report_labels_translate_in_every_supported_locale() {
     let data = TempDir::new().unwrap();

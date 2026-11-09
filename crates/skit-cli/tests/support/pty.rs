@@ -18,6 +18,10 @@
 //!    waits; Windows asks the console API and never sends the escape
 //!    (`crossterm/src/cursor/sys/{unix,windows}.rs`). Count the questions in the stream and
 //!    answer each exactly once — a one-shot flag cannot answer a second question (waves 4 and 14).
+//!    The Windows pseudo-console asks one question itself when it opens: portable-pty creates it
+//!    with `PSEUDOCONSOLE_INHERIT_CURSOR` (`portable-pty-0.9.0/src/win/psuedocon.rs:83-90`). It
+//!    does nothing more until the answer comes, so a Windows test with no answer reads only
+//!    `\x1b[6n` and its child never ends (CI run 42693074001).
 //! 4. **End on the child, never on the terminal saying its output is over.** A pseudo-console
 //!    does not reliably deliver the reader's end-of-input, so a teardown that joins the drain
 //!    thread can never return; wait for the child under a deadline, then read what is buffered

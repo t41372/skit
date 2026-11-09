@@ -5,7 +5,7 @@
   "rows": [
     [{"text": "╭", "fg": "default", "bg": "default", "attrs": []}, {"text": " Run Zeta ", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "────────────────────────────────────────────────────────────────────────────────────────╮", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│Runner  ", "fg": "default", "bg": "default", "attrs": []}, {"text": "required", "fg": "default", "bg": "default", "attrs": ["bold"]}, {"text": "   Ctrl+N New agent…                                                              │", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│┌  ──────────────────────────────────────────────────────────────────────────────────────────────┐│", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│┌────────────────────────────────────────────────────────────────────────────────────────────────┐│", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "││claude ▼                                                                                        ││", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│└────────────────────────────────────────────────────────────────────────────────────────────────┘│", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],

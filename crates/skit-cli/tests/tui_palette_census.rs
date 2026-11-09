@@ -920,8 +920,9 @@ fn run_census(environment: &Environment) {
             let raw = fixture.capture(environment, screen);
             let file = format!("{}.{}.json", screen.name, environment.name);
             let mut failures = Vec::new();
+            let parser = replay(&raw, screen.rows, screen.columns);
+            failures.extend(empty_title_gaps(parser.screen(), screen.name));
             if environment.theme == "terminal" {
-                let parser = replay(&raw, screen.rows, screen.columns);
                 failures.extend(terminal_rule_breaks(parser.screen(), screen.name));
             }
             failures.extend(check_census(
@@ -976,6 +977,34 @@ fn census_terminal_theme_with_an_unknown_background() {
 #[test]
 fn census_terminal_theme_with_no_color() {
     run_census(&TERMINAL_NO_COLOR);
+}
+
+/// Every top border that shows a title with no words, checked on every row of every theme.
+///
+/// A box without a label has an unbroken top border. A widget that draws an empty label as a title
+/// still puts one space on each side of it, so the border shows a gap of blank cells after its
+/// corner, as in `┌  ────┐`.
+fn empty_title_gaps(screen: &vt100::Screen, name: &str) -> Vec<String> {
+    let (rows, columns) = screen_size(screen);
+    (0..rows)
+        .filter_map(|row| {
+            let text = screen.contents_between(row, 0, row, columns);
+            let characters = text.chars().collect::<Vec<_>>();
+            characters
+                .iter()
+                .enumerate()
+                .filter(|(_, character)| matches!(character, '┌' | '╭'))
+                .find_map(|(corner, _)| {
+                    let blanks = characters[corner + 1..]
+                        .iter()
+                        .take_while(|character| **character == ' ')
+                        .count();
+                    (blanks > 0 && characters.get(corner + 1 + blanks) == Some(&'─')).then(|| {
+                        format!("{name} r{row}: a top border with an empty title: {text:?}")
+                    })
+                })
+        })
+        .collect()
 }
 
 /// The rules of the terminal theme (`docs/design/terminal-palette.md`), checked on every cell.

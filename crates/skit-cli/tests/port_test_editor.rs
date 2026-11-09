@@ -226,6 +226,23 @@ fn writing_editor(scratch: &Path, tag: &str, content: &str, sentinel: &Path) -> 
     script
 }
 
+/// A fake editor that records its launch and saves the target with the bytes it found, as an
+/// editor does when a person saves with no change. The file is written again; its content stays.
+fn resaving_editor(scratch: &Path, tag: &str, sentinel: &Path) -> PathBuf {
+    let script = scratch.join(format!("{tag}.resave.sh"));
+    write_exec(
+        &script,
+        &format!(
+            concat!(
+                "#!/bin/sh\ntouch '{}'\n",
+                "saved=$(cat \"$1\"; printf x)\nprintf '%s' \"${{saved%x}}\" > \"$1\"\n",
+            ),
+            sentinel.display()
+        ),
+    );
+    script
+}
+
 /// A fake editor that records its launch but leaves the target untouched (the oracle's
 /// "untouched starter" / `_boom`-style launch probe, minus the abort).
 fn touch_only_editor(scratch: &Path, tag: &str, sentinel: &Path) -> PathBuf {
@@ -946,6 +963,111 @@ fn test_edit_opens_copy_source() {
             .contains(&content_hash(b"import rich\nprint('x')\n"))
     );
     assert!(combined(&output).contains("Saved a")); // the oracle's success verb
+}
+
+// Version 0.4 prints "Saved a." after every edit (`src/skit/cli.py:2731-2741`), also when the
+// editor changed nothing. docs/behavior-changes.md records the change.
+//
+// Ways this can fail: an editor that saves the file with no change still reports "Saved" and the
+// hint about parameter drift, for a stored copy or for a reference entry; the metadata of the copy
+// changes; or the reference report loses its first line.
+#[test]
+fn edit_reports_no_changes_when_the_editor_saves_the_source_as_it_was() {
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    let meta_before = sandbox.stored_meta("a");
+    let sentinel = sandbox.scratch.path().join("resave.launched");
+    let editor = resaving_editor(sandbox.scratch.path(), "resave", &sentinel);
+
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .args(["edit", "a"])
+        .output()
+        .unwrap();
+    let text = combined(&output);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(sentinel.exists(), "the editor must open");
+    assert_eq!(flat_text(&text), "No changes to a.");
+    assert_eq!(sandbox.stored_script("a"), "print(1)\n");
+    assert_eq!(sandbox.stored_meta("a"), meta_before);
+
+    let original = sandbox.scratch.path().join("orig.py");
+    fs::write(&original, "print(2)\n").unwrap();
+    sandbox.add_reference("r", &original);
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .args(["edit", "r"])
+        .output()
+        .unwrap();
+    let text = flat_text(&combined(&output));
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(
+        text.starts_with("Editing the original file (reference mode): "),
+        "{text}"
+    );
+    assert!(text.ends_with(" No changes to r."), "{text}");
+    assert!(!text.contains("Saved"), "{text}");
+    assert!(!text.contains("parameter drift"), "{text}");
+    assert_eq!(fs::read_to_string(&original).unwrap(), "print(2)\n");
+}
+
+/// Permission bits for one path, given back as `0o644` when the guard ends.
+struct ModeGuard(PathBuf);
+
+impl ModeGuard {
+    fn set(path: &Path, mode: u32) -> Self {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        Self(path.to_owned())
+    }
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o644));
+    }
+}
+
+// Ways this can fail: skit cannot read the original before or after the editor, and two failed
+// reads compare as equal, so an edit that changed the file reports "No changes"; the report
+// claims a save that skit could not see; or the edit fails although the editor did its work.
+#[test]
+fn edit_says_so_when_it_cannot_read_the_source_to_compare() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.scratch.path().join("locked.py");
+    fs::write(&original, "print(1)\n").unwrap();
+    sandbox.add_reference("r", &original);
+    // The owner can write the original but cannot read it.
+    let mode = ModeGuard::set(&original, 0o200);
+    if fs::read(&original).is_ok() {
+        // Root reads every file, so this case needs an ordinary user.
+        return;
+    }
+    let sentinel = sandbox.scratch.path().join("locked.launched");
+    let editor = writing_editor(sandbox.scratch.path(), "locked", "print(2)\n", &sentinel);
+
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .args(["edit", "r"])
+        .output()
+        .unwrap();
+    let text = flat_text(&combined(&output));
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(sentinel.exists(), "the editor must open");
+    assert!(
+        text.contains("skit could not read ") && text.contains("locked.py"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(", so it cannot tell whether r changed."),
+        "{text}"
+    );
+    assert!(!text.contains("No changes"), "{text}");
+    assert!(!text.contains("Saved"), "{text}");
+    drop(mode);
+    assert_eq!(fs::read_to_string(&original).unwrap(), "print(2)\n");
 }
 
 #[test]

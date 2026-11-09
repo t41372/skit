@@ -4509,11 +4509,11 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
         );
     }
     if supports_storage_modes(&entry.meta.kind) {
-        let mode = match entry.meta.mode {
-            StorageMode::Copy => "copy",
-            StorageMode::Reference => "reference",
-        };
-        humanln!("Added: {} ({} mode)", entry.meta.name, mode);
+        // The mode is a word of the sentence, not a stored value, so each mode has its own row.
+        match entry.meta.mode {
+            StorageMode::Copy => humanln!("Added: {} (copy mode)", entry.meta.name),
+            StorageMode::Reference => humanln!("Added: {} (reference mode)", entry.meta.name),
+        }
     } else {
         humanln!(Green: "Added: {}", entry.meta.name);
     }
@@ -4593,25 +4593,23 @@ fn describe(
 }
 
 fn rename(service: &LibraryService<FileStore>, selector: &str, name: &str) -> Result<(), CliError> {
-    rename_with_output(service, selector, name, &SYSTEM_OUTPUT, active_locale())
+    let entry = rename_entry(service, selector, name)?;
+    humanln!("Renamed: {} ({})", entry.meta.name, entry.slug);
+    Ok(())
 }
 
-fn rename_with_output(
+/// Rename one entry and return the entry after the rename.
+///
+/// The caller reports the rename: `skit rename` prints its receipt, and the interface shows a
+/// status.
+fn rename_entry(
     service: &LibraryService<FileStore>,
     selector: &str,
     name: &str,
-    output: &(impl HostOutput + ?Sized),
-    locale: Locale,
-) -> Result<(), CliError> {
+) -> Result<Entry, CliError> {
     let held = service.show(selector)?;
     let claimed = service.claim_identity(&held)?;
-    let entry = service.rename(&claimed, name)?;
-    output.plain(&format_text(
-        locale,
-        "Renamed: {} ({})",
-        &[&entry.meta.name, &entry.slug],
-    ));
-    Ok(())
+    Ok(service.rename(&claimed, name)?)
 }
 
 fn user_confirmed(answer: &str, default: bool) -> bool {
@@ -4866,6 +4864,48 @@ impl<'a> EditRuntime<'a> {
             locale,
         }
     }
+
+    /// Print the report of `skit edit` for one finished edit.
+    ///
+    /// Version 0.4 prints "Saved" after every edit (`src/skit/cli.py:2731-2741`), also when the
+    /// editor changed nothing. The report says only what skit saw: a change, no change, or that it
+    /// could not read the source to compare.
+    fn report(&self, edited: &EditedSource) {
+        match edited.changed {
+            Some(true) => report_saved_edit_with_output(
+                &edited.entry,
+                edited.bytes.as_deref(),
+                self.output,
+                self.terminal,
+                self.locale,
+            ),
+            Some(false) => self.output.plain(&format_text(
+                self.locale,
+                "No changes to {}.",
+                &[&edited.entry.meta.name],
+            )),
+            None => self.output.diagnostic(&format_text(
+                self.locale,
+                "skit could not read {}, so it cannot tell whether {} changed.",
+                &[&edited.path.display(), &edited.entry.meta.name],
+            )),
+        }
+    }
+}
+
+/// What the editor left in the source of one entry.
+struct EditedSource {
+    /// The entry after the edit.
+    entry: Entry,
+    /// The file that the editor opened.
+    path: PathBuf,
+    /// The source after the edit: a stored copy, or an original that skit could read again.
+    bytes: Option<Vec<u8>>,
+    /// Whether the source is different from the source before the editor started.
+    ///
+    /// `None` means that skit could not read the source before or after the editor. Two reads
+    /// that failed are not two equal sources, so skit cannot tell.
+    changed: Option<bool>,
 }
 
 fn edit_with_config(
@@ -4876,28 +4916,30 @@ fn edit_with_config(
     no_input: bool,
 ) -> Result<(), CliError> {
     let argv = resolve_editor_argv(config_dir);
-    edit_with_runtime(
-        service,
-        store,
-        selector,
-        no_input,
-        EditRuntime::new(
-            &argv,
-            &SYSTEM_EDITOR,
-            &SYSTEM_OUTPUT,
-            &SYSTEM_TERMINAL,
-            active_locale(),
-        ),
-    )
+    let runtime = EditRuntime::new(
+        &argv,
+        &SYSTEM_EDITOR,
+        &SYSTEM_OUTPUT,
+        &SYSTEM_TERMINAL,
+        active_locale(),
+    );
+    if let Some(edited) = edit_with_runtime(service, store, selector, no_input, runtime)? {
+        runtime.report(&edited);
+    }
+    Ok(())
 }
 
+/// Open the source of one entry in the editor, and return what the editor left.
+///
+/// `None` means that no entry has the name: the person was asked to create one instead. With
+/// `no_input`, that name is an error, so the edit always returns a source.
 fn edit_with_runtime(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     selector: &str,
     no_input: bool,
     runtime: EditRuntime<'_>,
-) -> Result<(), CliError> {
+) -> Result<Option<EditedSource>, CliError> {
     edit_with_claim_hook_and_runtime(service, store, selector, no_input, runtime, || {})
 }
 
@@ -4911,20 +4953,24 @@ fn edit_with_config_with_claim_hook(
     after_reference_claim: impl FnOnce(),
 ) -> Result<(), CliError> {
     let argv = resolve_editor_argv(config_dir);
-    edit_with_claim_hook_and_runtime(
+    let runtime = EditRuntime::new(
+        &argv,
+        &SYSTEM_EDITOR,
+        &SYSTEM_OUTPUT,
+        &SYSTEM_TERMINAL,
+        active_locale(),
+    );
+    if let Some(edited) = edit_with_claim_hook_and_runtime(
         service,
         store,
         selector,
         no_input,
-        EditRuntime::new(
-            &argv,
-            &SYSTEM_EDITOR,
-            &SYSTEM_OUTPUT,
-            &SYSTEM_TERMINAL,
-            active_locale(),
-        ),
+        runtime,
         after_reference_claim,
-    )
+    )? {
+        runtime.report(&edited);
+    }
+    Ok(())
 }
 
 fn edit_with_claim_hook_and_runtime(
@@ -4934,7 +4980,7 @@ fn edit_with_claim_hook_and_runtime(
     no_input: bool,
     runtime: EditRuntime<'_>,
     after_reference_claim: impl FnOnce(),
-) -> Result<(), CliError> {
+) -> Result<Option<EditedSource>, CliError> {
     let held = match service.show(selector) {
         Ok(entry) => entry,
         Err(RepositoryError::NotFound { .. }) => {
@@ -4949,9 +4995,9 @@ fn edit_with_claim_hook_and_runtime(
                 &[&selector],
             );
             if !prompt_confirmation(&question, true)? {
-                return Ok(());
+                return Ok(None);
             }
-            return add_command(
+            add_command(
                 service,
                 AddOptions {
                     source: None,
@@ -4970,7 +5016,8 @@ fn edit_with_claim_hook_and_runtime(
                     no_input: false,
                 },
                 true,
-            );
+            )?;
+            return Ok(None);
         }
         Err(error) => return Err(error.into()),
     };
@@ -5022,6 +5069,7 @@ fn edit_with_claim_hook_and_runtime(
             "Editing the original file (reference mode): {}",
             &[&source.display()],
         ));
+        let before = fs::read(&source).ok();
         launch_editor_with(runtime.editor, runtime.argv, &source)?;
         let edited = if held.meta.kind.as_str() == "prompt" {
             // Keep the editor's bytes in place when validation fails. The next edit is the
@@ -5030,16 +5078,16 @@ fn edit_with_claim_hook_and_runtime(
             validate_prompt_utf8(&edited, &source.display().to_string())?;
             Some(edited)
         } else {
-            None
+            fs::read(&source).ok()
         };
-        report_saved_edit_with_output(
-            &held,
-            edited.as_deref(),
-            runtime.output,
-            runtime.terminal,
-            runtime.locale,
-        );
-        return Ok(());
+        return Ok(Some(EditedSource {
+            changed: before
+                .zip(edited.as_ref())
+                .map(|(before, edited)| before != *edited),
+            bytes: edited,
+            path: source,
+            entry: held,
+        }));
     }
 
     if source_path(store, &held)
@@ -5052,25 +5100,23 @@ fn edit_with_claim_hook_and_runtime(
     }
     let edit = service.prepare_external_copy_edit(&held)?;
     let target = edit.path();
+    let before = fs::read(target).ok();
     launch_editor_with(runtime.editor, runtime.argv, target)?;
     // The finalize lock's read is the sole authoritative post-editor snapshot. Metadata hash,
     // validation, and the success report must all use these same bytes.
     let finalized = service
         .finalize_external_copy_edit(&edit)
         .map_err(finalize_external_edit_error)?;
-    let held = finalized.entry();
     let edited = finalized.bytes();
-    if held.meta.kind.as_str() == "prompt" {
+    if finalized.entry().meta.kind.as_str() == "prompt" {
         validate_prompt_utf8(edited, &target.display().to_string())?;
     }
-    report_saved_edit_with_output(
-        held,
-        Some(edited),
-        runtime.output,
-        runtime.terminal,
-        runtime.locale,
-    );
-    Ok(())
+    Ok(Some(EditedSource {
+        changed: before.map(|before| before != edited),
+        bytes: Some(edited.to_vec()),
+        path: target.to_path_buf(),
+        entry: finalized.entry().clone(),
+    }))
 }
 
 fn open_editor(target: &Path) -> Result<(), CliError> {
@@ -11018,7 +11064,6 @@ fn tui_submit(
         values,
         active_locale(),
         time::OffsetDateTime::now_utc(),
-        &SYSTEM_OUTPUT,
         run_services.as_ref().map(|services| (services, &run_exit)),
         PreferenceHost {
             home: home.as_deref(),
@@ -11039,7 +11084,6 @@ fn tui_submit_at(
     values: &SubmittedValues,
     locale: Locale,
     now: time::OffsetDateTime,
-    output: &(impl HostOutput + ?Sized),
     run: Option<(&crate::run::RunServices<'_>, &Cell<Option<i32>>)>,
     preference_host: PreferenceHost<'_>,
 ) -> Result<UiAction, CliError> {
@@ -11168,12 +11212,10 @@ fn tui_submit_at(
             )
         }
         FormPurpose::Rename => {
-            rename_with_output(
+            rename_entry(
                 service,
                 tui_selector(&selector)?,
                 &tui_required(values, "name")?,
-                output,
-                locale,
             )?;
             tui_complete_at(
                 service,

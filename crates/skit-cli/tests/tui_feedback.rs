@@ -59,7 +59,7 @@ const RUNNING: &str = "ready-42";
 /// once.
 const REACTION: Duration = Duration::from_millis(300);
 
-/// One library with one command entry, and the directories of one session.
+/// One library with one entry, and the directories of one session.
 struct Fixture {
     data: TempDir,
     state: TempDir,
@@ -68,14 +68,47 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A library whose one command entry `Demo` runs `template` through `sh -c`.
-    fn command(template: &str) -> Self {
-        let fixture = Self {
+    /// The empty directories of one session.
+    fn directories() -> Self {
+        Self {
             data: TempDir::new().unwrap(),
             state: TempDir::new().unwrap(),
             config: TempDir::new().unwrap(),
             home: TempDir::new().unwrap(),
-        };
+        }
+    }
+
+    /// A library whose one shell entry `hello` is a copy of `body`, added with `skit add`.
+    fn script(body: &str) -> Self {
+        let fixture = Self::directories();
+        let source = fixture.home.path().join("hello.sh");
+        fs::write(&source, body).unwrap();
+        fixture.add(&source, &[]);
+        fixture
+    }
+
+    /// Add `source` to the library with `skit add` and the `flags`.
+    fn add(&self, source: &Path, flags: &[&str]) {
+        let added = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+            .arg("add")
+            .arg(source)
+            .args(flags)
+            .arg("--no-input")
+            .current_dir(self.home.path())
+            .env("NO_COLOR", "1")
+            .env("SKIT_LANG", "en")
+            .env("SKIT_DATA_DIR", self.data.path())
+            .env("SKIT_STATE_DIR", self.state.path())
+            .env("SKIT_CONFIG_DIR", self.config.path())
+            .env("HOME", self.home.path())
+            .output()
+            .unwrap();
+        assert!(added.status.success(), "{added:?}");
+    }
+
+    /// A library whose one command entry `Demo` runs `template` through `sh -c`.
+    fn command(template: &str) -> Self {
+        let fixture = Self::directories();
         let parameter = if template.contains("{name}") {
             concat!(
                 "params = [\"name\"]\n",
@@ -184,7 +217,11 @@ impl Session {
         self.pty.send(bytes);
     }
 
-    /// Write a key whose host effect suspends and resumes the terminal.
+    /// Write a key whose host effect gives the terminal to a run or an editor.
+    ///
+    /// The session leaves its screen for the effect. When it comes back, it asks where the cursor
+    /// is, so the question marks the end of the effect. Any other effect stays on the screen and
+    /// asks nothing: send its key with [`Self::send`] and wait for the screen.
     fn send_effect_key(&mut self, bytes: &[u8]) {
         let checkpoint = self.pty.checkpoint();
         self.send(bytes);
@@ -293,11 +330,27 @@ fn position(parser: &vt100::Parser, needle: &str) -> (u16, u16) {
 }
 
 /// The footer line under the chips, without its border.
+///
+/// It is the whole status only when the status fits on one row. Use [`footer_row_with`] for a
+/// status that can wrap.
 fn status_row(screen: &str) -> String {
     screen
         .lines()
         .rev()
         .find(|line| line.starts_with('│'))
+        .unwrap_or_default()
+        .trim_matches(|character| character == '│' || character == ' ')
+        .to_owned()
+}
+
+/// The footer row that holds `words`, without its border.
+///
+/// A status longer than one row wraps onto a second row, for example when it names a long
+/// temporary path. Its glyph and its first words stay on the first row.
+fn footer_row_with(screen: &str, words: &str) -> String {
+    screen
+        .lines()
+        .find(|line| line.starts_with('│') && line.contains(words))
         .unwrap_or_default()
         .trim_matches(|character| character == '│' || character == ' ')
         .to_owned()
@@ -311,7 +364,7 @@ fn a_reload_shows_a_receipt_that_clears_itself_and_brings_the_entry_count_back()
     let mut session = fixture.start();
     assert_eq!(status_row(&session.screen_with("1/1 entry")), "1/1 entry");
 
-    session.send_effect_key(CTRL_R);
+    session.send(CTRL_R);
     let shown = session.screen_with("✓ Library reloaded (1 entry)");
     let since = Instant::now();
     assert_eq!(status_row(&shown), "✓ Library reloaded (1 entry)");
@@ -336,13 +389,13 @@ fn sleep_until(instant: Instant) {
 fn a_repeated_receipt_gets_its_own_time() {
     let fixture = Fixture::command("echo done");
     let mut session = fixture.start();
-    session.send_effect_key(CTRL_R);
+    session.send(CTRL_R);
     session.screen_with("✓ Library reloaded (1 entry)");
     let first = Instant::now();
 
     // A second reload, late in the time of the first receipt, gives a receipt with the same words.
     sleep_until(first + Duration::from_secs(3));
-    session.send_effect_key(CTRL_R);
+    session.send(CTRL_R);
     let second = Instant::now();
 
     // The time of the first receipt is over. The second receipt still shows.
@@ -565,7 +618,7 @@ fn the_remove_dialog_shows_its_keys_and_enter_acts_on_the_focused_chip() {
     session.send(DELETE);
     session.screen_with("Esc Keep");
     session.send(TAB);
-    session.send_effect_key(b"\r");
+    session.send(b"\r");
     let removed = session.screen_with("✓ Entry removed");
     assert!(!removed.contains("Demo"), "{removed}");
 }
@@ -583,6 +636,13 @@ fn locked_library() -> Fixture {
     fixture
 }
 
+/// The first words of the error of a write to a [`locked_library`].
+///
+/// The error then names the lock path, so its length comes from the temporary directory of the
+/// host. A long error wraps onto a second row, and the footer cuts what does not fit there. These
+/// words always start the first row.
+const LOCK_ERROR: &str = "could not open";
+
 // Ways this can fail: Health shows no word about the failed rebuild, so Ctrl+R seems to do
 // nothing; a short terminal has no room for the error; or the key that acknowledges the error
 // clears it before the screen showed it.
@@ -592,21 +652,21 @@ fn a_failed_health_rebuild_shows_its_error_until_the_next_key() {
     for rows in [12, ROWS] {
         let fixture = locked_library();
         let mut session = Session::start_sized(fixture.command_builder(), rows, COLUMNS);
-        session.send_effect_key(b"h");
+        session.send(b"h");
         session.screen_with("Health check");
-        session.send_effect_key(CTRL_R);
-        let failed = session.screen_with("registry.native.lock");
+        session.send(CTRL_R);
+        let failed = session.screen_with(LOCK_ERROR);
         let error = failed
             .lines()
-            .find(|line| line.contains("registry.native.lock"))
+            .find(|line| line.contains(LOCK_ERROR))
             .unwrap_or_default()
             .trim_matches(|character| character == '│' || character == ' ');
-        assert!(error.starts_with("✗ could not open "), "{failed}");
+        assert!(error.starts_with("✗ could not open"), "{failed}");
         assert!(failed.contains("Health check"), "{failed}");
 
         // Esc acknowledges the error and closes Health.
         session.send(ESCAPE);
-        session.screen_without("1/1 entry", "registry.native.lock");
+        session.screen_without("1/1 entry", LOCK_ERROR);
     }
 }
 
@@ -620,9 +680,12 @@ fn a_failed_removal_shows_its_error_under_the_dialog() {
     session.send(DELETE);
     session.screen_with("Esc Keep");
     session.send(TAB);
-    session.send_effect_key(b"\r");
-    let failed = session.screen_with("registry.native.lock");
-    assert!(status_row(&failed).starts_with("✗ "), "{failed}");
+    session.send(b"\r");
+    let failed = session.screen_with(LOCK_ERROR);
+    assert!(
+        footer_row_with(&failed, LOCK_ERROR).starts_with("✗ could not open"),
+        "{failed}"
+    );
     assert!(
         failed.contains("y Remove"),
         "the dialog stays open: {failed}"
@@ -630,7 +693,7 @@ fn a_failed_removal_shows_its_error_under_the_dialog() {
 
     // Esc acknowledges the error and keeps the entry.
     session.send(ESCAPE);
-    let library = session.screen_without("1/1 entry", "registry.native.lock");
+    let library = session.screen_without("1/1 entry", LOCK_ERROR);
     assert!(library.contains("Demo"), "{library}");
 }
 
@@ -875,14 +938,14 @@ fn an_add_that_cannot_remove_its_draft_reports_a_warning_until_the_next_key() {
         return;
     }
     let mut session = fixture.start();
-    session.send_effect_key(b"a");
+    session.send(b"a");
     session.screen_with("Add an entry");
     let path = draft.display().to_string();
     session.send(path.as_bytes());
     session.screen_with(&path);
-    session.send_effect_key(b"\r");
+    session.send(b"\r");
     session.screen_with("Add skit-new-ship");
-    session.send_effect_key(CTRL_S);
+    session.send(CTRL_S);
     // The warning names the drafts path, so it wraps onto a second row.
     let first_row = |screen: &str| {
         screen
@@ -953,4 +1016,190 @@ fn the_quit_notice_clears_itself_without_a_key() {
         });
     assert_eq!(gone, "NOTICE_GONE");
     assert!(session.pty.try_exit_code().is_none(), "the wait quit skit");
+}
+
+/// The bytes that leave the alternate screen. The terminal then shows the shell again.
+const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
+/// The question for the cursor position. The answer comes back over the input, so each question
+/// waits for one round trip of the terminal link.
+const CURSOR_QUESTION: &[u8] = b"\x1b[6n";
+
+/// Report whether `bytes` holds `needle`.
+fn holds(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+/// A stand-in for an editor: it saves the file that it gets.
+///
+/// It writes the bytes back as it found them, as an editor does when a person saves with no
+/// change. When `change` exists, it adds a line instead.
+fn saving_editor(directory: &Path, change: &Path) -> PathBuf {
+    let editor = directory.join("editor.sh");
+    fs::write(
+        &editor,
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "if [ -e '{change}' ]; then\n",
+                "  printf 'echo changed\\n' >> \"$1\"\n",
+                "else\n",
+                "  saved=$(cat \"$1\"; printf x)\n",
+                "  printf '%s' \"${{saved%x}}\" > \"$1\"\n",
+                "fi\n",
+            ),
+            change = change.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    editor
+}
+
+// Ways this can fail: an editor that saves the file with no change still gets "✓ Source saved";
+// the interface prints the report of `skit edit` ("Saved hello." and the hint that names
+// `skit params`) into the shell, where the person sees it after skit ends; a real change gets no
+// receipt; or the editor key does not give the terminal to the editor.
+#[test]
+fn the_editor_key_reports_a_saved_source_only_when_the_editor_changed_it() {
+    const BODY: &str = "echo hello\n";
+    let fixture = Fixture::script(BODY);
+    let change = fixture.home.path().join("change");
+    let editor = saving_editor(fixture.home.path(), &change);
+    let stored = fixture.data.path().join("scripts/hello/script.sh");
+    let mut command = fixture.command_builder();
+    command.env("VISUAL", &editor);
+    let mut session = Session::start(command);
+
+    // The editor saves the file as it was.
+    let before = session.pty.checkpoint();
+    session.send_effect_key(b"e");
+    let unchanged = session.screen_with("No changes to hello.");
+    assert_eq!(
+        status_row(&unchanged),
+        "No changes to hello.",
+        "{unchanged}"
+    );
+    assert!(
+        holds(&session.pty.raw_after(before), LEAVE_ALTERNATE_SCREEN),
+        "the editor did not get the terminal"
+    );
+    assert_eq!(fs::read_to_string(&stored).unwrap(), BODY);
+
+    // The editor adds a line.
+    fs::write(&change, "").unwrap();
+    session.send_effect_key(b"e");
+    let saved = session.screen_with("✓ Source saved");
+    assert_eq!(status_row(&saved), "✓ Source saved", "{saved}");
+    assert_eq!(
+        fs::read_to_string(&stored).unwrap(),
+        format!("{BODY}echo changed\n")
+    );
+
+    session.send(b"q");
+    let (code, history) = session.wait_exit();
+    assert_eq!(code, 0, "{history}");
+    assert!(!history.contains("Saved hello."), "{history}");
+    assert!(!history.contains("parameter drift"), "{history}");
+}
+
+// Ways this can fail: skit cannot read the original of a reference entry before or after the
+// editor, and the interface reports "No changes" for an edit that changed the file, or a save that
+// skit could not see; or the report clears itself before the person reads it.
+#[test]
+fn the_editor_key_says_so_when_it_cannot_read_the_source_to_compare() {
+    let fixture = Fixture::directories();
+    // A short directory keeps the status on one row on every host.
+    let originals = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+    let original = originals.path().join("locked.sh");
+    fs::write(&original, "echo locked\n").unwrap();
+    fixture.add(&original, &["--ref"]);
+    // The owner can write the original but cannot read it.
+    let _mode = ModeGuard::set(&original, 0o200);
+    if fs::read(&original).is_ok() {
+        // Root reads every file, so this case needs an ordinary user.
+        return;
+    }
+    let change = fixture.home.path().join("change");
+    fs::write(&change, "").unwrap();
+    let editor = saving_editor(fixture.home.path(), &change);
+    let mut command = fixture.command_builder();
+    command.env("VISUAL", &editor);
+    let mut session = Session::start(command);
+
+    session.send_effect_key(b"e");
+    let unknown = session.screen_with("so it cannot tell whether locked changed.");
+    let status = unknown
+        .lines()
+        .find(|line| line.contains("cannot tell"))
+        .unwrap_or_default()
+        .trim_matches(|character| character == '│' || character == ' ')
+        .to_owned();
+    assert!(
+        status.starts_with("⚠ skit could not read ") && status.contains("/locked.sh, so it"),
+        "{unknown}"
+    );
+    assert!(!unknown.contains("No changes"), "{unknown}");
+    assert!(!unknown.contains("Source saved"), "{unknown}");
+
+    // A warning has no time limit.
+    std::thread::sleep(Duration::from_millis(4_500));
+    assert!(
+        session
+            .screen()
+            .contains("cannot tell whether locked changed.")
+    );
+}
+
+// Ways this can fail: work that needs no terminal of its own leaves the alternate screen, so the
+// shell shows through, and the screen stays blank until skit asks where the cursor is and draws
+// again. Over SSH, that question waits for one round trip of the link. Opening the launch menu,
+// counting the matches of a pattern after each typed key, saving a preset, reloading, adding an
+// entry, and removing one are all such work. Or a removal prints its receipt into the shell,
+// where the person sees it only after skit ends.
+#[test]
+fn quick_host_work_keeps_the_interface_on_the_screen() {
+    let fixture = Fixture::command("echo {name}").after_run("stay");
+    fs::write(fixture.home.path().join("hello.sh"), "echo hello\n").unwrap();
+    let mut session = fixture.start();
+    let start = session.pty.checkpoint();
+
+    session.send(b"\r");
+    session.screen_with("Run Demo");
+    session.send(b"*.sh");
+    session.screen_with("✓ matches 1 file(s)");
+    session.send(CTRL_S);
+    session.screen_with("Preset name");
+    session.send(b"shells\r");
+    session.screen_with("✓ Preset \"shells\" saved.");
+    session.send(ESCAPE);
+    session.screen_without("1/1 entry", "Run Demo");
+    session.send(CTRL_R);
+    session.screen_with("✓ Library reloaded (1 entry)");
+    session.send(b"a");
+    session.screen_with("Add an entry");
+    session.send(b"hello.sh");
+    session.screen_with("hello.sh");
+    session.send(b"\r");
+    session.screen_with("Add hello");
+    session.send(CTRL_S);
+    session.screen_with("✓ Entry added");
+    session.send(DELETE);
+    session.screen_with("Esc Keep");
+    session.send(TAB);
+    session.send(b"\r");
+    session.screen_with("✓ Entry removed");
+
+    let shown = session.pty.raw_after(start);
+    assert!(
+        !holds(&shown, LEAVE_ALTERNATE_SCREEN),
+        "skit left the alternate screen:\n{}",
+        String::from_utf8_lossy(&shown)
+    );
+    assert!(
+        !holds(&shown, CURSOR_QUESTION),
+        "skit waited for the cursor position:\n{}",
+        String::from_utf8_lossy(&shown)
+    );
+    let history = strip_terminal_control(&String::from_utf8_lossy(&shown));
+    assert!(!history.contains("Removed: "), "{history}");
 }

@@ -409,6 +409,10 @@ fn a_paste_in_a_launch_menu_box_keeps_its_first_line_and_never_runs_or_moves_the
         !screen.contains("Carol"),
         "the paste kept its second line:\n{screen}"
     );
+    assert!(
+        !screen.contains("took this input as a paste"),
+        "a bracketed paste is a paste for sure, so it needs no warning:\n{screen}"
+    );
     session.send(b"!");
     assert_eq!(session.run_output(), "[Bob\tX!|]");
 }

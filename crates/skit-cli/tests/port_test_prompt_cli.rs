@@ -3528,10 +3528,9 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
     let script = sandbox.write_file("s.py", b"print(1)\n");
     sandbox.ok(&["add", &script, "-n", "job", "--no-input"]);
     let tools = tools_dir();
-    // A no-op editor: touch nothing, exit 0.
-    let editor = tools.path().join("noop-editor.sh");
-    fs::write(&editor, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    // The editor changes the script. An edit that changes nothing reports "No changes" and no
+    // hint (docs/behavior-changes.md).
+    let editor = appending_editor(tools.path(), "# edited\n");
     let combined = {
         let output = sandbox
             .command()
