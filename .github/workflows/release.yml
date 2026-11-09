@@ -71,7 +71,9 @@ jobs:
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
           uv tool install --force --from "$wheel" skit-cli
-          "$UV_TOOL_BIN_DIR/skit" --version
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skit-cli-rs") | .version')"
+          commit="$(git rev-parse HEAD)"
+          diff <(printf 'skit %s (%s)\n' "$version" "${commit:0:9}") <("$UV_TOOL_BIN_DIR/skit" --version)
           "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -119,7 +121,14 @@ jobs:
           $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'skit-bin'
           uv tool install --force --from $wheel.FullName skit-cli
           $skit = Join-Path $env:UV_TOOL_BIN_DIR 'skit.exe'
-          & $skit --version
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'skit-cli-rs').version
+          $commit = (git rev-parse HEAD).Substring(0, 9)
+          $expected = "skit $version ($commit)"
+          $actual = @(& $skit --version)
+          if ($LASTEXITCODE -ne 0 -or $actual.Count -ne 1 -or $actual[0] -cne $expected) {
+            throw "skit --version printed '$actual', expected '$expected'"
+          }
           & $skit --help > $null
       - name: Upload the wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -166,7 +175,9 @@ jobs:
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
           uv tool install --force --from "$wheel" skit-cli
-          "$UV_TOOL_BIN_DIR/skit" --version
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skit-cli-rs") | .version')"
+          commit="$(git rev-parse HEAD)"
+          diff <(printf 'skit %s (%s)\n' "$version" "${commit:0:9}") <("$UV_TOOL_BIN_DIR/skit" --version)
           "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -822,7 +822,12 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         return Ok(0);
     }
     if cli.version {
-        println!("skit {}", env!("CARGO_PKG_VERSION"));
+        // build.rs sets SKIT_BUILD_COMMIT to the short commit of this build. The value is empty
+        // when the build has no known commit, for example a build from the source archive.
+        match env!("SKIT_BUILD_COMMIT") {
+            "" => println!("skit {}", env!("CARGO_PKG_VERSION")),
+            commit => println!("skit {} ({commit})", env!("CARGO_PKG_VERSION")),
+        }
         return Ok(0);
     }
     let data_dir = resolve_data_dir(cli.data_dir)?;

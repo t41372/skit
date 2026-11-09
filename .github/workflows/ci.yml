@@ -209,12 +209,16 @@ jobs:
       - name: Install with uv tool
         shell: bash
         run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skit-cli-rs") | .version')"
+          commit="$(git rev-parse HEAD)"
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           uv tool install --force --from "$wheel" skit-cli
-          skit --version
+          # A build in a Git checkout names the commit of the checkout.
+          diff <(printf 'skit %s (%s)\n' "$version" "${commit:0:9}") <(skit --version)
           sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
           uv tool install --force --from "$sdist" skit-cli
-          skit --version
+          # A build from the source archive names no commit.
+          diff <(printf 'skit %s\n' "$version") <(skit --version)
           source_root="$(mktemp -d)"
           tar -xzf "$sdist" -C "$source_root"
           package_root="$(find "$source_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"

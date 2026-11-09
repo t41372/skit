@@ -5,6 +5,9 @@ use serde_json::Value;
 use skit_store::FileStore;
 use tempfile::TempDir;
 
+#[path = "support/version_line.rs"]
+mod expected_version;
+
 struct Sandbox {
     data: TempDir,
     state: TempDir,
@@ -91,26 +94,27 @@ fn help_and_version_expose_the_complete_automation_surface() {
         .stdout(predicate::str::contains("--install-completion"))
         .stdout(predicate::str::contains("--show-completion"));
 
+    let version_line = expected_version::version_line("0.5.0");
     sandbox
         .command()
         .arg("--version")
         .assert()
         .success()
-        .stdout("skit 0.5.0\n");
+        .stdout(version_line.clone());
 
     sandbox
         .command()
         .arg("-V")
         .assert()
         .success()
-        .stdout("skit 0.5.0\n");
+        .stdout(version_line.clone());
 
     sandbox
         .command()
         .args(["--version", "list"])
         .assert()
         .success()
-        .stdout("skit 0.5.0\n");
+        .stdout(version_line);
 
     for arguments in [["--version", "unknown"], ["-V", "unknown"]] {
         sandbox
