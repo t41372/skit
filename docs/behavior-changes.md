@@ -357,6 +357,38 @@ another agent as the step, and a command template says to install the program. V
 the same run before its launch menu opens, with an error that names only the interpreter
 (`src/skit/langs/launch.py:466`).
 
+## Ctrl+C during a run ends the run, not skit
+
+Version 0.4 runs a script with `subprocess.run` (`src/skit/launcher.py:296-300`) in the process
+group of skit. Ctrl+C in the terminal also reaches skit, and Python raises `KeyboardInterrupt`
+there. `skit run` keeps the preset of `--save-preset` and then ends with the interrupt
+(`src/skit/cli.py:3222-3228`), so it does not record the run. A run from the interface has no
+handler for the interrupt (`src/skit/tui.py:828-845`, `:1076`), so the interrupt also ends the
+interface, and a session with `after_run = "stay"` does not come back.
+
+Version 0.5 gives Ctrl+C and Ctrl+\ to the script while it runs. skit waits for the script, as
+`system(3)` does, and then ends the run as it ends every run. The run gets the code `128 + N` of
+the signal, 130 for Ctrl+C. skit records the run and its values, and it keeps the preset of
+`--save-preset`. `skit run` prints `Run exited with code 130` and exits with 130. The interface
+prints its result line, `✗ <name> exited with code 130`, and a session with
+`after_run = "stay"` comes back to the Library with that line as its status. A script that catches
+the key decides when the run ends.
+
+Outside a run, the two keys keep their default action, and skit stops at once. The real-binary
+tests `an_interrupt_key_ends_the_run_and_a_session_that_stays_reports_it` and
+`ctrl_c_ends_a_skit_run_that_still_saves_its_preset_and_reports_its_code` pin this.
+
+On Windows, the console sends the events of Ctrl+C and Ctrl+Break to each process that it serves.
+While a run has the console, skit reports both events as handled, so the script stops and skit
+does not, with the same outcome as on Unix. The code of the run is the exit code of the script,
+untouched, as for every run on Windows. A script that the default handler stops exits with
+`STATUS_CONTROL_C_EXIT` (`0xC000013A`). skit shows that code as `-1073741510`, as cmd and
+PowerShell do, and `skit run` and a session that the run ends both exit with it, so the shell sees
+the status that it sees when Ctrl+C stops any console program. Outside a run, skit keeps the
+default handler. `ctrl_c_ends_a_windows_skit_run_that_still_saves_its_preset_and_reports_its_code`
+and `ctrl_c_ends_a_windows_run_from_the_interface_and_the_session_reports_it` pin this in the
+Windows job.
+
 ## Confirmation dialogs have a focus ring
 
 Version 0.4 draws the actions of the Remove and Discard dialogs as footer chips, `y Remove` and

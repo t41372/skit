@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod injected_command;
+mod interrupts;
 mod javascript_deps;
 mod javascript_gate;
 mod launch;

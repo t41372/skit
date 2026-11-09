@@ -40,7 +40,10 @@ description: 每個命令、選項與結束碼。
 
 `skit run` 原樣傳遞被啟動行程自身的結束碼 —— 包括 125–127
 （docker 慣例：1–124 始終屬於你的程式）。被信號 N 終止的程式回報
-`128+N`，與 POSIX shell 一致。結束碼不為 0 時，`skit run` 還會在 stderr
+`128+N`，與 POSIX shell 一致。在 Windows 上，Ctrl+C 和 Ctrl+Break 只會停止程式，
+不會停止 skit。被它們停止的程式通常以 `STATUS_CONTROL_C_EXIT`（`0xC000013A`）
+結束，skit、cmd 和 PowerShell 都會顯示為 `-1073741510`，`skit run` 也以這個結束碼結束。
+結束碼不為 0 時，`skit run` 還會在 stderr
 印出 `本次執行以結束碼 N 結束`，讀取 stdout 的管線只會拿到程式自己的輸出。
 `skit doctor` 的結束碼只反映 uv 可用性
 （0 = 存在或不需要，1 = 需要但缺少）；單一項目的警告從不改變它。

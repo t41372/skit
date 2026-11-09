@@ -43,7 +43,10 @@ the same actions, deterministic behavior.
 
 `skit run` passes the launched process's own exit code through untouched — even
 125–127 (docker convention: 1–124 always belong to your script). A script killed
-by signal N reports `128+N`, matching POSIX shells. A run that exits with a code
+by signal N reports `128+N`, matching POSIX shells. On Windows, Ctrl+C and
+Ctrl+Break stop the script, not skit. A script that they stop usually exits with
+`STATUS_CONTROL_C_EXIT` (`0xC000013A`), which skit, cmd, and PowerShell show as
+`-1073741510`, and `skit run` exits with that code. A run that exits with a code
 other than 0 also prints `Run exited with code N` on stderr, so a pipe that reads
 stdout gets only the output of the script. `skit doctor`'s exit code
 reflects uv availability only (0 = present or not needed, 1 = required but

@@ -28,12 +28,36 @@ use pty::{AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control
 
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 120;
+const CTRL_BACKSLASH: &[u8] = b"\x1c";
+const CTRL_C: &[u8] = b"\x03";
 const CTRL_R: &[u8] = b"\x12";
 const CTRL_S: &[u8] = b"\x13";
 const DELETE: &[u8] = b"\x1b[3~";
 const DOWN: &[u8] = b"\x1b[B";
 const ESCAPE: &[u8] = b"\x1b";
 const TAB: &[u8] = b"\t";
+
+/// A script that prints [`RUNNING`] when it starts, then waits until a key stops it.
+///
+/// The command line shows `$((6*7))`, so only the output of the script holds the result. The wait
+/// is a loop of short sleeps. dash handles Ctrl+C only after its current child ends, so a key that
+/// comes after the `echo` and before a long `sleep` starts would let the whole `sleep` run.
+///
+/// bash and zsh ignore Ctrl+\ (`SIGQUIT`) themselves, and bash is `sh` on macOS. Without the trap,
+/// the key would stop only the current `sleep`, and the loop would start the next one. The trap
+/// ends the script with 131, the code of a command that `SIGQUIT` stops, on each shell and at each
+/// moment of the key.
+const LONG_RUN: &str = "trap 'exit 131' QUIT; echo ready-$((6*7)); while :; do sleep 1; done";
+const RUNNING: &str = "ready-42";
+
+/// The time that a person usually needs to press a key after the first line of a run shows.
+///
+/// skit takes the interrupt keys over just after the script starts (see
+/// `crates/skit-runtime/src/interrupts.rs`). Until then, a key also stops skit. That moment is
+/// shorter than a millisecond, or about 20 milliseconds on a host that is very busy. A person
+/// needs at least about 100 milliseconds to see the line and press a key, but a test can press at
+/// once.
+const REACTION: Duration = Duration::from_millis(300);
 
 /// One library with one command entry, and the directories of one session.
 struct Fixture {
@@ -102,8 +126,13 @@ impl Fixture {
     }
 
     fn command_builder(&self) -> CommandBuilder {
+        self.skit(&["tui"])
+    }
+
+    /// The `skit` binary with `args`, in the directories of this session.
+    fn skit(&self, args: &[&str]) -> CommandBuilder {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-        command.arg("tui");
+        command.args(args);
         command.cwd(self.home.path());
         command.env("TERM", "xterm-256color");
         command.env("NO_COLOR", "1");
@@ -235,6 +264,8 @@ impl Session {
 
     fn wait_exit(&mut self) -> (u32, String) {
         let status = self.pty.wait_exit_within(Duration::from_secs(30));
+        // The last lines can still be on their way from the terminal when the child exits.
+        self.pty.settle();
         let history = strip_terminal_control(&String::from_utf8_lossy(&self.pty.raw_after(0)));
         (status.exit_code(), history)
     }
@@ -401,6 +432,100 @@ fn a_successful_run_that_stays_shows_a_receipt() {
     session.send_effect_key(b"\r");
     let finished = session.screen_with("✓ Demo finished");
     assert_eq!(status_row(&finished), "✓ Demo finished");
+}
+
+// Ways this can fail: the key stops skit together with the script, so the session that must stay
+// is gone and nothing reports how the run ended; skit ignores the key and the script runs on; or
+// the session comes back without the outcome of the run.
+#[test]
+fn an_interrupt_key_ends_the_run_and_a_session_that_stays_reports_it() {
+    for (key, code) in [(CTRL_C, 130), (CTRL_BACKSLASH, 131)] {
+        let fixture = Fixture::command(LONG_RUN).after_run("stay");
+        let mut session = fixture.start();
+        session.send(b"\r");
+        session.screen_with("Run Demo");
+        session.send(b"\r");
+        session.screen_with(RUNNING);
+        std::thread::sleep(REACTION);
+        // The terminal sends the signal of the key to every process of the run.
+        session.send_effect_key(key);
+        let outcome = format!("✗ Demo exited with code {code}");
+        let interrupted = session.screen_with(&outcome);
+        assert_eq!(status_row(&interrupted), outcome, "{interrupted}");
+
+        // The session is still open: the next key clears the failure.
+        session.send(DOWN);
+        let cleared = session.screen_with("1/1 entry");
+        assert_eq!(status_row(&cleared), "1/1 entry");
+    }
+}
+
+// Ways this can fail: Ctrl+C stops skit together with the script, so the shell shows the output of
+// the script and no word about how the run ended; or the session returns a code that is not the
+// code of the run.
+#[test]
+fn ctrl_c_ends_the_run_and_a_session_that_ends_prints_the_result_line() {
+    let fixture = Fixture::command(LONG_RUN);
+    let mut session = fixture.start();
+    session.send(b"\r");
+    session.screen_with("Run Demo");
+    session.send(b"\r");
+    session.screen_with(RUNNING);
+    std::thread::sleep(REACTION);
+    session.send(CTRL_C);
+    let (code, history) = session.wait_exit();
+    assert_eq!(code, 130, "{history}");
+    let output = history.rfind(RUNNING).expect("the output of the script");
+    let failure = history
+        .find("✗ Demo exited with code 130")
+        .expect("the result line");
+    assert!(output < failure, "{history}");
+    assert_eq!(history.matches("exited with code").count(), 1, "{history}");
+}
+
+// Ways this can fail: Ctrl+C stops skit together with the script, so the preset that the run asked
+// for is lost (version 0.4 keeps it: `src/skit/cli.py:3222-3228`), stderr says nothing about the
+// run, or skit returns a code that is not the code of the run.
+#[test]
+fn ctrl_c_ends_a_skit_run_that_still_saves_its_preset_and_reports_its_code() {
+    let fixture = Fixture::command("echo ready-$((6*7))-{name}; while :; do sleep 1; done");
+    let command = fixture.skit(&[
+        "run",
+        "demo",
+        "--set",
+        "name=x",
+        "--save-preset",
+        "prod",
+        "--no-input",
+    ]);
+    let mut pty = PtyChild::spawn(
+        command,
+        PtySize {
+            rows: ROWS,
+            cols: COLUMNS,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::On,
+    );
+    pty.wait_for_after(0, "ready-42-x");
+    std::thread::sleep(REACTION);
+    pty.send(CTRL_C);
+    let (code, output) = pty.finish();
+    let history = strip_terminal_control(&output);
+    assert_eq!(code, 130, "{history}");
+    assert!(history.contains("Run exited with code 130"), "{history}");
+    let saved = FormStateService::new(FileFormStateStore::new(fixture.state.path()))
+        .load(&skit_domain::Slug::parse("demo").unwrap())
+        .presets;
+    assert_eq!(
+        saved
+            .get("prod")
+            .and_then(|values| values.get("name"))
+            .map(String::as_str),
+        Some("x"),
+        "{history}"
+    );
 }
 
 // Ways this can fail: the error names no program, gives no next step, or shows the internal

@@ -207,12 +207,15 @@ pub struct SystemLaunchRunner;
 
 impl LaunchRunner for SystemLaunchRunner {
     fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
-        let status = Command::new(&plan.program)
+        let mut child = Command::new(&plan.program)
             .args(&plan.args)
             .envs(&plan.env)
             .current_dir(&plan.cwd)
-            .status()?;
-        Ok(process_output(status))
+            .spawn()?;
+        // The interrupt keys of the terminal now end the run, not skit: Ctrl+C and Ctrl+\ on Unix,
+        // Ctrl+C and Ctrl+Break on Windows. skit reports the outcome.
+        let _interrupts = crate::interrupts::ChildInterrupts::begin();
+        Ok(process_output(child.wait()?))
     }
 }
 

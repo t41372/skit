@@ -40,7 +40,10 @@ description: 每个命令、选项与退出码。
 
 `skit run` 原样传递被启动进程自身的退出码 —— 包括 125–127
 （docker 约定：1–124 始终属于你的脚本）。被信号 N 终止的脚本报告
-`128+N`，与 POSIX shell 一致。退出码不为 0 时，`skit run` 还会在 stderr
+`128+N`，与 POSIX shell 一致。在 Windows 上，Ctrl+C 和 Ctrl+Break 只会停止脚本，
+不会停止 skit。被它们停止的脚本通常以 `STATUS_CONTROL_C_EXIT`（`0xC000013A`）
+退出，skit、cmd 和 PowerShell 都显示为 `-1073741510`，`skit run` 也以这个退出码退出。
+退出码不为 0 时，`skit run` 还会在 stderr
 打印 `本次运行以退出码 N 结束`，读取 stdout 的管道只会拿到脚本自己的输出。
 `skit doctor` 的退出码只反映 uv 可用性
 （0 = 存在或不需要，1 = 需要但缺失）；单个条目的警告从不改变它。

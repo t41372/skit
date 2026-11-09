@@ -36,6 +36,17 @@ use pty::{
 };
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
+    let template = if with_parameter {
+        "echo {name}"
+    } else {
+        "echo done"
+    };
+    write_command_template_entry(data, template, with_parameter);
+}
+
+/// Write the command entry `Demo` with `template`, and a required `name` placeholder when
+/// `with_parameter` is true.
+fn write_command_template_entry(data: &Path, template: &str, with_parameter: bool) {
     let directory = data.join("scripts/demo");
     fs::create_dir_all(&directory).unwrap();
     let parameter = if with_parameter {
@@ -48,11 +59,6 @@ fn write_command_entry(data: &Path, with_parameter: bool) {
         )
     } else {
         "params = []\n"
-    };
-    let template = if with_parameter {
-        "echo {name}"
-    } else {
-        "echo done"
     };
     fs::write(
         directory.join("meta.toml"),
@@ -2485,6 +2491,176 @@ fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
         !history.contains("Carol"),
         "the box kept the second line of the paste:\n{history}"
     );
+}
+
+/// A Windows command that prints `ready-42` when it starts and then waits for half a minute.
+///
+/// The command line shows `%COMSPEC:~0,0%`, an empty part of a variable that each Windows session
+/// has, so only the output of the command holds `ready-42`. If Ctrl+C stops `ping` but not `cmd`,
+/// `exit 3` still gives the run a code that is not 0.
+#[cfg(windows)]
+const WINDOWS_LONG_RUN: &str = "echo ready-%COMSPEC:~0,0%42 & ping -n 31 127.0.0.1 >nul & exit 3";
+
+/// The same command, with the value of the `name` placeholder after the mark.
+#[cfg(windows)]
+const WINDOWS_LONG_RUN_WITH_NAME: &str =
+    "echo ready-%COMSPEC:~0,0%42-{name} & ping -n 31 127.0.0.1 >nul & exit 3";
+
+/// The time that a person usually needs to press a key after the first line of a run shows.
+///
+/// skit takes the console events over just after the script starts (see
+/// `crates/skit-runtime/src/interrupts.rs`). Until then, a key also stops skit. A person needs at
+/// least about 100 milliseconds to see the line and press a key, but a test can press at once.
+#[cfg(windows)]
+const REACTION: Duration = Duration::from_millis(300);
+
+/// The code that a result line of skit names, for example `Run exited with code -1073741510`.
+///
+/// The text is the history and the screen together: a pseudo-console can write a line in parts.
+#[cfg(windows)]
+fn reported_code(tui: &mut LiveTui, prefix: &str) -> i64 {
+    let raw = tui.raw_after(0);
+    let text = format!(
+        "{}\n{}",
+        strip_terminal_control(&String::from_utf8_lossy(&raw)),
+        final_terminal_screen(&raw, tui.rows, tui.columns)
+    );
+    let start = text
+        .find(prefix)
+        .unwrap_or_else(|| panic!("skit printed no {prefix:?}:\n{text}"))
+        + prefix.len();
+    let code = text[start..]
+        .chars()
+        .take_while(|character| *character == '-' || character.is_ascii_digit())
+        .collect::<String>();
+    code.parse()
+        .unwrap_or_else(|_| panic!("no code follows {prefix:?}:\n{text}"))
+}
+
+/// The process exit status that Windows gives for a code that skit reports.
+///
+/// skit reports a code as a signed 32-bit number, as cmd and PowerShell do, and the process
+/// status is the same 32 bits without a sign.
+#[cfg(windows)]
+fn windows_status(code: i64) -> u32 {
+    i32::try_from(code).unwrap().cast_unsigned()
+}
+
+/// A Windows console sends Ctrl+C to each process that it serves, skit too. The key must stop the
+/// script and not skit: skit reports the run, keeps the preset that the run asked for (version
+/// 0.4: `src/skit/cli.py:3222-3228`), records the run, and exits with the code of the run, as it
+/// does for every run on Windows.
+#[cfg(windows)]
+#[test]
+fn ctrl_c_ends_a_windows_skit_run_that_still_saves_its_preset_and_reports_its_code() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_template_entry(data.path(), WINDOWS_LONG_RUN_WITH_NAME, true);
+
+    let mut run = LiveTui::spawn_command(
+        &[
+            "run",
+            "demo",
+            "--set",
+            "name=x",
+            "--save-preset",
+            "prod",
+            "--no-input",
+        ],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    run.wait_for("ready-42-x");
+    std::thread::sleep(REACTION);
+    let interrupt = run.checkpoint();
+    run.send(b"\x03");
+    // The run ends at once. A script that the key missed would run for half a minute.
+    let (status, history) = run.wait_for_exit_status_after(interrupt);
+    // The result line can still be on its way from the console when skit exits.
+    run.settle();
+    let code = reported_code(&mut run, "Run exited with code ");
+    assert_ne!(code, 0, "{history}");
+    assert_eq!(status, windows_status(code), "{history}");
+
+    let saved = FileFormStateStore::new(state.path()).load(&Slug::parse("demo").unwrap());
+    assert_eq!(
+        saved
+            .presets
+            .get("prod")
+            .and_then(|values| values.get("name"))
+            .map(String::as_str),
+        Some("x"),
+        "{history}"
+    );
+    assert_eq!(saved.last_run.exit, Some(code), "{history}");
+}
+
+/// Ctrl+C during a run from the interface must stop the script and not skit. A session that ends
+/// after the run prints the result line and exits with the code of the run. A session that stays
+/// comes back to the Library with the outcome as its status.
+#[cfg(windows)]
+#[test]
+fn ctrl_c_ends_a_windows_run_from_the_interface_and_the_session_reports_it() {
+    for after_run in ["exit", "stay"] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        write_command_template_entry(data.path(), WINDOWS_LONG_RUN, false);
+        fs::write(
+            config.path().join("config.toml"),
+            format!("after_run = {after_run:?}\n"),
+        )
+        .unwrap();
+
+        let mut tui = LiveTui::spawn_command(
+            &["tui"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            "en",
+        );
+        tui.wait_for("Demo");
+        let open = tui.checkpoint();
+        tui.send(b"\r");
+        tui.wait_for_after(open, "Run Demo");
+        let launch = tui.checkpoint();
+        tui.send(b"\r");
+        tui.wait_for_after(launch, "ready-42");
+        std::thread::sleep(REACTION);
+        let interrupt = tui.checkpoint();
+        let pressed = std::time::Instant::now();
+        tui.send(b"\x03");
+
+        if after_run == "exit" {
+            let (status, history) = tui.wait_for_exit_status_after(interrupt);
+            tui.settle();
+            // The Unix tests check the glyph. Here the words are enough, whatever the console font.
+            let code = reported_code(&mut tui, "Demo exited with code ");
+            assert_ne!(code, 0, "{history}");
+            assert_eq!(status, windows_status(code), "{history}");
+        } else {
+            // skit is still there: the Library comes back with its footer, and the outcome of the
+            // run is reported. The Unix tests check that the status shows it.
+            let screen = tui.wait_for_after(interrupt, "q/Esc Quit");
+            assert!(screen.contains("Demo exited with code "), "{screen}");
+            // A script that the key missed would end only after half a minute.
+            assert!(
+                pressed.elapsed() < Duration::from_secs(20),
+                "the run did not end at the key:\n{screen}"
+            );
+            let quit = tui.checkpoint();
+            tui.send(b"q");
+            let (status, history) = tui.wait_for_exit_status_after(quit);
+            assert_eq!(status, 0, "{history}");
+        }
+    }
 }
 
 /// The Settings parameter summary must use the source's live default without changing any stored
