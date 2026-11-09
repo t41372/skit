@@ -1,7 +1,6 @@
 # Keep the demo build context small — only packaging inputs + docs/assets/demo are needed.
 .git
 .venv
-htmlcov
 **/__pycache__
 docs/assets/*.png
 docs/assets/*.mp4

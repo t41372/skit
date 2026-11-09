@@ -342,6 +342,8 @@ Owner ruling, 2026-09-23:
 - The old concrete-color unit assertions stay while they pass. When a phase changes a color that
   one of them checks, ask the owner whether the census replaces it.
 
+This ruling records the state on 2026-09-23. `AGENTS.md` holds the current engineering principles.
+
 The artifact:
 
 - A PTY run of the real binary, parsed with `vt100` 0.16.2 (`crates/skit-cli/tests/support/pty.rs`).

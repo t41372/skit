@@ -54,8 +54,7 @@ use skit_ui::{
 use skit_ui::KnownEntryKind;
 
 use crate::cli::tui_host::{
-    FileAllocator as _, PrivateDirectoryPurpose, SYSTEM_FILE_ALLOCATOR, TempLocation,
-    TemporaryFilePurpose,
+    FileAllocator as _, PrivateDirectoryPurpose, TempLocation, TemporaryFilePurpose,
 };
 use crate::run::{StageWriteFaultGuard, new_injected_file_with_allocator};
 
@@ -63,6 +62,8 @@ use crate::run::{StageWriteFaultGuard, new_injected_file_with_allocator};
 use super::host::SeededTuiHost;
 #[cfg(windows)]
 use super::observation::escaped_os;
+#[cfg(target_os = "linux")]
+use super::stable_namespace::initialize_namespace_retained;
 use super::{
     adapters::{
         AllocationFailure, AllocationLocation, AllocationMaximums, AllocationOutcome,
@@ -124,8 +125,7 @@ use super::{
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::{
     stable_namespace::{
-        SandboxFaults, StableSandboxPaths, default_stable_namespace_root,
-        initialize_namespace_retained, map_profile_lock_result,
+        SandboxFaults, StableSandboxPaths, default_stable_namespace_root, map_profile_lock_result,
     },
     stable_sandbox::StableSandbox,
 };
@@ -146,7 +146,8 @@ mod projection_session;
 mod seeding;
 mod stable_host;
 mod stable_namespace;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// Every contract in it is Linux-only.
+#[cfg(target_os = "linux")]
 mod stable_sandbox;
 
 /// Name one test of `module` for the `--exact` filter of the test harness.
@@ -240,18 +241,14 @@ fn stable_paths(
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn create_private_test_directory(path: &Path) {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    builder.create(path).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        fs::DirBuilder::new().mode(0o700).create(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
+    #[cfg(not(unix))]
+    fs::DirBuilder::new().create(path).unwrap();
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -774,14 +771,19 @@ enum G2DirectorySeedFault {
 struct G2DirectorySeedIo {
     fault: Cell<Option<G2DirectorySeedFault>>,
     attempts: RefCell<Vec<PathBuf>>,
+    // Only a Unix seed makes a symlink conflict.
+    #[cfg(unix)]
     symlink_target: PathBuf,
 }
 
 impl G2DirectorySeedIo {
     fn new(fault: G2DirectorySeedFault, symlink_target: PathBuf) -> Self {
+        #[cfg(not(unix))]
+        let _ = symlink_target;
         Self {
             fault: Cell::new(Some(fault)),
             attempts: RefCell::new(Vec::new()),
+            #[cfg(unix)]
             symlink_target,
         }
     }

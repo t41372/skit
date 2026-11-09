@@ -1,7 +1,6 @@
 //! Product-coupled oracles for the skit terminal walker.
 //!
 //! This crate is a development tool. `publish = false` keeps it inside the workspace.
-//! Its rules stay visible to a workspace coverage run.
 //! Each oracle reads real product state and names the rule that the state breaks.
 
 #![forbid(unsafe_code)]

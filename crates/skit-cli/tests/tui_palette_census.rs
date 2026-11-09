@@ -517,8 +517,7 @@ impl Fixture {
 
 /// End the session the way a person does: two Ctrl+C presses.
 ///
-/// A screen that already shows the quit notice ends at the first press. A killed child never
-/// writes its coverage profile, so the census would add no coverage.
+/// A screen that already shows the quit notice ends at the first press.
 fn quit(child: &mut PtyChild, screen: &str) {
     let before = child.checkpoint();
     child.send(CTRL_C);

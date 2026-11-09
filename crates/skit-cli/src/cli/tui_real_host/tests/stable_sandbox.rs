@@ -1564,7 +1564,8 @@ fn namespace_parent_lock_blocks_a_second_initializer_until_release() {
     drop(initialized);
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// Only the Linux namespace validation contract opens the namespace parts.
+#[cfg(target_os = "linux")]
 fn opened_namespace_parts(
     paths: &StableSandboxPaths,
 ) -> (
@@ -1586,7 +1587,7 @@ fn opened_namespace_parts(
     (parent, namespace, leases, sandboxes)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn initialized_namespace_paths(
     parent: &tempfile::TempDir,
     profile: &SafeProfileId,

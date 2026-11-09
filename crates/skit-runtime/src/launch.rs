@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     ffi::OsString,
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -1538,11 +1538,11 @@ fn program_names(name: &str) -> Vec<String> {
             return vec![name.to_owned()];
         }
         let extensions = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
-        return extensions
+        extensions
             .split(';')
             .filter(|value| !value.is_empty())
             .map(|extension| format!("{name}{extension}"))
-            .collect();
+            .collect()
     }
     #[cfg(not(windows))]
     {
@@ -1553,7 +1553,7 @@ fn program_names(name: &str) -> Vec<String> {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
-    fs::metadata(path)
+    std::fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
@@ -1567,6 +1567,7 @@ mod private_tests {
     use super::*;
     use skit_domain::{EntryKind, EntryMeta, Slug};
     use std::cell::RefCell;
+    use std::fs;
     use tempfile::TempDir;
 
     #[derive(Debug, Default)]
@@ -1880,8 +1881,8 @@ mod private_tests {
 
         // The contract is real operating-system exit status, not one shell: spawn the host's own
         // command interpreter. A bare `cmd.exe` resolves through the system directory before any
-        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms keep the other
-        // host's tuple out of this host's executable lines, which the coverage gate counts.
+        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms compile only the
+        // tuple of this host.
         #[cfg(windows)]
         let (shell, flag) = ("cmd.exe", "/C");
         #[cfg(not(windows))]

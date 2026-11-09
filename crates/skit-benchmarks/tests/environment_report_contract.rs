@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    fs, thread,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, fs, time::Duration};
 
 use skit_benchmarks::{
     BenchmarkProfile, GitInfo, HostInfo, Meta, Metric, Skip, SuiteKind, SuiteOutput,
@@ -223,6 +219,8 @@ fn process_runner_builds_a_complete_environment_and_enforces_timeouts() {
 #[cfg(unix)]
 #[test]
 fn process_timeout_terminates_the_complete_descendant_tree() {
+    use std::{thread, time::Instant};
+
     let root = TempDir::new().unwrap();
     let marker = root.path().join("orphan-ran");
     let started = Instant::now();

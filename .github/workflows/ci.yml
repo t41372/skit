@@ -133,36 +133,12 @@ jobs:
             echo 'the CPython 3.13 compile gate ran zero tests' >&2
             exit 1
           }
-
-  coverage:
-    name: coverage (100% executable-source line gate)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    steps:
-      - name: Check out the source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: cargo-llvm-cov@0.9.1
-          fallback: none
-      - name: Enforce complete line coverage
-        shell: bash
-        run: |
-          bash scripts/test_coverage.sh
-          cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
-          bash scripts/check_coverage.sh lcov.info
-      - name: Upload coverage
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          files: ./lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+      - name: Run Clippy on the code for this platform
+        # The quality job runs Clippy only on Linux. Code for Windows or macOS compiles only on
+        # its own platform, so the runner of that platform checks it here. The step also runs
+        # after a failed test, so one run reports both results.
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   supply-chain:
     name: dependency and workflow audit

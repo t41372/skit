@@ -17,8 +17,8 @@ in one library. They can use the Ratatui interface or the deterministic CLI.
    arguments.
 4. Keep every TUI capability available through the CLI. Machine paths need `--json`, deterministic
    exit codes, `--no-input`, `--dry-run` where applicable, and dynamic completion.
-5. Keep the quality gates hard: complete executable-source line coverage, Clippy with warnings as
-   errors, Rustdoc warnings as errors, and complete i18n.
+5. Keep the quality gates hard: Clippy with warnings as errors, Rustdoc warnings as errors, and
+   complete i18n.
 6. Do not change global or third-party configuration without explicit consent. skit can change only
    its own data, state, and configuration directories.
 
@@ -76,12 +76,26 @@ runner selection is `--runner`, then entry pin, then exit 126. It does not rank 
 Files in `tests/corpus/` are byte-exact inputs. Do not normalize line endings, trailing spaces,
 final newlines, or Unicode.
 
-## TDD
+## Engineering principles
 
-Write a failing contract test before an implementation change. Then implement the smallest change
-and refactor while tests stay green. Add refusal, corruption, race, and rollback tests for stateful
-boundaries. Store tests use temporary directories. UI tests drive the reducer and Ratatui
-`TestBackend`.
+1. **E2E tests prove features.** Prefer them as the only testing mechanism, and use them to verify
+   complex features in the real app. Pick a medium-to-hard scenario, not the simplest one that
+   passes, because a half-built feature usually passes the happy path.
+2. **Test the real thing, not a spherical chicken.** Tests run in a separate environment that is
+   otherwise real. An idealized mock lets every test pass while the product breaks the moment
+   someone opens it.
+3. **Every E2E run ends with a verifiable, repeatable artifact.**
+4. **Do not write unit tests after the code.** Tests written afterward encode what the code does,
+   not what it should do. When something truly has to be tested in isolation, first write down
+   every way it could fail, then write the code.
+5. **Written for the people who maintain it.** Our code is read and maintained by people for years.
+   Keep the architecture elegant, the code clean, and the whole system easy to maintain. Text,
+   whether in docs, comments, or the UI, says things plainly, the way a person would. No AI slop.
+
+skit's E2E tests run the real `skit` binary (in a PTY for the TUI), record the TUI census, and run
+the UI walker. At a stateful boundary, test refusal, corruption, race, and rollback in real
+temporary directories. When a UI rule truly needs an isolated test, drive the real reducer and
+Ratatui `TestBackend`.
 
 ## Commands
 
@@ -92,8 +106,6 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps
 cargo test --locked --workspace --all-targets --all-features
-cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
-bash scripts/check_coverage.sh lcov.info
 cargo deny --locked check
 cargo audit --deny warnings
 zizmor .github/workflows .github/actions/install-hyperfine/action.yml

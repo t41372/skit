@@ -61,7 +61,7 @@ fn g2_profile_directory_seed_duplicates_and_overlaps_are_idempotent_private_and_
 }
 
 fn g2_directory_seed_fault_cases() -> Vec<(G2DirectorySeedFault, &'static str)> {
-    let mut cases = vec![
+    let cases = vec![
         (G2DirectorySeedFault::FileConflict, "is not a directory"),
         (G2DirectorySeedFault::Create, "could not create"),
         (G2DirectorySeedFault::Inspect, "could not inspect"),
@@ -70,11 +70,16 @@ fn g2_directory_seed_fault_cases() -> Vec<(G2DirectorySeedFault, &'static str)> 
             "could not set private mode",
         ),
     ];
+    // Only Unix seeds a symlink conflict. It comes second, after the file conflict.
     #[cfg(unix)]
-    cases.insert(
-        1,
-        (G2DirectorySeedFault::SymlinkConflict, "is not a directory"),
-    );
+    let cases = {
+        let mut cases = cases;
+        cases.insert(
+            1,
+            (G2DirectorySeedFault::SymlinkConflict, "is not a directory"),
+        );
+        cases
+    };
     cases
 }
 

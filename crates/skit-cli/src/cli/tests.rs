@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use skit_application::{DiagnosticCode, ExitClass, LibraryService, RepositoryError};
+use skit_application::{ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
@@ -12138,6 +12138,8 @@ fn settings_inputs_read_prompt_runners_and_keep_future_kinds_empty_without_hidde
 fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    use skit_application::DiagnosticCode;
+
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
     let state_dir = root.path().join("state");
@@ -12445,8 +12447,8 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 
 // This src test module deliberately keeps its own copy of the terminal rules instead of
 // including `tests/support/pty.rs`: an include from src would compile 450 harness lines into
-// the library test build, where the coverage checker counts every line. The canonical rules and
-// their wave evidence live in that module; keep this copy in step with it.
+// the library test build. The canonical rules and their wave evidence live in that module; keep
+// this copy in step with it.
 /// Deliver one canned answer the way a terminal delivers it.
 ///
 /// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
@@ -12454,7 +12456,8 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 /// character, so the prompt keeps waiting and both sides stop
 /// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
 /// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
+/// Unix exactly as it was. Only the Unix terminal harness types answers.
+#[cfg(unix)]
 fn keystrokes(answer: &[u8]) -> Vec<u8> {
     answer
         .iter()

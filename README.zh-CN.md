@@ -1,7 +1,6 @@
 <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png" alt="skit — 脚本启动器 + 参数管家" width="750">
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Rust 1.99.1](https://img.shields.io/badge/rust-1.99.1-orange)](https://www.rust-lang.org/)
@@ -248,7 +247,7 @@ skit 源自 [linux.do 上的一个帖子](https://linux.do/t/topic/2512255)
 
 ## 开发
 
-开发使用固定版本的 Rust 工具链。TDD 流程、完整覆盖率、供应链、wheel、文档和性能关卡见
+开发使用固定版本的 Rust 工具链。工程原则以及供应链、wheel、文档和性能关卡见
 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ```bash

@@ -35,10 +35,10 @@
 //! - Bucket 3 (cross-crate, TUI settings screen): `test_settings_clearing_python_unpins_the_block`
 //!   is `#[ignore]`d. The oracle drives the interactive `ScriptSettingsScreen`
 //!   (`tui.MenuApp` + pilot), a reducer/TestBackend surface owned by the skit-tui / skit-ui
-//!   tier (AGENTS.md: "UI tests drive the reducer and Ratatui TestBackend"); a CLI-binary
-//!   integration test cannot drive it, and hand-gluing the reducer to a FileStore would test
-//!   wiring the production loop may not share. Test 1's `deps a --python -` already covers the
-//!   same store chokepoint (unpinning the stored block) from the CLI.
+//!   tier; a CLI-binary integration test cannot drive it, and hand-gluing the reducer to a
+//!   FileStore would test wiring the production loop may not share. Test 1's
+//!   `deps a --python -` already covers the same store chokepoint (unpinning the stored block)
+//!   from the CLI.
 
 use std::fs;
 
@@ -262,9 +262,9 @@ fn test_deps_only_edit_preserves_a_pin_that_lives_in_meta() {
 #[test]
 #[ignore = "CROSS-CRATE (bucket 3): the oracle drives the interactive ScriptSettingsScreen \
 (tui.MenuApp + pilot, clear #st-python -> action_save). That reducer/TestBackend surface is \
-owned by the skit-tui / skit-ui tier (AGENTS.md: UI tests drive the reducer and Ratatui \
-TestBackend); a CLI-binary integration test cannot drive it. Test 1's `deps a --python -` already \
-covers the same store chokepoint (unpinning the stored block) from the CLI. Python ref: \
+owned by the skit-tui / skit-ui tier; a CLI-binary integration test cannot drive it. Test 1's \
+`deps a --python -` already covers the same store chokepoint (unpinning the stored block) from \
+the CLI. Python ref: \
 tests/test_uv_metadata_unpinning.py::test_settings_clearing_python_unpins_the_block."]
 fn test_settings_clearing_python_unpins_the_block() {
     // Emptying #st-python on a pinned copy-mode entry reaches the same store chokepoint with

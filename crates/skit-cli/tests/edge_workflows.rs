@@ -95,6 +95,8 @@ impl Sandbox {
         .unwrap();
     }
 
+    // Only the Unix draft-editor contract drives an editor on a terminal.
+    #[cfg(unix)]
     fn editor_pty(
         &self,
         args: &[&str],

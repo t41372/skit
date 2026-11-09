@@ -10,7 +10,6 @@ Install the pinned Rust toolchain from `rust-toolchain.toml`. Cargo selects it w
 repository. Install these development tools when you need their gates:
 
 ```bash
-cargo install cargo-llvm-cov --version 0.9.1 --locked
 cargo install cargo-audit --version 0.22.2 --locked
 cargo install cargo-deny --version 0.20.2 --locked
 cargo install zizmor --version 1.32.0 --locked
@@ -51,17 +50,26 @@ Tauri, TOML, or a concrete filesystem. `skit-ui` is a serializable reducer with 
 The Ratatui adapter renders that reducer. A future Tauri adapter must use the same reducer and
 application ports.
 
-## TDD workflow
+## Engineering principles
 
-Use this order for each behavior change:
+1. **E2E tests prove features.** Prefer them as the only testing mechanism, and use them to verify
+   complex features in the real app. Pick a medium-to-hard scenario, not the simplest one that
+   passes, because a half-built feature usually passes the happy path.
+2. **Test the real thing, not a spherical chicken.** Tests run in a separate environment that is
+   otherwise real. An idealized mock lets every test pass while the product breaks the moment
+   someone opens it.
+3. **Every E2E run ends with a verifiable, repeatable artifact.**
+4. **Do not write unit tests after the code.** Tests written afterward encode what the code does,
+   not what it should do. When something truly has to be tested in isolation, first write down
+   every way it could fail, then write the code.
+5. **Written for the people who maintain it.** Our code is read and maintained by people for years.
+   Keep the architecture elegant, the code clean, and the whole system easy to maintain. Text,
+   whether in docs, comments, or the UI, says things plainly, the way a person would. No AI slop.
 
-1. Add a contract test that fails for the expected reason.
-2. Add the smallest implementation that passes the test.
-3. Refactor while the test stays green.
-4. Add refusal, corruption, and concurrency tests where the boundary can fail.
-
-Use real temporary directories for filesystem contracts. Use fake process probes before the final
-spawn boundary. UI tests must drive the frontend-neutral reducer and the Ratatui `TestBackend`.
+skit's E2E tests run the real `skit` binary (in a PTY for the TUI), record the TUI census, and run
+the UI walker. At a stateful boundary, test refusal, corruption, race, and rollback in real
+temporary directories. When a UI rule truly needs an isolated test, drive the real reducer and
+Ratatui `TestBackend`.
 
 ## Required gates
 
@@ -72,17 +80,10 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps
 cargo test --locked --workspace --all-targets --all-features
-cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
-bash scripts/test_coverage.sh
-bash scripts/check_coverage.sh lcov.info
 cargo deny --locked check
 cargo audit --deny warnings
 zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 ```
-
-The coverage script merges records from all test binaries. It rejects every uncovered executable
-source line. It ignores only LLVM mappings for structural Rust lines, such as braces, attributes,
-and function signatures.
 
 ## Internationalization
 

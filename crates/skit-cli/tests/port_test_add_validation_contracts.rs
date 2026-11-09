@@ -29,6 +29,7 @@
 //! - 4 semantic-duplicate closures name their stronger owned-draft owner.
 
 use std::fs;
+#[cfg(unix)]
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -37,7 +38,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use skit_i18n::{Locale, Localize};
-use skit_language::{read_uv_metadata, validate_pep440_specifiers, validate_pep508_requirement};
+#[cfg(unix)]
+use skit_language::read_uv_metadata;
+use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -237,6 +240,7 @@ fn explicit_boundary_message(language: &str, file: &str, flags: &str) -> String 
     }
 }
 
+#[cfg(unix)]
 fn inferred_boundary_message(language: &str, file: &str) -> String {
     match language {
         "zh-CN" => format!(

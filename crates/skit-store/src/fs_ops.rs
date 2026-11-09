@@ -1030,6 +1030,10 @@ mod tests {
         for name in names(&root) {
             let path = root.path().join(name);
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "on Windows this clears the read-only attribute; only Unix makes the file world-writable"
+            )]
             permissions.set_readonly(false);
             std::fs::set_permissions(&path, permissions).unwrap();
         }

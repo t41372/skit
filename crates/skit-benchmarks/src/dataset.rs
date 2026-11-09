@@ -729,18 +729,21 @@ fn source_permissions(path: &Path) -> Result<SourcePermissions, DatasetError> {
     })
 }
 
+#[cfg(unix)]
 fn make_executable(path: &Path) -> Result<(), DatasetError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|source| {
-            DatasetError::Io {
-                operation: "chmod",
-                path: path.to_path_buf(),
-                source,
-            }
-        })?;
-    }
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|source| {
+        DatasetError::Io {
+            operation: "chmod",
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+/// A Windows file has no executable bit to set.
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), DatasetError> {
     Ok(())
 }
 

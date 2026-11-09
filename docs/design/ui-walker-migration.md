@@ -14,12 +14,12 @@ Ordering constraint: MIG-D wiring, MIG-E's real-host driver, and the `RawMouse` 
 `crates/skit-cli/src/cli/tui_real_walker.rs`, which G4 owns until G4 commits. Everything else starts
 now in disjoint files.
 
-## M0. The gates that shape every placement decision
+## M0. The gates that shaped every placement decision
 
-- Every line in a `#[cfg(test)]` module under `crates/*/src/` is coverage-gated by
-  `scripts/check_coverage.sh` (no path filter; an `#[ignore]` body is uncovered lines). Files under
-  `crates/*/tests/**` get no lcov record. A workspace coverage run merges hits from every test
-  binary, so a dev-only crate's lines count when skit-cli's tests execute them.
+- Every line in a `#[cfg(test)]` module under `crates/*/src/` was coverage-gated by
+  `scripts/check_coverage.sh` (no path filter; an `#[ignore]` body counted as uncovered lines).
+  Files under `crates/*/tests/**` got no lcov record. A workspace coverage run merged hits from
+  every test binary, so a dev-only crate's lines counted when skit-cli's tests executed them.
 - `skit-tui-walker-support` must stay product-independent and must not depend on skit-ui,
   skit-tui, skit-cli, or proptest.
 
@@ -53,8 +53,8 @@ live in its own `tests/` directory (M4, M5). Modules:
   geometry), and drops the fork. `expected_hit_action` is the public hit contract only (a Command
   hit yields its command action, `FocusField(i)` yields `Action::FocusField(i)`, run tokens yield
   their option payload); it never grows host or reducer expectations. Every named code gets a
-  refusal test in `parity_tests.rs` reached through a forged session or geometry (this is what makes
-  the `Err` arms covered). The `try_fork` failure arm: `try_fork` returns
+  refusal test in `parity_tests.rs` reached through a forged session or geometry (so a test reaches
+  every `Err` arm). The `try_fork` failure arm: `try_fork` returns
   `None` only while a path-completion worker owns a channel, which the walker never has; write the
   arm as a one-line `ok_or_else` and pin the reason in a comment.
   The guarantee has a boundary. The probes prove parity for the targets that the live inventory
@@ -123,8 +123,8 @@ records it.
   still send Down followed by Up.
 - One non-ignored test `real_random_walk` reads the env values through the model's readers with
   defaults 4 cases, 24 steps, `bounded` (en 80x24 only), `0`, no liveness sampling, and a fixed
-  ChaCha seed with `FileFailurePersistence::Off`; CI's normal job runs it at the defaults and covers
-  every line. `complete` mode uses proptest's entropy seed, `FileFailurePersistence::Direct` under
+  ChaCha seed with `FileFailurePersistence::Off`; CI's normal job runs it at the defaults.
+  `complete` mode uses proptest's entropy seed, `FileFailurePersistence::Direct` under
   `target/ui-walker-artifacts/regressions.txt`, prints the seed in the failure message, shrinks on
   the failing profile only with a measured `max_shrink_iters` cap, replays the minimal vector on a
   fresh host, and writes `failure-<n>/{repro.json, failure.cast}`. Initial vectors contain exactly

@@ -197,10 +197,14 @@ fn reported_body(output: &str) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(unix)]
 fn assert_private_mode(output: &str) {
-    #[cfg(unix)]
     assert!(output.lines().any(|line| line == "STAGED_MODE=0o600"));
 }
+
+/// A Windows file has no Unix mode bits to check.
+#[cfg(not(unix))]
+fn assert_private_mode(_output: &str) {}
 
 fn assert_authoritative_bytes_unchanged(
     sandbox: &Sandbox,

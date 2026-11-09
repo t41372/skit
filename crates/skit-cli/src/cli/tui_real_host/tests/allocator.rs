@@ -656,6 +656,8 @@ fn live_private_allocator_nodes_keep_modes_while_ordinary_siblings_use_none() {
 fn walker_private_modes_ignore_restrictive_umask_in_a_child_process() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    use crate::cli::tui_host::SYSTEM_FILE_ALLOCATOR;
+
     const CHILD: &str = "SKIT_WALKER_ALLOCATOR_UMASK_CHILD";
     let test = harness_test_name(
         module_path!(),

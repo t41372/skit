@@ -856,7 +856,7 @@ mod tests {
     };
 
     use skit_application::{
-        AgentScope, AgentTarget, CreateEntry, EntryPayload, LibraryService, SourcePermissions,
+        AgentTarget, CreateEntry, EntryPayload, LibraryService, SourcePermissions,
         form_state::{FormStateService, LastRunState},
         health::HealthIssueKind,
         library_detail::LibraryRunAge,
@@ -873,13 +873,10 @@ mod tests {
         DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, InjectedCommand,
         InjectedCommandOutput, InjectedCommandRunner, InjectedCommandUnavailable,
         InterpreterPlatform, JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateRunner,
-        JavaScriptSyntaxGateUnavailable, LaunchError, LaunchPlan, LaunchProcessOutput,
-        LaunchRunner, ProgramProbe, UvArchiveFetchError, UvArchiveFetcher, UvDownloadConsent,
+        JavaScriptSyntaxGateUnavailable, LaunchPlan, LaunchProcessOutput, LaunchRunner,
+        ProgramProbe, UvArchiveFetchError, UvArchiveFetcher, UvDownloadConsent,
     };
-    use skit_store::{
-        AgentSkillInstallPoint, FileConfigStore, FileFormStateStore, FilePromptSelectionStore,
-        FileStore,
-    };
+    use skit_store::{FileConfigStore, FileFormStateStore, FilePromptSelectionStore, FileStore};
     use skit_ui::{
         Action as UiAction, AddAction, AddRequestId, AddWorkflowState, DraftKind, Effect,
         FieldValue, FormPurpose, HealthView, HostRequest, KnownEntryKind, LibrarySurface,
@@ -894,11 +891,19 @@ mod tests {
         CliError, expand_user_path_with_home, tui_add_source, user_home_from_environment,
     };
     use super::{
-        EditorLauncher, HostEnvironment, HostOutput, PreferenceFiles, ProductRoots,
-        SYSTEM_FILE_ALLOCATOR, SYSTEM_PREFERENCE_FILES, SystemEnvironment,
+        EditorLauncher, HostEnvironment, HostOutput, ProductRoots, SystemEnvironment,
         SystemTerminalCapability, TerminalCapability, TuiHost, TuiPlatform,
     };
+    // The preference-file recorder, its contract, and the launch failure contract are Unix-only.
+    #[cfg(unix)]
+    use super::{PreferenceFiles, SYSTEM_FILE_ALLOCATOR, SYSTEM_PREFERENCE_FILES};
     use crate::run::{RunClock, RunError, RunPorts};
+    #[cfg(unix)]
+    use skit_application::AgentScope;
+    #[cfg(unix)]
+    use skit_runtime::LaunchError;
+    #[cfg(unix)]
+    use skit_store::AgentSkillInstallPoint;
 
     /// Read the run form of one presented screen. Another action returns nothing.
     fn presented_run_form(action: UiAction) -> Option<Box<RunFormView>> {
@@ -1082,6 +1087,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum PreferenceFileCall {
         File(PathBuf),
@@ -1092,12 +1098,14 @@ mod tests {
         },
     }
 
+    #[cfg(unix)]
     #[derive(Debug, Default)]
     struct RecordingPreferenceFiles {
         calls: RefCell<Vec<PreferenceFileCall>>,
         fail_point: Cell<Option<AgentSkillInstallPoint>>,
     }
 
+    #[cfg(unix)]
     impl PreferenceFiles for RecordingPreferenceFiles {
         fn is_file(&self, path: &Path) -> bool {
             self.calls
@@ -1152,6 +1160,7 @@ mod tests {
     #[derive(Debug)]
     enum RecordedLaunchOutcome {
         Exit(i32),
+        #[cfg(unix)]
         Failure(io::ErrorKind, &'static str),
     }
 
@@ -1193,6 +1202,7 @@ mod tests {
                     exit_code: Some(exit_code),
                     signal: None,
                 }),
+                #[cfg(unix)]
                 RecordedLaunchOutcome::Failure(kind, message) => Err(io::Error::new(kind, message)),
             }
         }

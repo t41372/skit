@@ -56,10 +56,13 @@ mod temp_root;
 
 use temp_root::TempRoot;
 
+// Only the Unix tests make store entries and read their state.
+#[cfg(unix)]
 use skit_application::{
     CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
     form_state::FormStateRepository as _, payload_stored_name,
 };
+#[cfg(unix)]
 use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
@@ -73,7 +76,9 @@ use skit_runtime::{
     preflight_javascript_dependencies, resolve_javascript_dependency_installer,
     split_javascript_requirement, split_javascript_requirements,
 };
-use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
+use skit_store::FileConfigStore;
+#[cfg(unix)]
+use skit_store::{FileFormStateStore, FileStore};
 
 // ============================================================================
 // Self-contained fixtures (no shared helper is edited or imported).
@@ -232,6 +237,7 @@ fn combine(output: &std::process::Output) -> String {
     text
 }
 
+#[cfg(unix)]
 fn registry_product_rows(bytes: &[u8]) -> toml::Table {
     let mut document = toml::from_str::<toml::Table>(&String::from_utf8_lossy(bytes)).unwrap();
     if let Some(entries) = document

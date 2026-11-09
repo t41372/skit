@@ -1008,7 +1008,7 @@ fn stable_cleanup_removes_reparse_directories_and_preserves_the_external_target(
     let outside = parent.path().join("outside-target");
     fs::create_dir(&outside).unwrap();
     fs::write(outside.join("retained.txt"), b"outside bytes").unwrap();
-    let mut host = RealWalkerHost::spawn_stable_in(
+    let host = RealWalkerHost::spawn_stable_in(
         profile(),
         review_profile,
         StableSandboxNamespace::explicit(namespace_root).unwrap(),

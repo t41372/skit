@@ -1,7 +1,7 @@
 //! Long and environment-driven owners for the four-profile review corpus.
 //!
 //! Both owners are ignored. The first one regenerates the canonical corpus twice. The second
-//! one needs a path from the environment. Every line they use has a fast contract in
+//! one needs a path from the environment. Every function they call has a fast contract in
 //! `tui_walker_bundle.rs`.
 
 // Keep this ignored owner compiled on every host to check the complete corpus path.

@@ -60,7 +60,7 @@ Operational failures and failed enforced budgets exit with code 1.
 | `tui_probe.rs` | Fresh-process Ratatui interaction probe |
 | `benches/core.rs` | Criterion and CodSpeed-compatible benchmark subjects |
 
-The executable Rust source stays under the workspace coverage, Clippy, Rustdoc, and test gates.
+The executable Rust source stays under the workspace Clippy, Rustdoc, and test gates.
 Suite orchestration is not exempt from those gates.
 
 ## Measurement definitions

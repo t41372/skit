@@ -1,7 +1,6 @@
 <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png" alt="skit — script launcher and parameter manager" width="750">
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Rust 1.99.1](https://img.shields.io/badge/rust-1.99.1-orange)](https://www.rust-lang.org/)
@@ -270,8 +269,8 @@ skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/25
 
 ## Development
 
-Development uses the pinned Rust toolchain. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the TDD
-workflow and the complete coverage, supply-chain, wheel, documentation, and benchmark gates.
+Development uses the pinned Rust toolchain. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the
+engineering principles and the supply-chain, wheel, documentation, and benchmark gates.
 
 ```bash
 cargo build --locked
