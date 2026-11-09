@@ -172,6 +172,46 @@ fn launch_errors_localize_their_template_in_every_supported_locale() {
     }
 }
 
+/// A prompt runner refusal at launch says where the marker goes, in every locale.
+///
+/// `skit runner add` skips a marker that touches another brace, so it accepts `{{{prompt}}}`.
+/// The launch counts every `{{prompt}}`, finds two, and refuses the runner before it starts it.
+/// The refusal must tell the user to put one marker in a word after the program.
+#[test]
+fn a_refused_prompt_runner_says_the_marker_goes_after_the_program_in_every_locale() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command("en")
+        .args(["add", "-", "--prompt", "-n", "plain"])
+        .write_stdin("Say hello.\n")
+        .assert()
+        .success();
+    let runner = "bracecheck";
+    sandbox
+        .command("en")
+        .args(["runner", "add", runner])
+        .args(["echo", "{{prompt}}", "{{{prompt}}}"])
+        .assert()
+        .success();
+
+    for (locale, template) in [
+        (
+            "en",
+            "must contain exactly one {{prompt}} marker outside the program token",
+        ),
+        ("zh-CN", "必须在程序之后正好包含一个 {{prompt}} 标记"),
+        ("zh-TW", "必須在程式之後正好包含一個 {{prompt}} 標記"),
+    ] {
+        sandbox
+            .command(locale)
+            .args(["run", "plain", "--runner", runner, "--no-input"])
+            .assert()
+            .code(126)
+            .stderr(predicate::str::contains(template))
+            .stderr(predicate::str::contains(runner));
+    }
+}
+
 const REFUSE_EMPTY: [&str; 3] = [
     "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
     "执行器需要一条命令——例如 skit runner add mycli mycli run {{prompt}}",

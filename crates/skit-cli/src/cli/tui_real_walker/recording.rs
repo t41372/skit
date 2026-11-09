@@ -846,8 +846,9 @@ pub(crate) fn draft_quarantine_corpus_operations() -> Vec<CorpusOperation> {
 /// The short operation vector that cuts the derived Add review name.
 ///
 /// It authors one script draft, reaches the review name, and cuts that name with `Control+U`.
-/// The cut name stays in the input cut buffer after the paste replaces the value. A script draft
-/// keeps the allocator stem in its name. A prompt draft takes its name from its first words.
+/// The cut name stays in the undo history of the input after the paste replaces the value. A
+/// script draft keeps the allocator stem in its name. A prompt draft takes its name from its
+/// first words.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
     let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
@@ -939,6 +940,134 @@ pub(crate) fn source_path_cursor_corpus_operations() -> Vec<CorpusOperation> {
         },
         add_hit(AddControlId::Text(AddTextField::SourcePath)),
         CorpusOperation::RawKey(plain(CorpusKey::End)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The key events of one chord with Control.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn control_key(character: char) -> CorpusOperation {
+    CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Character(character),
+        CorpusModifiers {
+            control: true,
+            ..CorpusModifiers::NONE
+        },
+    ))
+}
+
+/// The key events of one key with Shift.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn shift_key(code: CorpusKey) -> CorpusOperation {
+    CorpusOperation::RawKey(CorpusKeyEvent::press(
+        code,
+        CorpusModifiers {
+            shift: true,
+            ..CorpusModifiers::NONE
+        },
+    ))
+}
+
+/// The operations that author one script draft and reach its derived review name.
+///
+/// The review stage opens with the focus on the name and the cursor at its end. A script draft
+/// keeps the allocator stem in its name.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn script_review_name_operations() -> Vec<CorpusOperation> {
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        CorpusOperation::ScreenFocus(ScreenTarget::Add(AddControlId::NewScript)),
+        CorpusOperation::LocalKeyboard {
+            target: LocalActionTarget::Add(AddControlId::NewScript),
+            key: CorpusKeyEvent::press(CorpusKey::Enter, CorpusModifiers::NONE),
+        },
+    ]
+}
+
+/// The short operation vector that types the same text over a selection of the derived review
+/// name.
+///
+/// `Shift+Left` selects the last `0` of the allocator stem, and the paste puts back a `0`. The
+/// value stays the derived name, so the editor must record no edit. Two `Esc` presses then leave
+/// the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_same_text_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        shift_key(CorpusKey::Left),
+        CorpusOperation::Paste("0".to_owned()),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that deletes the derived review name and brings it back.
+///
+/// `Control+U` deletes the whole name, `Control+Z` brings it back, and `Control+Y` deletes it
+/// again. The derived name moves between the value and the undo history. Two `Esc` presses then
+/// leave the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_undo_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        control_key('u'),
+        control_key('z'),
+        control_key('y'),
+        control_key('z'),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that cuts the whole derived review name and leaves Add.
+///
+/// `Shift+Home` selects the name and `Control+X` cuts it to the session clipboard. The two `Esc`
+/// presses end the Add workflow, and the clipboard keeps the name after the workflow is gone.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_clipboard_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        shift_key(CorpusKey::Home),
+        control_key('x'),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that deletes a picked Add source path and brings it back.
+///
+/// It picks one seeded file. `End` and `Control+U` delete the whole path, `Control+Z` brings it
+/// back, and `Control+Y` deletes it again. The picked path moves between the value and the undo
+/// history. `Esc` then leaves the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn source_path_undo_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        CorpusOperation::ScreenHit(ScreenTarget::Add(AddControlId::BrowseSource)),
+        CorpusOperation::ScreenHit(ScreenTarget::FilePickerEntry {
+            relative: PathBuf::from("picked.sh"),
+        }),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        control_key('u'),
+        control_key('z'),
+        control_key('y'),
+        control_key('z'),
         CorpusOperation::RawKey(plain(CorpusKey::Escape)),
     ]
 }

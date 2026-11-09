@@ -597,6 +597,11 @@ const CATALOG: &[Translation] = &[
     row!("Paste", "粘贴", "貼上"),
     row!("Undo", "撤销", "復原"),
     row!("Redo", "重做", "重做"),
+    row!(
+        "Show or hide hidden files in the file picker",
+        "在文件选择器里切换是否显示隐藏文件",
+        "在檔案選擇器裡切換是否顯示隱藏檔案",
+    ),
     row!("Previous field", "上一栏", "上一欄"),
     row!("Close", "关闭", "關閉"),
     row!(
@@ -1436,6 +1441,16 @@ const CATALOG: &[Translation] = &[
     row!("Preset applied.", "已应用参数组合。", "已套用參數組合。"),
     row!("Show hidden files", "显示隐藏文件", "顯示隱藏檔案"),
     row!("Hide hidden files", "不显示隐藏文件", "不顯示隱藏檔案"),
+    row!(
+        "Show hidden files after this search",
+        "搜索结束后也显示隐藏文件",
+        "搜尋結束後也顯示隱藏檔案",
+    ),
+    row!(
+        "Hide hidden files after this search",
+        "搜索结束后不显示隐藏文件",
+        "搜尋結束後不顯示隱藏檔案",
+    ),
     row!("↩ last values", "↩ 上次的值", "↩ 上次的值"),
     row!(
         "Last values restored.",
@@ -3316,8 +3331,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "prompt runner {} must contain exactly one {{prompt}} marker outside the program token",
-        "提示词执行器 {} 必须在程序参数之外正好包含一个 {{prompt}} 标记",
-        "提示詞執行器 {} 必須在程式參數之外正好包含一個 {{prompt}} 標記",
+        "提示词执行器 {} 必须在程序之后正好包含一个 {{prompt}} 标记",
+        "提示詞執行器 {} 必須在程式之後正好包含一個 {{prompt}} 標記",
     ),
     row!(
         "prompt runners is not an array",

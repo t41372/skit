@@ -48,12 +48,14 @@ that the save runs and writes nothing. The parameter rows show the result, and t
 under the checkbox: the analyzer warnings, or `Everything still matches the script.`
 (`src/skit/tui_settings.py:917-925`). The save keeps the result. It runs the resync again on the
 script as it is at that time, so a script that changed in the meantime cannot be overwritten with an
-old read. Unticking takes the request back: the rows the screen opened with return, and the report
-goes away.
+old read. Unticking takes the request back: the rows the screen opened with return with their
+edits, and the report goes away.
 
 Version 0.4 rebuilds the whole screen after `Ctrl+R` (`:926`), and every unsaved edit in every
 section is lost. Version 0.5 rebuilds only the parameter rows. An edit in another section stays,
-and an edit on a row that the resync keeps moves to the rebuilt row. Version 0.4 also prints the
+and an edit on a row that the resync keeps moves to the rebuilt row. An edit on a row that the
+resync drops waits for that row: unticking the checkbox gives the row back with its edit, and the
+save does not send the edit while the checkbox is ticked. Version 0.4 also prints the
 report at the end of the section, which is often below the fold. Version 0.5 scrolls the report
 into view together with its checkbox.
 
@@ -308,10 +310,21 @@ Version 0.5 gives every status one of four kinds in `skit-ui` (`StatusKind`): in
 success, warning, and error. The footer draws a success with `✓`, a warning with `⚠`, and an error
 with `✗`, in the colors that the theme gives status text. Information has no glyph. A success or
 information line clears itself after 4 seconds, and the footer shows its usual line again, for
-example the entry count. A warning or an error stays until the next key press, paste, or click,
-because the user must read it to act. A status that is wider than the footer wraps onto a second
-row. Product rule 3 asks for this: a person who looks away must still see that a run failed, and a
-receipt must not hide the entry count for the rest of the session.
+example the entry count. A second receipt with the same words gets its own 4 seconds. A warning or
+an error stays until the next key press, paste, or click, because the user must read it to act. A
+status that is wider than the footer wraps onto a second row. Product rule 3 asks for this: a
+person who looks away must still see that a run failed, and a receipt must not hide the entry count
+for the rest of the session.
+
+Health, Add, the confirmation dialogs, the agent editor, and the Agent Skill picker draw their own
+keys, so they hide the footer. A warning or an error still shows on these screens, in a footer of
+its own under the screen, because the next key clears it. A receipt stays hidden there and clears
+itself. So a failed index rebuild in Health and a failed removal in the Remove dialog show their
+errors on the screen where they happened.
+
+An add whose cleanup after the commit fails reports a warning, for example
+`⚠ Entry added — warning: could not create …`. The entry is in the library, and the warning names
+the step that failed, such as the removal of a kept draft.
 
 These receipts are new. Version 0.4 is silent at each of them:
 
@@ -409,7 +422,10 @@ group.
 Version 0.4 uses the Textual `Input` in every box, and its Description box has one line. Version 0.5
 has one editor for every single-line box and for the multi-line Description and Help boxes. The
 keys, the selection, the clipboard, the undo history, and the paste rules are the same in each box.
-Help lists the keys in an "Editing text" section.
+Help lists the keys in an "Editing text" section. The Search box of the file picker and of the
+prompt variable picker is a box of the same kind. The picker keeps its own keys: Up, Down, Home,
+End, Enter, Space, Esc, and its own Ctrl chords, for example Ctrl+H for hidden files in the file
+picker. Backspace in an empty Search box of the file picker still goes up one directory.
 
 These parts are new in version 0.5:
 
@@ -462,6 +478,8 @@ on the Windows pseudo-console, and the `terminal.rs` unit tests pin each burst r
 platform.
 
 `tui_text_editing.rs` drives each key group in a real terminal for a launch-menu box, the Add path
-box, the search box, an Entry settings box, and the multi-line Description box.
-`text_editing_surfaces.rs` gives the same keys to the Rename dialog, the Preferences editor box, the
-agent editor, the preset-name dialog, and the environment dialog.
+box, the search box, an Entry settings box, the multi-line Description box, and the Search box of
+the file picker. `text_editing_surfaces.rs` gives the same keys to the Rename dialog, the
+Preferences editor box, the agent editor, the preset-name dialog, the environment dialog, and the
+Search boxes of the four picker windows: the Add file picker, the prompt variable picker of Add and
+of Entry settings, and the launch-menu file picker.

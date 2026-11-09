@@ -56,6 +56,11 @@ pub(super) struct PathMap {
     pub(super) add_cause: AddProjectionCause,
     pub(super) status_provenance: Option<String>,
     pub(super) status_cause: StatusProjectionCause,
+    /// The derived value, raw and stable, that the session clipboard holds.
+    ///
+    /// A copy outlives the Add workflow that proved its value, so the proof stays here until the
+    /// clipboard holds other text.
+    pub(super) clipboard_provenance: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,10 +85,34 @@ pub(super) struct ReviewNameProjection {
 pub(super) struct AddProjectionProvenance {
     pub(super) selected_source_path: Option<PathBuf>,
     pub(super) picked_source_path: Option<String>,
+    /// The derived source path that an edit took away. The undo history of the input still holds
+    /// it, and undo can bring it back.
+    pub(super) source_path_yank: Option<SourcePathOrigin>,
     pub(super) review_source_path: Option<PathBuf>,
     pub(super) review_name: Option<ReviewNameProjection>,
+    /// The derived review name that an edit took away. The undo history of the input still holds
+    /// it, and undo can bring it back.
     pub(super) review_name_yank: Option<ReviewNameProjection>,
     pub(super) review_name_edited: bool,
+}
+
+/// Where a derived Add source path came from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SourcePathOrigin {
+    /// A registered draft that the person selected.
+    Draft(PathBuf),
+    /// A seeded file that the person picked.
+    Picked(String),
+}
+
+impl SourcePathOrigin {
+    /// The text of the path in the Add source box.
+    pub(super) fn raw(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Draft(path) => path.to_string_lossy(),
+            Self::Picked(raw) => std::borrow::Cow::Borrowed(raw),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -169,6 +198,7 @@ impl PathMap {
             add_cause: AddProjectionCause::default(),
             status_provenance: None,
             status_cause: StatusProjectionCause::default(),
+            clipboard_provenance: None,
         };
         paths.register_path_text(profile_root, paths.profile_label.clone());
         paths.artifact_facts.insert(

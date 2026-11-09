@@ -371,8 +371,10 @@ fn dispatch_event(
     geometry: &ViewGeometry,
 ) -> TerminalDispatch {
     let resized = matches!(event, event::Event::Resize(_, _));
-    // A move of the pointer onto or off a chip changes only its look, so it asks for a frame.
-    let hover_changed = session.track_pointer(&event, state);
+    // A hover, and a press that starts or ends, change only the look of a chip. The session
+    // ignores an event that changes only the look, so a changed look asks for a frame here.
+    let look = session.pointer_look(state);
+    session.track_pointer(&event);
     match session.handle_event(event, state, geometry) {
         EventHandling::Action(action) => TerminalDispatch {
             action: Some(action),
@@ -384,7 +386,7 @@ fn dispatch_event(
         },
         EventHandling::Ignored => TerminalDispatch {
             action: None,
-            redraw: resized || hover_changed,
+            redraw: resized || session.pointer_look(state) != look,
         },
     }
 }
@@ -1853,6 +1855,7 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: completed.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             })
         };
         let mut locale = Locale::En;
@@ -1900,6 +1903,7 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: slug.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             }],
             harmless_host,
             Locale::En,
@@ -1919,6 +1923,7 @@ mod tests {
                     rerunnable: Vec::new(),
                     slug: slug.clone(),
                     message: "Added".to_owned(),
+                    kind: StatusKind::Success,
                 })
             },
             Locale::En,
@@ -2042,6 +2047,7 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: completed.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             })
         };
         let mut observe = add_workflow_outcome;
@@ -2369,5 +2375,118 @@ mod tests {
         );
         assert!(action.redraw, "an action must request a redraw");
         assert_eq!(action.action, Some(Action::Quit));
+    }
+
+    // Ways this can fail: a drag or another button ends the press of a chip and changes only its
+    // look, but the event asks for no frame, so the screen keeps the pressed look; the release
+    // after the drag activates the chip; or a release that changes no look asks for a frame.
+    #[test]
+    fn a_press_that_ends_without_an_action_asks_for_a_frame() {
+        use ratatui_core::{backend::TestBackend, terminal::Terminal};
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, StorageMode};
+
+        fn draw(
+            terminal: &mut Terminal<TestBackend>,
+            session: &mut TuiSession,
+            state: &LibraryState,
+        ) -> ViewGeometry {
+            let mut geometry = ViewGeometry::default();
+            terminal
+                .draw(|frame| {
+                    geometry = render_with_session(frame, state, Locale::En, session);
+                })
+                .unwrap();
+            geometry
+        }
+
+        let state = LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        });
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let buffer = terminal.backend().buffer();
+        let (column, row) = (0..buffer.area.height)
+            .rev()
+            .find_map(|row| {
+                let line = (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>();
+                line.find("? Help")
+                    .map(|byte| (u16::try_from(line[..byte].chars().count()).unwrap(), row))
+            })
+            .expect("the footer shows the Help chip");
+        let mouse = |kind, column| {
+            event::Event::Mouse(event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: event::KeyModifiers::NONE,
+            })
+        };
+        let label = column + 2;
+
+        let pressed = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Left), label),
+            &state,
+            &geometry,
+        );
+        assert!(pressed.redraw, "a press asks for no frame");
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let dragged = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Drag(MouseButton::Left), label + 1),
+            &state,
+            &geometry,
+        );
+        assert_eq!(dragged.action, None);
+        assert!(
+            dragged.redraw,
+            "a drag inside the chip ends the press, but asks for no frame"
+        );
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let released = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Up(MouseButton::Left), label + 1),
+            &state,
+            &geometry,
+        );
+        assert_eq!(
+            released.action, None,
+            "the release after the drag activated the chip"
+        );
+        assert!(
+            !released.redraw,
+            "a release that changes no look asks for a frame"
+        );
+
+        let _ = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Left), label),
+            &state,
+            &geometry,
+        );
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let other = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Right), label),
+            &state,
+            &geometry,
+        );
+        assert_eq!(other.action, None);
+        assert!(
+            other.redraw,
+            "another button ends the press, but asks for no frame"
+        );
     }
 }

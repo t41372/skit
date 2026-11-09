@@ -10,7 +10,8 @@
 
 use std::{
     fs,
-    path::PathBuf,
+    os::unix::fs::PermissionsExt as _,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -28,6 +29,7 @@ use pty::{AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 120;
 const CTRL_R: &[u8] = b"\x12";
+const CTRL_S: &[u8] = b"\x13";
 const DELETE: &[u8] = b"\x1b[3~";
 const DOWN: &[u8] = b"\x1b[B";
 const ESCAPE: &[u8] = b"\x1b";
@@ -202,6 +204,35 @@ impl Session {
         parser
     }
 
+    /// Wait until the cell at `row` and `column` passes `check`, and return the cell.
+    ///
+    /// A busy machine can send a frame after a quiet moment, so one settle can read the frame
+    /// before it.
+    fn cell_when(
+        &mut self,
+        (row, column): (u16, u16),
+        what: &str,
+        check: impl Fn(&vt100::Cell) -> bool,
+    ) -> vt100::Cell {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let grid = self.grid();
+            let cell = grid
+                .screen()
+                .cell(row, column)
+                .expect("the cell is on the screen")
+                .clone();
+            if check(&cell) {
+                return cell;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the cell never showed {what}: {cell:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn wait_exit(&mut self) -> (u32, String) {
         let status = self.pty.wait_exit_within(Duration::from_secs(30));
         let history = strip_terminal_control(&String::from_utf8_lossy(&self.pty.raw_after(0)));
@@ -260,6 +291,44 @@ fn a_reload_shows_a_receipt_that_clears_itself_and_brings_the_entry_count_back()
     assert!(
         stayed >= Duration::from_secs(3),
         "the receipt cleared after {stayed:?}, before a person can read it"
+    );
+}
+
+/// Sleep until `instant`. Return at once when it is past.
+fn sleep_until(instant: Instant) {
+    std::thread::sleep(instant.saturating_duration_since(Instant::now()));
+}
+
+// Ways this can fail: a second receipt with the same words keeps the time of the first one, so it
+// clears before a person can read it or never shows; or it never clears.
+#[test]
+fn a_repeated_receipt_gets_its_own_time() {
+    let fixture = Fixture::command("echo done");
+    let mut session = fixture.start();
+    session.send_effect_key(CTRL_R);
+    session.screen_with("✓ Library reloaded (1 entry)");
+    let first = Instant::now();
+
+    // A second reload, late in the time of the first receipt, gives a receipt with the same words.
+    sleep_until(first + Duration::from_secs(3));
+    session.send_effect_key(CTRL_R);
+    let second = Instant::now();
+
+    // The time of the first receipt is over. The second receipt still shows.
+    sleep_until(first + Duration::from_millis(4_500));
+    let shown = session.screen();
+    assert_eq!(
+        status_row(&shown),
+        "✓ Library reloaded (1 entry)",
+        "{shown}"
+    );
+
+    // It clears itself at the end of its own time.
+    session.screen_with("1/1 entry");
+    let stayed = second.elapsed();
+    assert!(
+        stayed >= Duration::from_secs(3),
+        "the second receipt cleared after {stayed:?}"
     );
 }
 
@@ -376,6 +445,70 @@ fn the_remove_dialog_shows_its_keys_and_enter_acts_on_the_focused_chip() {
     assert!(!removed.contains("Demo"), "{removed}");
 }
 
+/// A library whose lock file path holds a directory.
+///
+/// Each write that takes the library lock fails, also for root. Each read continues without the
+/// lock, so the session starts and every screen opens.
+fn locked_library() -> Fixture {
+    let fixture = Fixture::command("echo done");
+    let lock = fixture.data.path().join("registry.native.lock");
+    // The registry rebuild of the fixture made the lock file.
+    let _ = fs::remove_file(&lock);
+    fs::create_dir(&lock).unwrap();
+    fixture
+}
+
+// Ways this can fail: Health shows no word about the failed rebuild, so Ctrl+R seems to do
+// nothing; a short terminal has no room for the error; or the key that acknowledges the error
+// clears it before the screen showed it.
+#[test]
+fn a_failed_health_rebuild_shows_its_error_until_the_next_key() {
+    // A short terminal shows the error on the last row, and a taller one shows it in a box.
+    for rows in [12, ROWS] {
+        let fixture = locked_library();
+        let mut session = Session::start_sized(fixture.command_builder(), rows, COLUMNS);
+        session.send_effect_key(b"h");
+        session.screen_with("Health check");
+        session.send_effect_key(CTRL_R);
+        let failed = session.screen_with("registry.native.lock");
+        let error = failed
+            .lines()
+            .find(|line| line.contains("registry.native.lock"))
+            .unwrap_or_default()
+            .trim_matches(|character| character == '│' || character == ' ');
+        assert!(error.starts_with("✗ could not open "), "{failed}");
+        assert!(failed.contains("Health check"), "{failed}");
+
+        // Esc acknowledges the error and closes Health.
+        session.send(ESCAPE);
+        session.screen_without("1/1 entry", "registry.native.lock");
+    }
+}
+
+// Ways this can fail: the dialog stays open with no word about the failed removal, so the key
+// seems to do nothing; or the key that acknowledges the error clears it before the screen showed
+// it.
+#[test]
+fn a_failed_removal_shows_its_error_under_the_dialog() {
+    let fixture = locked_library();
+    let mut session = fixture.start();
+    session.send(DELETE);
+    session.screen_with("Esc Keep");
+    session.send(TAB);
+    session.send_effect_key(b"\r");
+    let failed = session.screen_with("registry.native.lock");
+    assert!(status_row(&failed).starts_with("✗ "), "{failed}");
+    assert!(
+        failed.contains("y Remove"),
+        "the dialog stays open: {failed}"
+    );
+
+    // Esc acknowledges the error and keeps the entry.
+    session.send(ESCAPE);
+    let library = session.screen_without("1/1 entry", "registry.native.lock");
+    assert!(library.contains("Demo"), "{library}");
+}
+
 // Ways this can fail: the guard hides its keys, Enter throws the work away while the ring is on
 // Keep editing, or Tab does not move the ring.
 #[test]
@@ -438,6 +571,85 @@ fn a_footer_chip_shows_the_pointer_over_it_and_a_press_until_the_release() {
     );
 }
 
+// Ways this can fail: a drag inside a pressed chip ends the press, but no frame shows the end, so
+// the chip looks pressed after the button is up; or the release after the drag opens Help.
+#[test]
+fn a_drag_inside_a_pressed_chip_ends_the_pressed_look_at_once() {
+    let fixture = Fixture::command("echo done");
+    let mut session = fixture.start();
+    session.screen_with("? Help");
+    let (row, column) = position(&session.grid(), "? Help");
+    // The H of Help, and the next cell, which is in the same chip.
+    let (label, next) = (column + 2, column + 3);
+    let idle = session.grid().screen().cell(row, label).unwrap().clone();
+
+    // SGR 1006: columns and rows count from 1. Motion with no button is 35, a press of the
+    // primary button is 0, and motion with the primary button down is 32.
+    session.send(format!("\x1b[<35;{};{}M", label + 1, row + 1).as_bytes());
+    session.cell_when((row, label), "the hover look", |cell| {
+        cell.underline() && cell.bold()
+    });
+    session.send(format!("\x1b[<0;{};{}M", label + 1, row + 1).as_bytes());
+    session.cell_when((row, label), "the pressed look", |cell| {
+        cell.inverse() != idle.inverse()
+    });
+
+    // The drag ends the press. The pointer is still on the chip, so the chip shows the hover look.
+    session.send(format!("\x1b[<32;{};{}M", next + 1, row + 1).as_bytes());
+    let dragged = session.cell_when((row, label), "the end of the pressed look", |cell| {
+        cell.inverse() == idle.inverse()
+    });
+    assert!(dragged.underline() && dragged.bold(), "drag: {dragged:?}");
+
+    session.send(format!("\x1b[<0;{};{}m", next + 1, row + 1).as_bytes());
+    let released = session.grid();
+    let cell = released.screen().cell(row, label).unwrap();
+    assert_eq!(cell.inverse(), idle.inverse(), "release: {cell:?}");
+    assert!(
+        !session.screen().contains("Close"),
+        "the release after the drag opened Help"
+    );
+}
+
+// Ways this can fail: a search that starts with "." shows hidden files whatever the setting is,
+// but the chip says that Ctrl+H shows or hides them now, so a press changes nothing that the
+// person can see; or the key or a click on the chip does not change what the chip then says.
+#[test]
+fn the_hidden_files_chip_says_what_it_changes_during_a_search_that_starts_with_a_dot() {
+    let fixture = Fixture::command("echo done");
+    fs::write(fixture.home.path().join(".env"), "KEY=value\n").unwrap();
+    let mut session = fixture.start();
+    session.send(b"a");
+    session.screen_with("Previous field");
+    session.send(b"\x0f");
+    session.screen_with("[Ctrl+H] Show hidden files");
+
+    // The search shows the hidden file. The setting applies after the search.
+    session.send(b".env");
+    let screen = session.screen_with("[Ctrl+H] Show hidden files after this search");
+    assert!(screen.contains("· .env"), "{screen}");
+    session.send(b"\x08");
+    let screen = session.screen_with("[Ctrl+H] Hide hidden files after this search");
+    assert!(screen.contains("· .env"), "{screen}");
+
+    // Esc clears the search, and the setting now shows the hidden file.
+    session.send(ESCAPE);
+    let screen = session.screen_without("[Ctrl+H] Hide hidden files", "after this search");
+    assert!(screen.contains("· .env"), "{screen}");
+
+    // A click on the chip hides it.
+    let (row, column) = position(&session.grid(), "[Ctrl+H]");
+    session.send(
+        format!(
+            "\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m",
+            column = column + 1,
+            row = row + 1
+        )
+        .as_bytes(),
+    );
+    session.screen_without("[Ctrl+H] Show hidden files", "· .env");
+}
+
 /// The footer rows of an Add screen: every row under the bottom border of its panel.
 fn add_footer(screen: &str) -> Vec<&str> {
     let lines = screen.lines().collect::<Vec<_>>();
@@ -494,6 +706,85 @@ fn the_add_footer_names_its_navigation_keys_and_keeps_every_chip_in_view_at_60_c
     ] {
         assert!(footer.contains(chip), "{chip} is out of view:\n{review}");
     }
+}
+
+/// Permission bits for one path, given back as `0o755` when the guard ends.
+struct ModeGuard(PathBuf);
+
+impl ModeGuard {
+    fn set(path: &Path, mode: u32) -> Self {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        Self(path.to_owned())
+    }
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Report whether this user can make a file in `directory`. Root can, whatever the mode is.
+fn can_write_into(directory: &Path) -> bool {
+    let probe = directory.join(".probe");
+    let written = fs::write(&probe, b"").is_ok();
+    let _ = fs::remove_file(&probe);
+    written
+}
+
+// Ways this can fail: the warning that skit kept a draft it could not remove shows with a ✓ and
+// clears itself, so a person who looked away never learns about the draft; its words run
+// together; or the next key does not clear it.
+#[test]
+fn an_add_that_cannot_remove_its_draft_reports_a_warning_until_the_next_key() {
+    let fixture = Fixture::command("echo done");
+    let drafts = fixture.data.path().join("drafts");
+    fs::create_dir(&drafts).unwrap();
+    let draft = drafts.join("skit-new-ship.sh");
+    fs::write(&draft, "#!/bin/sh\necho drafted\n").unwrap();
+    // The commit writes the entry, and then the cleanup must move the draft out of a directory
+    // that it cannot write.
+    let _mode = ModeGuard::set(&drafts, 0o555);
+    if can_write_into(&drafts) {
+        // Root writes into every directory, so this case needs an ordinary user.
+        return;
+    }
+    let mut session = fixture.start();
+    session.send_effect_key(b"a");
+    session.screen_with("Add an entry");
+    let path = draft.display().to_string();
+    session.send(path.as_bytes());
+    session.screen_with(&path);
+    session.send_effect_key(b"\r");
+    session.screen_with("Add skit-new-ship");
+    session.send_effect_key(CTRL_S);
+    // The warning names the drafts path, so it wraps onto a second row.
+    let first_row = |screen: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains("Entry added"))
+            .unwrap_or_default()
+            .trim_matches(|character| character == '│' || character == ' ')
+            .to_owned()
+    };
+    let added = session.screen_with("Entry added");
+    let warning = first_row(&added);
+    assert!(
+        warning.starts_with("⚠ Entry added — warning: could not create ")
+            && warning.contains("drafts"),
+        "{added}"
+    );
+
+    // A warning has no time limit.
+    std::thread::sleep(Duration::from_millis(4_500));
+    assert_eq!(first_row(&session.screen()), warning);
+    session.send(DOWN);
+    let cleared = session.screen_with("2/2 entries");
+    assert_eq!(status_row(&cleared), "2/2 entries");
+    assert!(
+        draft.exists(),
+        "skit keeps the draft that it could not remove"
+    );
 }
 
 // Ways this can fail: the preset picker shows a blank row for the last values, or a choice of a

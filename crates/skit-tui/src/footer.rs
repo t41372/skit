@@ -500,6 +500,78 @@ fn minimum_content_height(
     u16::from(rows > 0).saturating_add(note_rows(state, locale, inner_width))
 }
 
+/// Report whether a screen that hides the shared footer must still show the status.
+///
+/// Health, Add, the dialogs, and the agent editor draw their own keys, so they hide the shared
+/// footer, and the status line goes with it. A warning or an error stays until the next key, and
+/// that key clears it, so the user must see it on the screen where it happened. A receipt or a
+/// note stays hidden there: it clears itself, and the screen shows the result of its own work.
+pub(crate) fn shows_problem(state: &LibraryState) -> bool {
+    state.status().is_some() && state.status_kind().display_time().is_none()
+}
+
+/// Return the preferred, smallest, and smallest bordered height of the footer that shows only a
+/// problem under a screen that hides the shared footer.
+///
+/// All three are zero when no problem shows. The border follows the rule of the shared footer.
+pub(crate) fn problem_heights(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+) -> (u16, u16, u16) {
+    if !shows_problem(state) || profile.width() == 0 || profile.height() == 0 {
+        return (0, 0, 0);
+    }
+    let bare = note_rows(state, locale, profile.width());
+    if profile.is_short_or_tiny() || profile.width() <= 2 {
+        return (bare, bare, 0);
+    }
+    let bordered = note_rows(state, locale, profile.width() - 2).saturating_add(2);
+    (bordered, bare, bordered)
+}
+
+/// Draw the footer of a screen that hides the shared footer: the problem status and no keys.
+pub(crate) fn render_problem(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+    decorated: bool,
+) {
+    let block = Block::default()
+        .borders(if decorated {
+            Borders::ALL
+        } else {
+            Borders::NONE
+        })
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_status(frame, inner, state, locale);
+}
+
+/// Draw the status at the bottom of `inner`, and report whether a status shows.
+fn render_status(frame: &mut Frame, inner: Rect, state: &LibraryState, locale: Locale) -> bool {
+    let Some(status) = shown_status(state, locale) else {
+        return false;
+    };
+    let rows = note_rows(state, locale, inner.width).min(inner.height);
+    let status_area = Rect::new(
+        inner.x,
+        inner.bottom().saturating_sub(rows),
+        inner.width,
+        rows,
+    );
+    // The glyph and the color say what kind of news this is before the words do. A long status
+    // wraps onto a second row rather than losing its end.
+    frame.render_widget(
+        Paragraph::new(theme::status_kind_line(&status, state.status_kind()))
+            .wrap(Wrap { trim: false }),
+        status_area,
+    );
+    true
+}
+
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
     matches!(state.screen(), Screen::Add(_) | Screen::Health(_))
         || matches!(
@@ -643,22 +715,8 @@ impl FooterSession {
             });
         }
 
-        if let Some(status) = shown_status(state, locale) {
-            let rows = note_rows.min(inner.height);
-            let status_area = Rect::new(
-                inner.x,
-                inner.bottom().saturating_sub(rows),
-                inner.width,
-                rows,
-            );
-            // The glyph and the color say what kind of news this is before the words do. A long
-            // status wraps onto a second row rather than losing its end.
-            frame.render_widget(
-                Paragraph::new(theme::status_kind_line(&status, state.status_kind()))
-                    .wrap(Wrap { trim: false }),
-                status_area,
-            );
-        } else if matches!(state.screen(), Screen::Library) {
+        if !render_status(frame, inner, state, locale) && matches!(state.screen(), Screen::Library)
+        {
             let status = default_library_status(state, locale);
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
             frame.render_widget(Paragraph::new(status), status_area);

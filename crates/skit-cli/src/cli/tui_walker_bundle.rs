@@ -58,8 +58,10 @@ use super::tui_real_walker::{
     MISSING_PROGRAM, UNBALANCED_ARGUMENTS, draft_quarantine_corpus_operations,
     invalid_corpus_operation, refused_run_corpus_operations,
     rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
-    review_name_cursor_corpus_operations, review_name_cut_corpus_operations,
-    source_path_cursor_corpus_operations,
+    review_name_clipboard_corpus_operations, review_name_cursor_corpus_operations,
+    review_name_cut_corpus_operations, review_name_same_text_corpus_operations,
+    review_name_undo_corpus_operations, source_path_cursor_corpus_operations,
+    source_path_undo_corpus_operations,
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use skit_tui_walker_support::{ChunkDescriptor, ReviewVerdict};
@@ -6817,6 +6819,188 @@ fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_picked_source_path() 
         assert!(
             cursors.iter().any(|cursor| (1..end).contains(cursor)),
             "{profile} {cursors:?}"
+        );
+    }
+}
+
+/// Every recorded session of every profile, with the name of its profile.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn recorded_sessions(corpus: &RecordedRealCorpus) -> Vec<(String, Value)> {
+    corpus
+        .profiles
+        .iter()
+        .flat_map(|recorded| {
+            recorded
+                .objects
+                .iter()
+                .filter(|((kind, _), _)| *kind == ObjectKind::Session)
+                .map(|(_, bytes)| {
+                    (
+                        recorded.review_profile.to_string(),
+                        serde_json::from_slice(bytes).unwrap(),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// The editor states of the Add inputs with `id` in one recorded session.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn recorded_input_states<'a>(session: &'a Value, id: &'a str) -> impl Iterator<Item = &'a Value> {
+    session
+        .pointer("/value/add/fields/inputs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(move |input| input["id"] == id)
+        .map(|input| &input["state"])
+}
+
+/// Count the recorded editor states of `id` that hold `stable` as their value after an undo, and
+/// the history entries of `id` that hold `stable`.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn count_restored_and_history(
+    corpus: &RecordedRealCorpus,
+    id: &str,
+    stable: &str,
+) -> (usize, usize) {
+    let (mut restored, mut in_history) = (0, 0);
+    for (_, session) in recorded_sessions(corpus) {
+        for state in recorded_input_states(&session, id) {
+            let redo = state["redo"].as_array().unwrap();
+            if state["value"] == stable && !redo.is_empty() {
+                restored += 1;
+            }
+            for list in ["undo", "redo"] {
+                in_history += state[list]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["value"] == stable)
+                    .count();
+            }
+        }
+    }
+    (restored, in_history)
+}
+
+/// The same text over a selection of the derived review name is no edit.
+///
+/// The operations select the last `0` of the allocator stem and paste a `0` over it. The value
+/// stays the derived name, so every recorded review name holds the typed sentinel and no undo
+/// step. Before the editor treated the same text as no edit, the walker refused this walk: the
+/// derived name had an undo step and a typing group.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_keeps_a_derived_review_name_under_the_same_text() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_same_text_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let mut projected = 0_usize;
+    for (profile, session) in recorded_sessions(&corpus) {
+        for state in recorded_input_states(&session, "ReviewName") {
+            assert_eq!(state["value"], "<draft:0>", "{profile}");
+            assert_eq!(state["undo"], json!([]), "{profile}");
+            assert_eq!(state["group"], Value::Null, "{profile}");
+            projected += 1;
+        }
+    }
+    assert!(projected > 0, "no profile recorded the review name");
+}
+
+/// The derived review name keeps its typed sentinel while undo and redo move it.
+///
+/// `Control+U` deletes the name, `Control+Z` brings it back, `Control+Y` deletes it again, and
+/// `Control+Z` brings it back again. The name moves between the value and the history, so the
+/// value after each undo and each history entry that holds the name must have the sentinel. A
+/// raw allocator stem anywhere refuses the whole bundle.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_derived_review_name_that_undo_brings_back() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_undo_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let (restored, in_history) = count_restored_and_history(&corpus, "ReviewName", "<draft:0>");
+    assert!(
+        restored > 0 && in_history > 0,
+        "restored {restored}, in the history {in_history}"
+    );
+}
+
+/// A picked source path keeps its stable spelling while undo and redo move it.
+///
+/// The operations pick one seeded file, delete the path with `Control+U`, and move it back and
+/// forth with `Control+Z` and `Control+Y`. The leak oracle refuses any raw sandbox path, in the
+/// value and in the history.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_picked_source_path_that_undo_brings_back() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &source_path_undo_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let (restored, in_history) = count_restored_and_history(
+        &corpus,
+        "SourcePath",
+        "<profile:canonical-corpus>/external/picked.sh",
+    );
+    assert!(
+        restored > 0 && in_history > 0,
+        "restored {restored}, in the history {in_history}"
+    );
+}
+
+/// A cut derived review name keeps its typed sentinel in the clipboard after Add ends.
+///
+/// The operations select the whole derived name, cut it with `Control+X`, and leave the Add
+/// workflow. The session clipboard outlives the workflow, so the last checkpoint, which has no Add
+/// workflow, must still hold the sentinel in its clipboard. A raw allocator stem there refuses
+/// the whole bundle.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_cut_derived_review_name_after_add_ends() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_clipboard_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    for (profile, session) in recorded_sessions(&corpus) {
+        let clipboard = &session["value"]["clipboard"]["fields"]["state"]["text"];
+        assert!(
+            clipboard == "" || clipboard == "<draft:0>",
+            "{profile} clipboard {clipboard}"
+        );
+    }
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let last = recorded.rows.last().unwrap();
+        let object = |kind, digest: &str| -> Value {
+            serde_json::from_slice(&recorded.objects[&(kind, digest.to_owned())]).unwrap()
+        };
+        let reducer = object(ObjectKind::Reducer, &last.reducer.sha256);
+        assert!(
+            reducer
+                .pointer("/value/workflow/active/add")
+                .is_none_or(Value::is_null),
+            "{profile} still has an Add workflow at its last checkpoint"
+        );
+        let session = object(ObjectKind::Session, &last.session.sha256);
+        assert_eq!(
+            session["value"]["clipboard"]["fields"]["state"]["text"], "<draft:0>",
+            "{profile}"
         );
     }
 }

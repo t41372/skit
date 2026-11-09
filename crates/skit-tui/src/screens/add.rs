@@ -734,7 +734,13 @@ impl AddScreenSession {
             };
             let input = self.inputs.get_mut(&field)?;
             return Some(match input.paste(&value) {
-                EditResponse::Changed => AddScreenEvent::Action(text_action(field, input.value())),
+                EditResponse::Changed => {
+                    let action = text_action(field, input.value());
+                    // A paste brings its box back into view, as a typed key does, so no paste
+                    // lands in a box that the wheel scrolled away.
+                    self.ensure_focus_visible();
+                    AddScreenEvent::Action(action)
+                }
                 EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
                     AddScreenEvent::Changed
                 }

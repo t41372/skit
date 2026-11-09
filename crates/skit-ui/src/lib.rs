@@ -1205,6 +1205,10 @@ const fn is_true(value: &bool) -> bool {
     *value
 }
 
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// One complete form that any frontend can render.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FormView {
@@ -1635,6 +1639,10 @@ pub enum Action {
         slug: Slug,
         /// Localized completion status.
         message: String,
+        /// The outcome that the message reports: a success, or a warning when a step after the
+        /// commit failed and the message names it.
+        #[serde(default, skip_serializing_if = "StatusKind::is_info")]
+        kind: StatusKind,
     },
     /// Finish an add workflow without creating an entry.
     AddCancelled,
@@ -1770,6 +1778,9 @@ pub struct LibraryState {
     /// The outcome that `status` reports. It is `Info` when no status shows.
     #[serde(default, skip_serializing_if = "StatusKind::is_info")]
     status_kind: StatusKind,
+    /// How many statuses this state showed. See [`LibraryState::status_serial`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    status_serial: u64,
     workflow: WorkflowState,
     modal: Option<ModalState>,
     detail_pane: DetailPaneMode,
@@ -2461,13 +2472,14 @@ impl LibraryState {
                 rerunnable,
                 slug,
                 message,
+                kind,
             } => {
                 // The created entry needs its detail facts here or its pane opens empty — and this
                 // is the one entry the user is looking at, because the add selects it.
                 self.replace_surface(surface);
                 self.rerunnable = rerunnable.into_iter().collect();
                 self.recompute_visible(Some(&slug));
-                self.set_status(StatusKind::Success, message);
+                self.set_status(kind, message);
                 self.workflow.return_to_library();
                 self.modal = None;
                 self.input_mode = InputMode::Browse;
@@ -2757,9 +2769,20 @@ impl LibraryState {
         self.status_kind
     }
 
+    /// Return how many statuses this state showed.
+    ///
+    /// Each operation that reports a status changes the number, also when its words and kind are
+    /// the same as those of the status that shows. A frontend compares the number to know that a
+    /// status is new, for example to give a second receipt its own display time.
+    #[must_use]
+    pub const fn status_serial(&self) -> u64 {
+        self.status_serial
+    }
+
     fn set_status(&mut self, kind: StatusKind, message: String) {
         self.status = Some(message);
         self.status_kind = kind;
+        self.status_serial = self.status_serial.wrapping_add(1);
     }
 
     fn clear_status(&mut self) {

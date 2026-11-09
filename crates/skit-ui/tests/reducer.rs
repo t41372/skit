@@ -381,6 +381,7 @@ fn an_added_slug_is_selected_after_the_authoritative_reload() {
             rerunnable: vec![added.clone()],
             slug: added,
             message: "Added".to_owned(),
+            kind: skit_ui::StatusKind::Success,
         }),
         Effect::None
     );

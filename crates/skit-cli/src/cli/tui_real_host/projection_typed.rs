@@ -415,11 +415,13 @@ impl PathMap {
             }
             AddActionProjection::SourcePath(path) => {
                 let payload = external_payload_mut(value, "set_source_path")?;
-                // A cursor key sends the unchanged path. It is not an edit, so the path keeps
-                // its projection.
+                // The action can send the derived path again, and undo or redo can bring back
+                // the derived path that an edit took away. Both are the host value.
                 if let Some((_, stable)) = self
                     .add_source_path_projection()?
-                    .filter(|(raw, _)| raw == path)
+                    .into_iter()
+                    .chain(self.source_path_yank_projection()?)
+                    .find(|(raw, _)| raw == path)
                 {
                     *payload = Value::String(stable);
                 }
@@ -427,13 +429,15 @@ impl PathMap {
             }
             AddActionProjection::ReviewName(name) => {
                 let payload = external_payload_mut(value, "set_review_name")?;
-                // A cursor key sends the unchanged derived name. It is not an edit, so the name
-                // keeps its projection.
-                if let Some(projection) = self
-                    .add_provenance
-                    .review_name
-                    .as_ref()
-                    .filter(|projection| projection.raw_name == name)
+                // The action can send the derived name again, and undo or redo can bring back
+                // the derived name that an edit took away. Both are the host value.
+                if let Some(projection) = [
+                    self.add_provenance.review_name.as_ref(),
+                    self.add_provenance.review_name_yank.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|projection| projection.raw_name == name)
                 {
                     *payload = Value::String(projection.stable_name.clone());
                 }

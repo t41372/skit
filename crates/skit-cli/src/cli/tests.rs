@@ -1625,12 +1625,19 @@ fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_replacement() {
         ],
     )
     .unwrap();
+    // The Library shows the receipt as a warning, which stays until the next key.
+    let mut library = LibraryState::default();
+    library.update(action.clone());
+    assert_eq!(library.status_kind(), StatusKind::Warning);
+    assert_eq!(library.status_kind().display_time(), None);
     let UiAction::AddCompleted { message, slug, .. } = action else {
         panic!("auxiliary cleanup failures must not turn a committed add into failure");
     };
     assert_eq!(slug, created.slug);
-    assert!(message.starts_with("Entry added\nwarning: "));
-    assert_eq!(message.matches("warning: ").count(), 2);
+    // The status line has one row of text, so the warnings follow the receipt on the same line.
+    assert!(message.starts_with("Entry added — warning: "), "{message}");
+    assert!(!message.contains('\n'), "{message}");
+    assert_eq!(message.matches(" — warning: ").count(), 2);
     assert!(message.contains("changed"));
     assert!(message.contains("skit-new-replaced.py"));
     assert_eq!(fs::read(&draft).unwrap(), b"print('replacement')\n");
@@ -1701,7 +1708,7 @@ fn tui_add_maps_every_draft_cleanup_outcome_without_rolling_back_the_entry() {
     assert_eq!(
         message,
         format!(
-            "Entry added\nwarning: The kept draft changed before cleanup. skit kept it at {}.",
+            "Entry added — warning: The kept draft changed before cleanup. skit kept it at {}.",
             changed_source.display()
         )
     );
@@ -1719,7 +1726,7 @@ fn tui_add_maps_every_draft_cleanup_outcome_without_rolling_back_the_entry() {
     assert_eq!(
         message,
         format!(
-            "Entry added\nwarning: skit's drafts path is not an owned directory: {}",
+            "Entry added — warning: skit's drafts path is not an owned directory: {}",
             failed_data.join("drafts").display()
         )
     );
@@ -12344,7 +12351,7 @@ fn completed_add_keeps_success_and_localizes_a_refresh_failure() {
             UiAction::Complete {
                 surface: None,
                 rerunnable: None,
-                message: format!("{}\n{warning}", text(locale, "Entry added")),
+                message: format!("{} — {warning}", text(locale, "Entry added")),
                 kind: StatusKind::Warning,
             }
         );

@@ -58,7 +58,7 @@ pub use screens::settings::{
     SettingsScreenSession, render_settings,
 };
 use session::HeaderKind;
-pub use session::{EventHandling, TuiSession};
+pub use session::{EventHandling, PointerLook, TuiSession};
 pub use terminal::{
     TuiError, collect_form, collect_run_form, collect_run_form_with_path_completion,
     host_failure_status, preflight_refusal_status, run, run_add_workflow, run_preflighted,
@@ -200,14 +200,18 @@ pub fn render_with_session(
         }
         None => render_screen(frame, areas.body, state, locale, session),
     };
-    if areas.footer.height > 0 && !footer_suppressed {
-        geometry.hits.extend(session.render_footer(
-            frame,
-            areas.footer,
-            state,
-            locale,
-            plan.footer_decorated,
-        ));
+    if areas.footer.height > 0 {
+        if footer_suppressed {
+            footer::render_problem(frame, areas.footer, state, locale, plan.footer_decorated);
+        } else {
+            geometry.hits.extend(session.render_footer(
+                frame,
+                areas.footer,
+                state,
+                locale,
+                plan.footer_decorated,
+            ));
+        }
     }
     session.capture_local_actions(state);
     session.register_geometry(&geometry);
@@ -276,15 +280,15 @@ fn root_layout_plan(
     let profile = ViewportProfile::new(area);
     let header = header_kind(state);
     let preferred_header = preferred_header_height(header.as_ref(), profile);
-    let preferred_footer = if footer_suppressed {
-        0
+    // A screen that hides the shared footer still gets a footer for a problem status.
+    let (preferred_footer, minimum_footer, decorated_footer_minimum) = if footer_suppressed {
+        footer::problem_heights(profile, state, locale)
     } else {
-        footer::required_height(profile, state, locale, footer_ownership)
-    };
-    let minimum_footer = if footer_suppressed {
-        0
-    } else {
-        footer::minimum_height(profile, state, locale, footer_ownership)
+        (
+            footer::required_height(profile, state, locale, footer_ownership),
+            footer::minimum_height(profile, state, locale, footer_ownership),
+            footer::decorated_minimum_height(profile, state, locale, footer_ownership),
+        )
     };
     let chrome_capacity = area.height.saturating_sub(body_floor.min(area.height));
     let header_height = allocated_header_height(
@@ -297,11 +301,7 @@ fn root_layout_plan(
         header_height,
         preferred_footer,
         body_floor,
-        if footer_suppressed {
-            0
-        } else {
-            footer::decorated_minimum_height(profile, state, locale, footer_ownership)
-        },
+        decorated_footer_minimum,
     )
 }
 

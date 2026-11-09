@@ -110,7 +110,7 @@ fn c2_commit_review_name_requires_exact_live_draft_provenance() {
 }
 
 #[test]
-fn c2_add_input_mirror_maps_its_cursor_and_refuses_cursor_history_edit_and_shape_drift() {
+fn c2_add_input_mirror_maps_its_cursor_and_history_and_refuses_shape_drift() {
     let mut host = RealWalkerHost::spawn(profile()).unwrap();
     let draft = write_draft_at(&host, "skit-new-界.py", b"print('unicode')\n", 10);
     host.path_map.refresh(&host.service).unwrap();
@@ -180,6 +180,27 @@ fn c2_add_input_mirror_maps_its_cursor_and_refuses_cursor_history_edit_and_shape
         stable_chars
     );
 
+    // Undo and redo move the derived value between the box and its history, so the history can
+    // hold user text next to it, and a typed run can be open. Each history entry that holds the
+    // derived value takes its stable form, and user text keeps its exact bytes.
+    let mut edited = valid.clone();
+    edited["add"]["fields"]["inputs"][0]["state"]["undo"] = json!([
+        {"value": "cut", "cursor": 0, "anchor": null},
+        {"value": raw, "cursor": 0, "anchor": raw_chars},
+    ]);
+    edited["add"]["fields"]["inputs"][0]["state"]["redo"] =
+        json!([{"value": "cut", "cursor": 3, "anchor": null}]);
+    edited["add"]["fields"]["inputs"][0]["state"]["group"] =
+        json!({"typing": {"after_space": false}});
+    host.path_map.project_session_value(&mut edited).unwrap();
+    let state = &edited["add"]["fields"]["inputs"][0]["state"];
+    assert_eq!(state["value"], stable);
+    assert_eq!(state["undo"][0]["value"], "cut");
+    assert_eq!(state["undo"][1]["value"], stable);
+    assert_eq!(state["undo"][1]["anchor"], stable_chars);
+    assert_eq!(state["redo"][0]["value"], "cut");
+    assert_eq!(state["group"]["typing"]["after_space"], false);
+
     let mut invalid = c2_session(Path::new("/unregistered/session"), None, Vec::new());
     assert!(host.path_map.project_session_value(&mut invalid).is_err());
     let mut duplicate = c2_session(
@@ -195,19 +216,8 @@ fn c2_add_input_mirror_maps_its_cursor_and_refuses_cursor_history_edit_and_shape
         ("/add/fields/inputs/0/state/cursor", json!("end")),
         ("/add/fields/inputs/0/state/anchor", json!(raw_chars + 1)),
         ("/add/fields/inputs/0/state/anchor", json!("start")),
-        (
-            "/add/fields/inputs/0/state/undo",
-            json!([{"value": "cut", "cursor": 0, "anchor": null}]),
-        ),
         ("/add/fields/inputs/0/state/undo", json!(7)),
-        (
-            "/add/fields/inputs/0/state/redo",
-            json!([{"value": "cut", "cursor": 0, "anchor": null}]),
-        ),
-        (
-            "/add/fields/inputs/0/state/group",
-            json!({"typing": {"after_space": false}}),
-        ),
+        ("/add/fields/inputs/0/state/redo", json!([7])),
         ("/add/fields/inputs/0/state", json!([])),
     ] {
         let mut invalid = valid.clone();
@@ -317,10 +327,10 @@ fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
         )
         .unwrap()
     };
-    let state = |name: &str| {
+    let state = |name: &str, source: &Path| {
         json!({"workflow": {"active": {"add": {
             "review_defaults": {"name": null},
-            "review": {"name": name},
+            "review": {"name": name, "source": {"path": source}},
         }}}})
     };
 
@@ -331,7 +341,9 @@ fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
     set_review_name_projection(&mut host, &draft, "skit-new-first", "<draft:0>");
 
     host.path_map.record_add_projection_cause(&edit(""));
-    host.path_map.reconcile_add_provenance(&state("")).unwrap();
+    host.path_map
+        .reconcile_add_provenance(&state("", &draft))
+        .unwrap();
     assert!(host.path_map.add_provenance.review_name.is_none());
     let cut = project(&mut host, "", &["skit-new-first"], &[]).unwrap();
     assert_eq!(cut["undo"][0]["value"], "<draft:0>");
@@ -339,10 +351,41 @@ fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
     assert_eq!(cut["value"], "");
     assert_eq!(cut["cursor"], 0);
 
+    // Undo brings the derived name back. The action that brings it is projected before the state,
+    // so it takes the stable name from the yank. Then the name is the host value again, with its
+    // provenance, and the redo entry keeps the empty user text.
+    let stable_action = |host: &mut RealWalkerHost, name: &str| {
+        let mut action = edit(name);
+        host.path_map.project_typed_action(&mut action).unwrap();
+        serde_json::to_value(action).unwrap()["add"]["set_review_name"].clone()
+    };
+    assert_eq!(stable_action(&mut host, "skit-new-first"), "<draft:0>");
+    host.path_map
+        .record_add_projection_cause(&edit("skit-new-first"));
+    host.path_map
+        .reconcile_add_provenance(&state("skit-new-first", &draft))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_some());
+    assert!(host.path_map.add_provenance.review_name_yank.is_none());
+    assert!(!host.path_map.add_provenance.review_name_edited);
+    let restored = project(&mut host, "skit-new-first", &[], &[""]).unwrap();
+    assert_eq!(restored["value"], "<draft:0>");
+    assert_eq!(restored["redo"][0]["value"], "");
+    assert_eq!(stable_action(&mut host, "skit-new-first"), "<draft:0>");
+
+    // Redo deletes the name again, and the name goes back to the yank.
+    host.path_map.record_add_projection_cause(&edit(""));
+    host.path_map
+        .reconcile_add_provenance(&state("", &draft))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_none());
+    assert!(host.path_map.add_provenance.review_name_yank.is_some());
+    assert_eq!(stable_action(&mut host, "user text"), "user text");
+
     host.path_map
         .record_add_projection_cause(&edit("Corpus Prompt"));
     host.path_map
-        .reconcile_add_provenance(&state("Corpus Prompt"))
+        .reconcile_add_provenance(&state("Corpus Prompt", &draft))
         .unwrap();
     let typed = project(&mut host, "Corpus Prompt", &["skit-new-first", ""], &[]).unwrap();
     assert_eq!(typed["undo"][0]["value"], "<draft:0>");
@@ -371,7 +414,7 @@ fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
     drift.path_map.add_cause = AddProjectionCause::None;
     drift
         .path_map
-        .reconcile_add_provenance(&state("Corpus Prompt"))
+        .reconcile_add_provenance(&state("Corpus Prompt", &drift_draft))
         .unwrap();
     assert!(drift.path_map.add_provenance.review_name.is_none());
     let drifted = project(&mut drift, "Corpus Prompt", &["skit-new-first"], &[]).unwrap();
@@ -423,6 +466,68 @@ fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
             Err(refusal.to_owned())
         );
     }
+}
+
+/// A selected draft path that undo brings back has its provenance again.
+///
+/// The ways it can fail: an edit drops the provenance of the selected draft path, so its history
+/// entry stays raw; or undo brings back the exact path and the value stays raw.
+#[test]
+fn c2_a_selected_draft_path_that_undo_brings_back_has_its_provenance_again() {
+    let mut host = RealWalkerHost::spawn(profile()).unwrap();
+    let draft = write_draft_at(&host, "skit-new-undo.py", b"undo\n", 10);
+    host.path_map.refresh(&host.service).unwrap();
+    let source = |path: &str| json!({"workflow": {"active": {"add": {"source": {"path": path}}}}});
+    host.path_map.add_provenance.selected_source_path = Some(draft.clone());
+    host.path_map.reconcile_add_provenance(&source("")).unwrap();
+    assert!(host.path_map.add_provenance.selected_source_path.is_none());
+    assert!(host.path_map.add_provenance.source_path_yank.is_some());
+    let raw = draft.display().to_string();
+    host.path_map
+        .reconcile_add_provenance(&source(&raw))
+        .unwrap();
+    assert_eq!(
+        host.path_map.add_provenance.selected_source_path,
+        Some(draft.clone())
+    );
+    assert!(host.path_map.add_provenance.source_path_yank.is_none());
+}
+
+/// A copy of a derived name keeps its stable form after the Add workflow that proved it ends.
+///
+/// The ways it can fail: the end of the workflow drops the proof while the session clipboard keeps
+/// the raw name, so the walk records a raw allocator stem; or the proof outlives the copy, so the
+/// same text that comes back later with no proof takes a stable form.
+#[test]
+fn c2_a_copied_derived_name_keeps_its_stable_form_after_add_ends() {
+    let mut host = RealWalkerHost::spawn(profile()).unwrap();
+    let draft = write_draft_at(&host, "skit-new-first.py", b"first\n", 10);
+    host.path_map.refresh(&host.service).unwrap();
+    host.path_map.add_provenance.review_source_path = Some(draft.clone());
+    set_review_name_projection(&mut host, &draft, "skit-new-first", "<draft:0>");
+    let clipboard = |host: &mut RealWalkerHost, text: &str| {
+        let mut session = c2_session(Path::new("/unregistered/session"), None, Vec::new());
+        session["clipboard"]["fields"]["state"] = json!({"text": text, "pending_export": text});
+        host.path_map.project_session_value(&mut session).unwrap();
+        session["clipboard"]["fields"]["state"].clone()
+    };
+    assert_eq!(
+        clipboard(&mut host, "skit-new-first"),
+        json!({"text": "<draft:0>", "pending_export": "<draft:0>"})
+    );
+
+    host.path_map
+        .record_add_projection_cause(&Action::AddCancelled);
+    host.path_map
+        .reconcile_add_provenance(&json!({"workflow": {"active": null}}))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_none());
+    assert_eq!(clipboard(&mut host, "skit-new-first")["text"], "<draft:0>");
+    assert_eq!(clipboard(&mut host, "other text")["text"], "other text");
+    assert_eq!(
+        clipboard(&mut host, "skit-new-first")["text"],
+        "skit-new-first"
+    );
 }
 
 #[test]

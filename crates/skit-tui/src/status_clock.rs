@@ -21,7 +21,8 @@ pub(crate) struct StatusClock {
 
 #[derive(Clone, Debug)]
 struct ShownStatus {
-    text: String,
+    /// The [`LibraryState::status_serial`] of the status.
+    serial: u64,
     kind: StatusKind,
     since: Instant,
 }
@@ -29,24 +30,25 @@ struct ShownStatus {
 impl StatusClock {
     /// Start the time of a status that a state change showed.
     ///
-    /// Call this after every state change. A status with the same text and kind as the one that
-    /// already shows keeps its start instant.
+    /// Call this after every state change. The status that already shows keeps its start instant.
+    /// A new status starts a new time, also when it has the same words and kind: a second
+    /// operation gives a second receipt.
     pub(crate) fn observe(&mut self, state: &LibraryState, now: Instant) {
-        let Some(text) = state.status() else {
+        if state.status().is_none() {
             self.shown = None;
             return;
-        };
-        let kind = state.status_kind();
+        }
+        let serial = state.status_serial();
         if self
             .shown
             .as_ref()
-            .is_some_and(|shown| shown.text == text && shown.kind == kind)
+            .is_some_and(|shown| shown.serial == serial)
         {
             return;
         }
         self.shown = Some(ShownStatus {
-            text: text.to_owned(),
-            kind,
+            serial,
+            kind: state.status_kind(),
             since: now,
         });
     }
@@ -189,6 +191,17 @@ mod tests {
         let latest = start + Duration::from_secs(5);
         clock.observe(&state, latest);
         assert_eq!(clock.deadline(), Some(latest + Duration::from_secs(4)));
+
+        // So is the same text with the same kind: a second operation gave a second receipt.
+        let _ = state.update(Action::SetStatus {
+            kind: StatusKind::Success,
+            message: "Another".to_owned(),
+        });
+        let again = start + Duration::from_secs(8);
+        clock.observe(&state, again);
+        assert_eq!(clock.deadline(), Some(again + Duration::from_secs(4)));
+        assert!(!clock.expire(&mut state, latest + Duration::from_secs(4)));
+        assert_eq!(state.status(), Some("Another"));
     }
 
     #[test]

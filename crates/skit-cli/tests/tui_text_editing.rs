@@ -65,6 +65,7 @@ const CTRL_D: &[u8] = b"\x04";
 const CTRL_E: &[u8] = b"\x05";
 const CTRL_H: &[u8] = b"\x08";
 const CTRL_K: &[u8] = b"\x0b";
+const CTRL_O: &[u8] = b"\x0f";
 const CTRL_S: &[u8] = b"\x13";
 const CTRL_U: &[u8] = b"\x15";
 const CTRL_V: &[u8] = b"\x16";
@@ -717,6 +718,45 @@ fn launch_menu_caret_and_deletion_respect_wide_characters_and_graphemes() {
     assert_eq!(session.run_output(), "[日本語🙂abz|]");
 }
 
+// Ways this can fail: a delete joins an emoji with a zero-width joiner and a second emoji into one
+// grapheme and leaves the caret inside it, so the typed character splits the joined emoji.
+#[test]
+fn a_delete_that_joins_two_graphemes_types_after_the_joined_one() {
+    let fixture = Fixture::new();
+    let mut session = fixture.launch_menu();
+    session.paste("\u{1f469}\u{200d} \u{1f4bb}");
+    session.send(HOME);
+    session.send(RIGHT);
+    session.send(DELETE);
+    session.send(b"x");
+    assert_eq!(session.run_output(), "[\u{1f469}\u{200d}\u{1f4bb}x|]");
+}
+
+// Ways this can fail: a click in the multi-line box keeps the column of an earlier Up, so the
+// next Up goes to that old column and the typed character lands at the end of the line.
+#[test]
+fn a_click_in_the_multi_line_box_sets_the_column_of_the_next_up() {
+    let fixture = Fixture::new();
+    let mut session = fixture.entry_settings();
+    session.send(TAB);
+    let first = SETTINGS_NAME_ROW + 4;
+    session.paste("abcdef\nabcdef\nabcdef");
+    session.wait_cursor(first + 2, SETTINGS_BOX_COLUMN + 6);
+    session.send(UP);
+    session.wait_cursor(first + 1, SETTINGS_BOX_COLUMN + 6);
+    // SGR 1006 reports count columns and rows from 1, so this is the cell of `c` on line 3.
+    let x = SETTINGS_BOX_COLUMN + 2 + 1;
+    let y = first + 2 + 1;
+    session.send(format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").as_bytes());
+    session.wait_cursor(first + 2, SETTINGS_BOX_COLUMN + 2);
+    session.send(UP);
+    session.send(b"X");
+    session.wait_box(first + 1, SETTINGS_BOX_COLUMN, "abXcdef");
+    session.send(CTRL_S);
+    session.screen_with("Settings saved");
+    assert_eq!(fixture.saved().description, "abcdef\nabXcdef\nabcdef");
+}
+
 // Ways this can fail: an editing chord in the Add path box does nothing or reaches a screen
 // command; the selection or the clipboard does not work there.
 #[test]
@@ -757,6 +797,51 @@ fn the_add_path_box_uses_every_editing_key_group() {
     assert!(
         screen.contains("Add an entry"),
         "a key left the Add screen:\n{screen}"
+    );
+}
+
+// Ways this can fail: the Search box of the file picker drops a terminal paste; Alt+B types the
+// letter b instead of moving the caret; Ctrl+U does nothing; Ctrl+C and Ctrl+V do not reach the
+// session clipboard there.
+#[test]
+fn the_file_picker_search_box_takes_a_paste_and_every_editing_key_group() {
+    let fixture = Fixture::new();
+    let mut session = Session::start(fixture.command_builder(&["add"]), "Source path");
+    session.send(CTRL_O);
+    let (row, column) = session.locate("Search");
+    let (row, column) = (row + 1, column);
+    session.paste("alpha\nlater line");
+    session.wait_box(row, column, "alpha");
+    let step = |session: &mut Session, keys: &[u8], value: &str| {
+        session.send(keys);
+        session.wait_box(row, column, value);
+    };
+    step(&mut session, b" beta", "alpha beta");
+    step(&mut session, ALT_B, "alpha beta");
+    step(&mut session, CTRL_U, "beta");
+    step(&mut session, CTRL_Z, "alpha beta");
+    step(&mut session, SHIFT_RIGHT, "alpha beta");
+    step(&mut session, SHIFT_RIGHT, "alpha beta");
+    step(&mut session, SHIFT_RIGHT, "alpha beta");
+    step(&mut session, SHIFT_RIGHT, "alpha beta");
+    let copied = session.pty.checkpoint();
+    session.send(CTRL_C);
+    session.pty.settle();
+    let after_copy = session.pty.raw_after(copied);
+    assert!(
+        rfind(&after_copy, b"\x1b]52;c;YmV0YQ==").is_some(),
+        "the copy sent nothing to the system clipboard: {:?}",
+        String::from_utf8_lossy(&after_copy)
+    );
+    step(&mut session, RIGHT, "alpha beta");
+    step(&mut session, CTRL_V, "alpha betabeta");
+    // The box text ends at the last character, so the `!` shows the space that Ctrl+W keeps.
+    step(&mut session, CTRL_W, "alpha");
+    step(&mut session, b"!", "alpha !");
+    let screen = session.screen();
+    assert!(
+        screen.contains("Search") && !screen.contains("Press Ctrl+C again to quit"),
+        "a key left the picker or armed the quit:\n{screen}"
     );
 }
 
@@ -897,7 +982,15 @@ fn help_lists_the_editing_keys() {
     );
     session.send(END);
     let end = session.screen_with("Ctrl+Y");
-    for expected in ["Ctrl+Z", "Ctrl+X", "Ctrl+V", "Undo", "Redo"] {
+    // The Search box of the file picker keeps Ctrl+H for its hidden-files chip, and Help says so.
+    for expected in [
+        "Ctrl+Z",
+        "Ctrl+X",
+        "Ctrl+V",
+        "Undo",
+        "Redo",
+        "Show or hide hidden files in the file picker",
+    ] {
         assert!(
             end.contains(expected),
             "Help does not name {expected}:\n{end}"

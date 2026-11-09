@@ -122,6 +122,14 @@ fn hovered(buffer: &Buffer, (column, row): (u16, u16)) -> bool {
         .contains(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
+/// Follow one event with the pointer, and report whether the look of a chip or button changed, so
+/// the terminal draws a new frame.
+fn changes_the_look(session: &mut TuiSession, state: &LibraryState, event: &Event) -> bool {
+    let look = session.pointer_look(state);
+    session.track_pointer(event);
+    session.pointer_look(state) != look
+}
+
 /// Move the pointer onto the first cell of `needle`, and return the frame drawn after it.
 fn hover(session: &mut TuiSession, state: &LibraryState, needle: &str) -> (Buffer, (u16, u16)) {
     let (buffer, _) = draw(session, state);
@@ -131,7 +139,7 @@ fn hover(session: &mut TuiSession, state: &LibraryState, needle: &str) -> (Buffe
         "{needle} looked hovered before the move"
     );
     assert!(
-        session.track_pointer(&mouse(MouseEventKind::Moved, at), state),
+        changes_the_look(session, state, &mouse(MouseEventKind::Moved, at)),
         "a move onto {needle} asked for no frame"
     );
     let (buffer, _) = draw(session, state);
@@ -148,8 +156,16 @@ fn a_footer_chip_shows_the_hover_and_holds_the_pressed_look_until_the_release() 
     let label = (at.0 + 2, at.1);
 
     // A move inside the same chip, and a key, ask for no new frame.
-    assert!(!session.track_pointer(&mouse(MouseEventKind::Moved, label), &state));
-    assert!(!session.track_pointer(&Event::Paste("x".to_owned()), &state));
+    assert!(!changes_the_look(
+        &mut session,
+        &state,
+        &mouse(MouseEventKind::Moved, label)
+    ));
+    assert!(!changes_the_look(
+        &mut session,
+        &state,
+        &Event::Paste("x".to_owned())
+    ));
 
     let (_, geometry) = draw(&mut session, &state);
     assert_eq!(
@@ -169,7 +185,7 @@ fn a_footer_chip_shows_the_hover_and_holds_the_pressed_look_until_the_release() 
 
     // A release on another cell activates nothing and ends the pressed look.
     let elsewhere = (0, 0);
-    let _ = session.track_pointer(&mouse(MouseEventKind::Moved, elsewhere), &state);
+    session.track_pointer(&mouse(MouseEventKind::Moved, elsewhere));
     let (_, geometry) = draw(&mut session, &state);
     let _ = session.handle_event(
         mouse(MouseEventKind::Up(MouseButton::Left), elsewhere),
@@ -189,10 +205,10 @@ fn a_lost_focus_drops_the_hover_look() {
     let state = library();
     let mut session = TuiSession::default();
     let (_, at) = hover(&mut session, &state, "? Help");
-    assert!(session.track_pointer(&Event::FocusLost, &state));
+    assert!(changes_the_look(&mut session, &state, &Event::FocusLost));
     let (buffer, _) = draw(&mut session, &state);
     assert!(!hovered(&buffer, at));
-    assert!(!session.track_pointer(&Event::FocusLost, &state));
+    assert!(!changes_the_look(&mut session, &state, &Event::FocusLost));
 }
 
 #[test]

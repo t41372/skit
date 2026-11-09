@@ -77,16 +77,13 @@ pub(crate) struct PointerPosition {
 }
 
 impl PointerPosition {
-    /// Follow one terminal event. Return whether the cell changed.
-    pub(crate) fn follow(&mut self, event: &Event) -> bool {
-        let next = match event {
-            Event::Mouse(mouse) => Some((mouse.column, mouse.row)),
-            Event::FocusLost => None,
-            Event::FocusGained | Event::Key(_) | Event::Paste(_) | Event::Resize(_, _) => {
-                return false;
-            }
-        };
-        std::mem::replace(&mut self.cell, next) != next
+    /// Follow one terminal event.
+    pub(crate) fn follow(&mut self, event: &Event) {
+        match event {
+            Event::Mouse(mouse) => self.cell = Some((mouse.column, mouse.row)),
+            Event::FocusLost => self.cell = None,
+            Event::FocusGained | Event::Key(_) | Event::Paste(_) | Event::Resize(_, _) => {}
+        }
     }
 
     /// Report whether the pointer rests on `rect`.

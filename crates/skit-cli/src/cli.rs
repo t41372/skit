@@ -6838,14 +6838,14 @@ fn write_params(
                 .filter(|name| !managed_names.contains(name.as_str()))
                 .collect::<Vec<_>>()
         };
+        // The value a run prefills, by the rule that the human view and Entry settings use. The keys
+        // keep the block order.
+        let live = live_defaults(entry.meta.kind.as_str(), source, &managed);
         let current_defaults = managed
             .iter()
             .filter_map(|item| {
-                let current = candidates
-                    .iter()
-                    .find(|candidate| candidate.name == item.name)?;
-                let default = current.to_meta_map().remove("default")?;
-                Some((item.name.clone(), default))
+                live.get(&item.name)
+                    .map(|default| (item.name.clone(), serde_json::json!(default)))
             })
             .collect::<serde_json::Map<_, _>>();
         let declared = settings
@@ -6932,12 +6932,9 @@ fn write_params(
             humanln!("Parameter: {}", item.name);
             humanln!("Type: {}", item.parameter_type.as_str());
             humanln!("Delivery: {}", item.delivery.as_str());
-            if let Some(default) = candidates
-                .iter()
-                .find(|candidate| candidate.name == item.name)
-                .and_then(|candidate| candidate.default.as_ref())
-                .or(item.default.as_ref())
-            {
+            // `human_parameter_declarations` already resolved a managed row's default by the one
+            // read rule. A raw literal from the script must not replace it here.
+            if let Some(default) = &item.default {
                 let shown = if item.secret {
                     text(active_locale(), "•••").into_owned()
                 } else {
@@ -8252,16 +8249,31 @@ fn settings_managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
 /// literal first, then the value that the block keeps (`src/skit/analysis.py:129-138`,
 /// `src/skit/tui_settings.py:609-611`).
 fn with_live_defaults(kind: &str, text: &str, mut managed: Vec<ParamDecl>) -> Vec<ParamDecl> {
-    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
-        return managed;
-    };
-    let current_defaults = document.reconcile(&managed).current_defaults;
+    let current_defaults = live_defaults(kind, text, &managed);
     for declaration in &mut managed {
         if let Some(current) = current_defaults.get(&declaration.name) {
             declaration.default = Some(current.clone());
         }
     }
     managed
+}
+
+/// Return the literal that the script holds now for each managed row that reconciliation accepts.
+///
+/// Version 0.4 keeps this rule in one place, `Report.current_defaults`, and every read view uses
+/// it (`src/skit/analysis.py:129-138`, `src/skit/cli.py:3837-3840`). A row gets no entry when its
+/// literal has a different type, when it is a secret, or when the script no longer binds it the
+/// same way. That row shows the value that the block keeps. A script that does not parse gives no
+/// entries.
+fn live_defaults(
+    kind: &str,
+    text: &str,
+    managed: &[ParamDecl],
+) -> BTreeMap<String, ParameterValue> {
+    match parse_document(kind, text) {
+        ParseOutcome::Parsed(document) => document.reconcile(managed).current_defaults,
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => BTreeMap::new(),
+    }
 }
 
 /// Read one entry's parameter definitions from its stored copy again, and write nothing.
@@ -8940,8 +8952,7 @@ fn complete_add_effect_with(
 ) -> Result<UiAction, CliError> {
     let mut message = text(locale, "Entry added").into_owned();
     for warning in warnings {
-        message.push('\n');
-        message.push_str(&format_text(locale, "warning: {}", &[warning]));
+        push_add_warning(&mut message, warning, locale);
     }
     let Ok(slug) = Slug::parse(raw_slug) else {
         return Ok(UiAction::Complete {
@@ -8954,12 +8965,7 @@ fn complete_add_effect_with(
     let surface = match load_surface(store, state_dir, config_dir) {
         Ok(surface) => surface,
         Err(error) => {
-            message.push('\n');
-            message.push_str(&format_text(
-                locale,
-                "warning: {}",
-                &[&error.message().localize(locale)],
-            ));
+            push_add_warning(&mut message, &error.message().localize(locale), locale);
             return Ok(UiAction::Complete {
                 surface: None,
                 rerunnable: None,
@@ -8969,12 +8975,29 @@ fn complete_add_effect_with(
         }
     };
     let rerunnable = tui_rerunnable(&surface.scan, state_dir);
+    // The entry is in the library. A step after the commit that failed makes the receipt a
+    // warning, which stays until the next key.
+    let kind = if warnings.is_empty() {
+        StatusKind::Success
+    } else {
+        StatusKind::Warning
+    };
     Ok(UiAction::AddCompleted {
         surface,
         rerunnable,
         slug,
         message,
+        kind,
     })
+}
+
+/// Add one warning to the receipt of an add.
+///
+/// The status line shows one line of text, so the warning follows the receipt on the same line,
+/// as the warnings of a settings save do.
+fn push_add_warning(message: &mut String, warning: &str, locale: Locale) {
+    message.push_str(" — ");
+    message.push_str(&format_text(locale, "warning: {}", &[&warning]));
 }
 
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {

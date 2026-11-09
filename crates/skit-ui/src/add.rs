@@ -1499,9 +1499,7 @@ impl AddWorkflowState {
         self.notice = None;
         match action {
             AddAction::SetSourcePath(value) | AddAction::PickedSourcePath(value) => {
-                self.source.path = value;
-                self.pending_inspection = None;
-                self.problem = None;
+                self.replace_source_path(value);
             }
             AddAction::SetCommandTemplate(value) => {
                 self.source.command_template = value;
@@ -1516,9 +1514,10 @@ impl AddWorkflowState {
                 self.clear_problem_outside_the_path();
             }
             AddAction::SelectDraft(index) => {
-                if index < self.source.drafts.len() {
+                if let Some(draft) = self.source.drafts.get(index) {
+                    let path = draft.path.display().to_string();
                     self.source.selected_draft = Some(index);
-                    self.source.path = self.source.drafts[index].path.display().to_string();
+                    self.replace_source_path(path);
                 }
             }
             AddAction::HighlightDraft(index) => {
@@ -1812,6 +1811,16 @@ impl AddWorkflowState {
             self.pending_source = Some(source);
             self.stage = AddStage::Kind;
         }
+    }
+
+    /// Put a new path in the path box: a typed path, a picked path, or a kept draft.
+    ///
+    /// Every way into the box goes through here. The problem and the pending inspection belong to
+    /// the path that the last Continue tried, so they go with it.
+    fn replace_source_path(&mut self, path: String) {
+        self.source.path = path;
+        self.pending_inspection = None;
+        self.problem = None;
     }
 
     /// Clear a problem that an edit outside the path box answers.
@@ -2483,6 +2492,51 @@ mod tests {
         assert_eq!(workflow.problem(), Some(&AddProblem::MissingCommandName));
         let _ = workflow.reduce(AddAction::SetCommandDescription("Say it again".into()));
         assert_eq!(workflow.problem(), None);
+    }
+
+    /// A kept draft that the person puts in the path box replaces the path, as typed and picked
+    /// paths do. The report of the old path goes, and the answer to an inspection of the old path
+    /// does not apply to the draft.
+    #[test]
+    fn a_kept_draft_put_in_the_path_box_replaces_the_path_and_its_report() {
+        let draft = PathBuf::from("/data/drafts/skit-new-a.py");
+        let mut workflow = AddWorkflowState::new(vec![DraftSummary {
+            path: draft.clone(),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        }]);
+        let _ = workflow.reduce(AddAction::SetSourcePath("/missing/x.py".into()));
+        let effects = workflow.reduce(AddAction::Continue);
+        let (request, _) = effects
+            .iter()
+            .find_map(inspect_effect)
+            .expect("the path is inspected");
+        let _ = workflow.reduce(AddAction::SourceInspected {
+            request,
+            result: Err("File not found: /missing/x.py".into()),
+        });
+        assert!(workflow.problem().is_some());
+
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        assert_eq!(workflow.source().path, draft.display().to_string());
+        assert_eq!(workflow.problem(), None);
+
+        let _ = workflow.reduce(AddAction::SetSourcePath("/missing/y.py".into()));
+        let effects = workflow.reduce(AddAction::Continue);
+        let (request, _) = effects
+            .iter()
+            .find_map(inspect_effect)
+            .expect("the path is inspected");
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        let _ = workflow.reduce(AddAction::SourceInspected {
+            request,
+            result: Err("File not found: /missing/y.py".into()),
+        });
+        assert_eq!(workflow.problem(), None);
+        assert_eq!(workflow.stage(), AddStage::Source);
+        assert_eq!(workflow.source().path, draft.display().to_string());
     }
 
     /// C12 of the 2026-11 audit: a new prompt draft is named from its first words, not from its

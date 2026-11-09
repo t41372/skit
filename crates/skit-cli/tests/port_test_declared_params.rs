@@ -1703,6 +1703,64 @@ fn test_cli_human_params_shows_the_live_literal_when_the_block_keeps_no_default(
     assert!(!human.contains("Current default: 800"), "{human}");
 }
 
+// Ways this can fail: the human view prints a literal whose type no longer fits the declaration,
+// so `skit params` disagrees with Entry settings and with the launch menu, which keep the declared
+// default until a resync; the human view shows a default for a secret whose block keeps none; or
+// `--json` lists either literal as the current default, which is not the value that a run
+// prefills. Version 0.4 shows only a literal that reconciliation publishes, and the block value
+// otherwise (`src/skit/analysis.py:129-138`, `src/skit/cli.py:3837-3840`).
+#[test]
+fn test_cli_params_shows_only_a_reconciled_literal_as_the_current_default() {
+    let workspace = lib();
+    let mut count = ParamDecl::new("COUNT");
+    count.binding = ParameterBinding::Const;
+    count.delivery = ParameterDelivery::Inject;
+    count.parameter_type = ParameterType::Int;
+    count.default = Some(ParameterValue::Integer(3));
+    let mut token = ParamDecl::new("TOKEN");
+    token.binding = ParameterBinding::Const;
+    token.delivery = ParameterDelivery::Inject;
+    token.secret = true;
+    let stored = write_managed_params(
+        "python",
+        "COUNT = 3\nTOKEN = \"live-value\"\nprint(COUNT, TOKEN)\n",
+        &[count, token],
+    )
+    .unwrap();
+    let drifted = stored.replace("COUNT = 3\nTOKEN", "COUNT = \"many\"\nTOKEN");
+    assert_ne!(drifted, stored, "the fixture did not change the literal");
+    let source = workspace.write_script("drift.py", &drifted);
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "drift", "--no-input"])
+        .assert()
+        .success();
+
+    let output = workspace.run(&["params", "drift"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let human = combined(&output);
+    assert!(human.contains("Type: int"), "{human}");
+    assert!(human.contains("Current default: 3"), "{human}");
+    assert!(!human.contains("Current default: many"), "{human}");
+    assert_eq!(human.matches("Current default:").count(), 1, "{human}");
+
+    let payload = stdout_json(&workspace.run(&["params", "drift", "--json"]));
+    assert_eq!(payload["current_defaults"], json!({}), "{payload}");
+    let launch = |name: &str| {
+        payload["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not a launch menu field: {payload}"))
+            .clone()
+    };
+    assert_eq!(launch("COUNT")["default"], 3, "{payload}");
+    assert_eq!(launch("TOKEN").get("default"), None, "{payload}");
+}
+
 #[test]
 fn test_cli_powershell_reader_and_choice_rider_have_one_localized_read_view() {
     let workspace = lib();

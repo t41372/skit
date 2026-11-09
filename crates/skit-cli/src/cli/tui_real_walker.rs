@@ -20,8 +20,10 @@ pub(super) use recording::{
     MISSING_PROGRAM, UNBALANCED_ARGUMENTS, draft_quarantine_corpus_operations,
     invalid_corpus_operation, refused_run_corpus_operations,
     rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
-    review_name_cursor_corpus_operations, review_name_cut_corpus_operations,
-    source_path_cursor_corpus_operations,
+    review_name_clipboard_corpus_operations, review_name_cursor_corpus_operations,
+    review_name_cut_corpus_operations, review_name_same_text_corpus_operations,
+    review_name_undo_corpus_operations, source_path_cursor_corpus_operations,
+    source_path_undo_corpus_operations,
 };
 pub(super) use recording::{
     canonical_corpus_artifact_values, canonical_corpus_operations, record_real_locale_smoke,

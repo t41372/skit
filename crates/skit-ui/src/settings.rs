@@ -323,6 +323,51 @@ struct ResyncState {
     /// The host's answer, while the resync is ticked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<SettingsResyncPreview>,
+    /// Edits whose controls the shown section does not have, by field key.
+    ///
+    /// An answer can drop a row that already has an edit. The edit stays here until a rebuilt
+    /// section has its control again, so unticking the resync gives the edit back with its row. An
+    /// edit that is not on the screen never travels in a save.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    set_aside: BTreeMap<String, FieldValue>,
+}
+
+impl ResyncState {
+    /// Build the source-managed parameter section again, and keep every edit made in it.
+    ///
+    /// The section shows the host's answer while there is one, with its report, and the
+    /// definitions that the screen opened with otherwise. An edit moves to the rebuilt control
+    /// with the same key. An edit whose control the rebuilt section does not have is set aside.
+    fn rebuild(&mut self, sections: &mut [SettingsSection]) {
+        let (parameters, report) = match &self.preview {
+            Some(preview) => (&preview.parameters, Some(preview.warnings.as_slice())),
+            None => (&self.opened, None),
+        };
+        let mut edits = std::mem::take(&mut self.set_aside);
+        for section in sections
+            .iter_mut()
+            .filter(|section| section.id == SettingsSectionId::Parameters)
+        {
+            edits.extend(
+                section
+                    .fields()
+                    .filter(|field| field.is_dirty())
+                    .map(|field| (field.key.clone(), field.value().clone())),
+            );
+            let (rows, followup) = source_managed_section(
+                &parameters.managed,
+                &parameters.candidates,
+                parameters.reader_fields,
+            );
+            section.items = source_managed_items(&self.kind, parameters, rows, followup, report);
+            for field in section.fields_mut() {
+                if let Some(value) = edits.remove(&field.key) {
+                    carry_edit(field, &value);
+                }
+            }
+        }
+        self.set_aside = edits;
+    }
 }
 
 /// The complete settings screen as frontend-neutral state.
@@ -509,6 +554,7 @@ impl SettingsView {
                     reader_fields: inputs.reader_fields,
                 },
                 preview: None,
+                set_aside: BTreeMap::new(),
             }),
         };
         // The keyboard lands in the section the deep link named, so the first key press acts on
@@ -820,8 +866,9 @@ impl SettingsView {
     /// Tick or untick the resync, and report whether the host must read the script.
     ///
     /// Ticking asks the host for the definitions at once, as version 0.4's `Ctrl+R` does
-    /// (`src/skit/tui_settings.py:908-926`). Unticking takes the request back: the rows return to
-    /// the set the screen opened with and the report goes away. Neither writes anything.
+    /// (`src/skit/tui_settings.py:908-926`). Unticking takes the request back: the rows that the
+    /// screen opened with return with their edits, and the report goes away. Neither writes
+    /// anything.
     fn request_resync(&mut self, ticked: bool) -> SettingsEffect {
         if !self.set_value(RESYNC_KEY, FieldValue::boolean(ticked)) {
             return SettingsEffect::None;
@@ -830,12 +877,10 @@ impl SettingsView {
         if ticked {
             return SettingsEffect::PreviewResync;
         }
-        if let Some(opened) = self
-            .resync
-            .as_mut()
-            .and_then(|resync| resync.preview.take().map(|_| resync.opened.clone()))
+        if let Some(resync) = self.resync.as_mut()
+            && resync.preview.take().is_some()
         {
-            self.rebuild_source_parameters(&opened, None);
+            resync.rebuild(&mut self.sections);
         }
         SettingsEffect::None
     }
@@ -845,7 +890,8 @@ impl SettingsView {
     /// The answer applies only while the resync for the same entry is still ticked, so a late
     /// answer cannot bring back a request the person took back. Version 0.4 rebuilds the whole
     /// screen and loses every unsaved edit (`src/skit/tui_settings.py:926`). Only the parameter
-    /// section is rebuilt here, and an edit made in it moves to the rebuilt field with the same key.
+    /// section is rebuilt here. An edit made in it moves to the rebuilt field with the same key, or
+    /// waits for its row when the answer drops that row.
     fn show_resync_preview(&mut self, selector: &str, preview: SettingsResyncPreview) {
         let ticked = self
             .field(RESYNC_KEY)
@@ -854,45 +900,8 @@ impl SettingsView {
             return;
         }
         if let Some(resync) = self.resync.as_mut() {
-            let preview = resync.preview.insert(preview).clone();
-            self.rebuild_source_parameters(&preview.parameters, Some(&preview.warnings));
-        }
-    }
-
-    /// Build the source-managed parameter section again, and keep every edit made in it.
-    ///
-    /// `report` is the host's answer that the section shows under the resync control, if any.
-    fn rebuild_source_parameters(
-        &mut self,
-        parameters: &SourceParameters,
-        report: Option<&[SourceEditWarning]>,
-    ) {
-        let kind = self
-            .resync
-            .as_ref()
-            .map(|resync| resync.kind.clone())
-            .unwrap_or_default();
-        for section in self
-            .sections
-            .iter_mut()
-            .filter(|section| section.id == SettingsSectionId::Parameters)
-        {
-            let edits = section
-                .fields()
-                .filter(|field| field.is_dirty())
-                .map(|field| (field.key.clone(), field.value().clone()))
-                .collect::<BTreeMap<_, _>>();
-            let (rows, followup) = source_managed_section(
-                &parameters.managed,
-                &parameters.candidates,
-                parameters.reader_fields,
-            );
-            section.items = source_managed_items(&kind, parameters, rows, followup, report);
-            for field in section.fields_mut() {
-                if let Some(value) = edits.get(&field.key) {
-                    carry_edit(field, value);
-                }
-            }
+            resync.preview = Some(preview);
+            resync.rebuild(&mut self.sections);
         }
     }
 
@@ -2918,6 +2927,48 @@ mod tests {
         assert_eq!(waiting.sections, opened.sections);
     }
 
+    /// Unticking gives back the edits on a row that the answer dropped, together with the row.
+    ///
+    /// The checkbox is reversible (`docs/behavior-changes.md`), so a tick and an untick must leave
+    /// the rows as they were. Failure modes: the edit goes away with the hidden row, so the save
+    /// keeps a parameter that the person unmanaged; the discard guard no longer sees the edit; the
+    /// edit travels while the resync that drops its row is ticked; a second tick and untick lose it.
+    #[test]
+    fn unticking_the_resync_gives_back_the_edits_on_a_dropped_row() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        set(&mut view, "parameter:GONE:keep", FieldValue::boolean(false));
+        set(&mut view, "parameter:GONE:prompt", FieldValue::text("Lost"));
+        let edited = view.clone();
+
+        for _ in 0..2 {
+            view.update(SettingsAction::Resync);
+            previewed(&mut view, "tool", dropped_gone());
+            assert!(view.field("parameter:GONE:keep").is_none());
+            let values = view.submitted_values();
+            assert!(
+                !values.keys().any(|key| key.starts_with("parameter:GONE:")),
+                "{values:?}"
+            );
+
+            assert_eq!(view.update(SettingsAction::Resync), SettingsEffect::None);
+            assert_eq!(view.sections, edited.sections);
+            assert!(view.is_dirty());
+            let values = view.submitted_values();
+            assert_eq!(
+                values.get("parameter:GONE:keep"),
+                Some(&FieldValue::boolean(false))
+            );
+            assert_eq!(
+                values.get("parameter:GONE:prompt"),
+                Some(&FieldValue::text("Lost"))
+            );
+        }
+        assert_eq!(
+            view.update(SettingsAction::Close),
+            SettingsEffect::ConfirmDiscard
+        );
+    }
+
     /// An answer for another entry, or for a request that was taken back, changes nothing.
     #[test]
     fn a_stale_resync_answer_changes_nothing() {
@@ -2934,15 +2985,22 @@ mod tests {
         assert!(view.field("parameter:GONE:keep").is_some());
     }
 
-    /// The answer is part of the screen state, so it survives serialization.
+    /// The answer is part of the screen state, so it survives serialization. So does an edit on a
+    /// row that the answer hides.
     #[test]
     fn a_shown_resync_answer_survives_a_serialized_round_trip() {
         let mut view = SettingsView::from_inputs(&resync_inputs());
+        set(&mut view, "parameter:GONE:keep", FieldValue::boolean(false));
         view.update(SettingsAction::Resync);
         previewed(&mut view, "tool", dropped_gone());
         let json = serde_json::to_string(&view).unwrap();
-        let restored: SettingsView = serde_json::from_str(&json).unwrap();
+        let mut restored: SettingsView = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, view);
+        restored.update(SettingsAction::Resync);
+        assert_eq!(
+            restored.field("parameter:GONE:keep").unwrap().value(),
+            &FieldValue::boolean(false)
+        );
         let action = SettingsAction::ResyncPreviewed {
             selector: "tool".to_owned(),
             preview: dropped_gone(),

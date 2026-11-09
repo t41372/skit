@@ -238,6 +238,18 @@ impl RunModalSession {
         &self.environment
     }
 
+    /// The Search box of the file picker, when the picker is open.
+    pub(crate) fn file_query_editor(&self) -> Option<&TextEditor> {
+        self.file.as_ref().map(FilePickerSession::query_editor)
+    }
+
+    /// Report whether the cell shows the text of the file picker's Search box.
+    pub(crate) fn file_box_at(&self, column: u16, row: u16) -> bool {
+        self.file
+            .as_ref()
+            .is_some_and(|file| file.query_box_at(column, row))
+    }
+
     pub(crate) fn set_file_picker_source(&mut self, source: MemoryFilePickerSource) {
         self.file_picker_source = Some(source);
         self.signature = None;

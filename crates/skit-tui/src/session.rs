@@ -101,6 +101,17 @@ pub enum EventHandling {
     Ignored,
 }
 
+/// The look that the pointer gives the chips and buttons of one frame.
+///
+/// Two equal looks paint the same cells. [`TuiSession::pointer_look`] tells when to compare them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PointerLook {
+    /// The chip or button under the pointer.
+    hovered: Option<Rect>,
+    /// Each chip and button of the frame, and whether a primary press holds it.
+    targets: Vec<(Rect, bool)>,
+}
+
 /// What the clipboard part of one key does before a screen sees the key.
 #[derive(Debug)]
 enum ClipboardKey {
@@ -488,12 +499,12 @@ mod agent_review_tests {
         assert_field_changed(&baseline, &session, "confirm_discard");
 
         let mut session = baseline.try_fork().unwrap();
-        assert!(session.pointer.follow(&Event::Mouse(MouseEvent {
+        session.pointer.follow(&Event::Mouse(MouseEvent {
             kind: MouseEventKind::Moved,
             column: 1,
             row: 2,
             modifiers: KeyModifiers::NONE,
-        })));
+        }));
         assert_field_changed(&baseline, &session, "pointer");
 
         let mut session = baseline.try_fork().unwrap();
@@ -1965,16 +1976,27 @@ impl TuiSession {
     }
 
     /// Follow the pointer for the hover look of chips and buttons.
+    pub fn track_pointer(&mut self, event: &Event) {
+        self.pointer.follow(event);
+    }
+
+    /// The look that the pointer gives the chips and buttons: the one under the pointer, and each
+    /// one that a primary press holds.
     ///
-    /// Return whether the chip or button under the pointer changed, so the frame must be drawn
-    /// again. A move inside one chip, or over no chip at all, needs no new frame.
+    /// The look is not product state, so [`Self::handle_event`] reports an event that changes only
+    /// the look as ignored. Compare the look before and after the event: a different look needs a
+    /// new frame. A move onto or off a chip changes the look. A drag, another button, or a key
+    /// ends a press with no action, and that changes the look too. A move inside one chip, or over
+    /// no chip at all, keeps the look.
     #[must_use]
-    pub fn track_pointer(&mut self, event: &Event, state: &LibraryState) -> bool {
-        let before = self.hovered_target(state);
-        if !self.pointer.follow(event) {
-            return false;
-        }
-        before != self.hovered_target(state)
+    pub fn pointer_look(&self, state: &LibraryState) -> PointerLook {
+        let targets = self.pointer_targets(state);
+        let hovered = targets
+            .iter()
+            .rev()
+            .map(|(rect, _)| *rect)
+            .find(|rect| self.pointer.is_over(*rect));
+        PointerLook { hovered, targets }
     }
 
     /// Every chip and button of the frame, and whether a primary press holds it.
@@ -2029,18 +2051,10 @@ impl TuiSession {
         targets
     }
 
-    fn hovered_target(&self, state: &LibraryState) -> Option<Rect> {
-        self.pointer_targets(state)
-            .into_iter()
-            .rev()
-            .map(|(rect, _)| rect)
-            .find(|rect| self.pointer.is_over(*rect))
-    }
-
     /// Draw the hover and pressed looks over the frame that was just rendered.
     pub(crate) fn paint_pointer_feedback(&self, buffer: &mut Buffer, state: &LibraryState) {
-        let hovered = self.hovered_target(state);
-        for (rect, pressed) in self.pointer_targets(state) {
+        let PointerLook { hovered, targets } = self.pointer_look(state);
+        for (rect, pressed) in targets {
             if pressed {
                 theme::patch_pressed(buffer, rect);
             } else if hovered == Some(rect) {
@@ -2735,6 +2749,7 @@ impl TuiSession {
             Some(ModalState::RunEnvironmentPicker { .. }) => {
                 return Some(self.run_modal.environment_editor());
             }
+            Some(ModalState::RunFilePicker { .. }) => return self.run_modal.file_query_editor(),
             Some(_) => return None,
             None => {}
         }
@@ -2749,19 +2764,21 @@ impl TuiSession {
                 FormWidgetControl::Input { state, .. } => Some(state),
                 FormWidgetControl::TextArea { state, .. } => Some(state),
             },
-            Screen::Add(_) if self.add_overlay.is_none() => self.add.focused_editor(),
-            Screen::Settings(view) if self.settings_prompt_overlay.is_none() => {
-                self.settings.focused_editor(view)
-            }
+            Screen::Add(_) => match self.add_overlay.as_ref() {
+                None => self.add.focused_editor(),
+                Some(AddOverlay::File { session, .. }) => Some(session.query_editor()),
+                Some(AddOverlay::Prompt { session, .. }) => Some(session.query_editor()),
+            },
+            Screen::Settings(view) => match self.settings_prompt_overlay.as_ref() {
+                None => self.settings.focused_editor(view),
+                Some((picker, _)) => Some(picker.query_editor()),
+            },
             Screen::Preferences(view) if view.agent_skill_install().is_none() => {
                 self.preferences.focused_editor(view)
             }
-            Screen::Library
-            | Screen::Add(_)
-            | Screen::Settings(_)
-            | Screen::Preferences(_)
-            | Screen::Health(_)
-            | Screen::Report(_) => None,
+            Screen::Library | Screen::Preferences(_) | Screen::Health(_) | Screen::Report(_) => {
+                None
+            }
         }
     }
 
@@ -2788,6 +2805,9 @@ impl TuiSession {
             Some(ModalState::RunEnvironmentPicker { .. }) => {
                 return self.run_modal.environment_box_at(column, row);
             }
+            Some(ModalState::RunFilePicker { .. }) => {
+                return self.run_modal.file_box_at(column, row);
+            }
             Some(_) => return false,
             None => {}
         }
@@ -2800,10 +2820,15 @@ impl TuiSession {
                 self.form.editables.iter().any(line)
                     || self.form.textarea_editables.iter().any(area)
             }
-            Screen::Add(_) => self.add_overlay.is_none() && self.add.text_box_at(column, row),
-            Screen::Settings(_) => {
-                self.settings_prompt_overlay.is_none() && self.settings.text_box_at(column, row)
-            }
+            Screen::Add(_) => match self.add_overlay.as_ref() {
+                None => self.add.text_box_at(column, row),
+                Some(AddOverlay::File { session, .. }) => session.query_box_at(column, row),
+                Some(AddOverlay::Prompt { session, .. }) => session.query_box_at(column, row),
+            },
+            Screen::Settings(_) => match self.settings_prompt_overlay.as_ref() {
+                None => self.settings.text_box_at(column, row),
+                Some((picker, _)) => picker.query_box_at(column, row),
+            },
             Screen::Preferences(_) => self.preferences.text_box_at(column, row),
             Screen::Health(_) | Screen::Report(_) => false,
         }

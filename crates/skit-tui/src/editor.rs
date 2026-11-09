@@ -90,7 +90,9 @@ pub(crate) enum EditResponse {
 /// The editing keys that Help lists, each with what it does.
 ///
 /// Every chord here has a positive test in this module, and the end-to-end cases drive them in a
-/// real terminal.
+/// real terminal. The row after the Backspace row names the one box that gives an editing chord to
+/// its screen: the Search box of the file picker keeps Ctrl+H for the hidden-files chip of the
+/// picker.
 pub(crate) const EDITING_HELP: &[(&str, &str)] = &[
     ("Ctrl+A, Home", "Go to the start of the line"),
     ("Ctrl+E, End", "Go to the end of the line"),
@@ -103,6 +105,7 @@ pub(crate) const EDITING_HELP: &[(&str, &str)] = &[
         "Backspace, Ctrl+H",
         "Delete the character before the cursor",
     ),
+    ("Ctrl+H", "Show or hide hidden files in the file picker"),
     ("Delete, Ctrl+D", "Delete the character after the cursor"),
     ("Ctrl+W, Alt+Backspace", "Delete the word before the cursor"),
     ("Alt+D, Ctrl+Delete", "Delete the word after the cursor"),
@@ -373,19 +376,14 @@ impl TextEditor {
     /// A later [`Self::drag_to`] selects from this position.
     pub(crate) fn press_at(&mut self, position: TextPosition) {
         let position = self.clamp(position);
-        self.state.cursor = position;
-        self.state.anchor = Some(position);
-        self.end_group();
+        self.place(position, position);
     }
 
     /// Move the caret to `position` and keep the anchor, for a pointer drag.
     pub(crate) fn drag_to(&mut self, position: TextPosition) {
         let position = self.clamp(position);
-        if self.state.anchor.is_none() {
-            self.state.anchor = Some(self.state.cursor);
-        }
-        self.state.cursor = position;
-        self.end_group();
+        let anchor = self.state.anchor.unwrap_or(self.state.cursor);
+        self.place(position, anchor);
     }
 
     /// Select the word, or the run of other characters, at `position`, for a double click.
@@ -393,8 +391,20 @@ impl TextEditor {
         let position = self.clamp(position);
         let line = &self.state.lines[position.line];
         let (start, end) = word_span_at(line, position.column);
-        self.state.anchor = Some(TextPosition::new(position.line, start));
-        self.state.cursor = TextPosition::new(position.line, end);
+        self.place(
+            TextPosition::new(position.line, end),
+            TextPosition::new(position.line, start),
+        );
+    }
+
+    /// Put the caret and the selection anchor where the pointer put them.
+    ///
+    /// The pointer chooses a new column, so the next Up or Down starts from the caret, not from
+    /// the column of an earlier vertical move.
+    fn place(&mut self, cursor: TextPosition, anchor: TextPosition) {
+        self.state.cursor = cursor;
+        self.state.anchor = Some(anchor);
+        self.goal_column = None;
         self.end_group();
     }
 
@@ -650,12 +660,25 @@ impl TextEditor {
             self.end_group();
             return EditResponse::Consumed;
         }
+        if start != end && self.slice(start, end) == *text {
+            // The text replaces a selection that holds the same text, so the text stays as it
+            // was. That is no edit: no undo step records it, and the caret goes after the text.
+            self.state.cursor = end;
+            self.state.anchor = None;
+            self.goal_column = None;
+            self.end_group();
+            return EditResponse::Consumed;
+        }
         self.replace(start, end, &text, group);
         EditResponse::Changed
     }
 
     /// Replace the span `start..end` with `text`, record the undo step, and put the caret after
     /// the new text.
+    ///
+    /// The text before and after the span can join into one grapheme, for example an emoji, a
+    /// zero-width joiner, and a second emoji, or two regional indicators. The caret then goes after
+    /// that grapheme, where the box draws it, so it stays on a grapheme boundary.
     fn replace(
         &mut self,
         start: TextPosition,
@@ -690,6 +713,7 @@ impl TextEditor {
         let last = replacement.len() - 1;
         let cursor_column = replacement[last].chars().count();
         replacement[last].push_str(&tail);
+        let cursor_column = boundary_at_or_after(&replacement[last], cursor_column);
         lines.splice(start.line..=end.line, replacement);
         self.state.cursor = TextPosition::new(start.line + last, cursor_column);
         self.state.anchor = None;
@@ -836,6 +860,13 @@ pub(crate) fn boundary_at_or_before(line: &str, column: usize) -> usize {
         .take_while(|boundary| *boundary <= column)
         .last()
         .unwrap_or(0)
+}
+
+/// The smallest grapheme boundary of `line` at or after `column`.
+fn boundary_at_or_after(line: &str, column: usize) -> usize {
+    boundaries(line)
+        .find(|boundary| *boundary >= column)
+        .unwrap_or_else(|| line.chars().count())
 }
 
 /// Report whether one word segment is a word, not a run of spaces or ASCII punctuation.
@@ -1517,6 +1548,129 @@ mod tests {
         last.set_cursor(TextPosition::new(0, 2));
         press(&mut last, KeyCode::Right, NONE);
         assert_eq!(last.cursor(), TextPosition::new(1, 0));
+    }
+
+    // Ways this can fail: an edit joins the text on its two sides into one grapheme (an emoji, a
+    // zero-width joiner, and a second emoji, or two regional indicators) and leaves the caret
+    // inside that grapheme, so the next typed character splits it; undo or redo brings back a
+    // caret inside a grapheme.
+    #[test]
+    fn an_edit_that_joins_two_graphemes_puts_the_caret_after_the_joined_one() {
+        let woman = "\u{1f469}";
+        let laptop = "\u{1f4bb}";
+        let mut editor = TextEditor::single_line("");
+        editor.paste(&format!("{woman}\u{200d} {laptop}"));
+        press(&mut editor, KeyCode::Home, NONE);
+        press(&mut editor, KeyCode::Right, NONE);
+        assert_eq!(editor.cursor(), TextPosition::new(0, 2));
+        assert_eq!(
+            press(&mut editor, KeyCode::Delete, NONE),
+            EditResponse::Changed
+        );
+        assert_eq!(editor.value(), format!("{woman}\u{200d}{laptop}"));
+        assert_eq!(editor.cursor(), TextPosition::new(0, 3));
+        typed(&mut editor, "x");
+        assert_eq!(editor.value(), format!("{woman}\u{200d}{laptop}x"));
+        press(&mut editor, KeyCode::Char('z'), CONTROL);
+        assert_eq!(editor.cursor(), TextPosition::new(0, 3));
+        press(&mut editor, KeyCode::Char('z'), CONTROL);
+        assert_eq!(editor.value(), format!("{woman}\u{200d} {laptop}"));
+        assert_eq!(editor.cursor(), TextPosition::new(0, 2));
+        press(&mut editor, KeyCode::Char('y'), CONTROL);
+        assert_eq!(editor.cursor(), TextPosition::new(0, 3));
+
+        // Backspace joins two regional indicators into one flag.
+        let mut flag = TextEditor::single_line("\u{1f1fa}x\u{1f1f8}");
+        flag.set_cursor(TextPosition::new(0, 2));
+        press(&mut flag, KeyCode::Backspace, NONE);
+        assert_eq!(flag.value(), "\u{1f1fa}\u{1f1f8}");
+        assert_eq!(flag.cursor(), TextPosition::new(0, 2));
+
+        // A typed character joins the text after the caret.
+        let mut typed_flag = TextEditor::single_line("\u{1f1f8}");
+        typed_flag.set_cursor(TextPosition::new(0, 0));
+        typed(&mut typed_flag, "\u{1f1fa}");
+        assert_eq!(typed_flag.cursor(), TextPosition::new(0, 2));
+
+        // Delete at the end of a line joins it with the next line.
+        let mut lines = TextEditor::multi_line(&format!("{woman}\u{200d}\n{laptop}"));
+        lines.set_cursor(TextPosition::new(0, 2));
+        press(&mut lines, KeyCode::Delete, NONE);
+        assert_eq!(lines.text(), format!("{woman}\u{200d}{laptop}"));
+        assert_eq!(lines.cursor(), TextPosition::new(0, 3));
+    }
+
+    // Ways this can fail: typing, pasting, or Enter over a selection that holds the same text
+    // records an undo step and a typing group although the text did not change, so the screen
+    // sends an unchanged value and the next undo takes back nothing.
+    #[test]
+    fn the_same_text_over_a_selection_is_no_edit() {
+        let unchanged = |editor: &TextEditor, text: &str, cursor: TextPosition| {
+            assert_eq!(editor.text(), text);
+            assert_eq!(editor.cursor(), cursor);
+            assert_eq!(editor.selection(), None);
+            let snapshot = editor.agent_review_snapshot();
+            assert_eq!(snapshot["undo"], serde_json::json!([]), "{text:?}");
+            assert_eq!(snapshot["group"], serde_json::Value::Null, "{text:?}");
+        };
+        let mut pasted = TextEditor::single_line("skit-new-000000");
+        press(&mut pasted, KeyCode::Left, SHIFT);
+        assert_eq!(pasted.selected_text().as_deref(), Some("0"));
+        assert_eq!(pasted.paste("0"), EditResponse::Consumed);
+        unchanged(&pasted, "skit-new-000000", TextPosition::new(0, 15));
+
+        let mut typed_over = TextEditor::single_line("external");
+        typed_over.set_cursor(TextPosition::new(0, 1));
+        press(&mut typed_over, KeyCode::Left, SHIFT);
+        assert_eq!(typed_over.selected_text().as_deref(), Some("e"));
+        assert_eq!(
+            press(&mut typed_over, KeyCode::Char('e'), NONE),
+            EditResponse::Consumed
+        );
+        unchanged(&typed_over, "external", TextPosition::new(0, 1));
+        typed(&mut typed_over, "x");
+        assert_eq!(typed_over.value(), "exxternal");
+        press(&mut typed_over, KeyCode::Char('z'), CONTROL);
+        assert_eq!(typed_over.value(), "external");
+
+        let mut line_break = TextEditor::multi_line("a\nb");
+        line_break.set_cursor(TextPosition::new(0, 1));
+        press(&mut line_break, KeyCode::Right, SHIFT);
+        assert_eq!(line_break.selected_text().as_deref(), Some("\n"));
+        assert_eq!(
+            press(&mut line_break, KeyCode::Enter, NONE),
+            EditResponse::Consumed
+        );
+        unchanged(&line_break, "a\nb", TextPosition::new(1, 0));
+    }
+
+    // Ways this can fail: a pointer press, a drag, or a double click keeps the column of an
+    // earlier Up or Down, so the next vertical move goes to that old column instead of the
+    // column the pointer chose.
+    #[test]
+    fn a_pointer_placement_resets_the_column_of_vertical_moves() {
+        let mut pressed = TextEditor::multi_line("abcdef\nabcdef\nabcdef");
+        press(&mut pressed, KeyCode::Up, NONE);
+        assert_eq!(pressed.cursor(), TextPosition::new(1, 6));
+        pressed.press_at(TextPosition::new(2, 2));
+        press(&mut pressed, KeyCode::Up, NONE);
+        assert_eq!(pressed.cursor(), TextPosition::new(1, 2));
+        typed(&mut pressed, "X");
+        assert_eq!(pressed.text(), "abcdef\nabXcdef\nabcdef");
+
+        let mut dragged = TextEditor::multi_line("abcdef\nabcdef\nabcdef");
+        press(&mut dragged, KeyCode::Up, NONE);
+        dragged.drag_to(TextPosition::new(2, 2));
+        press(&mut dragged, KeyCode::Up, NONE);
+        assert_eq!(dragged.cursor(), TextPosition::new(1, 2));
+
+        let mut clicked_twice = TextEditor::multi_line("abcdef\nabcdef\nab cdef");
+        press(&mut clicked_twice, KeyCode::Up, NONE);
+        assert_eq!(clicked_twice.cursor(), TextPosition::new(1, 6));
+        clicked_twice.select_word_at(TextPosition::new(2, 1));
+        assert_eq!(clicked_twice.selected_text().as_deref(), Some("ab"));
+        press(&mut clicked_twice, KeyCode::Up, NONE);
+        assert_eq!(clicked_twice.cursor(), TextPosition::new(1, 2));
     }
 
     // Ways this can fail: a press leaves an old selection; a drag selects from the wrong side; a

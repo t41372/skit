@@ -1945,6 +1945,60 @@ fn a_missing_source_path_is_reported_under_its_box_until_the_path_changes() {
     });
 }
 
+/// A cursor key in the path box keeps the report of a missing path, because the path stays. A kept
+/// draft that the person puts in the box replaces the path, so the report goes. Before, the report
+/// of the old path stayed under the path of the draft.
+#[cfg(unix)]
+#[test]
+fn a_kept_draft_put_in_the_path_box_ends_the_report_of_the_missing_path() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let drafts = data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-kept.py");
+    fs::write(&draft, b"print('kept')\n").unwrap();
+    let draft = draft.display().to_string();
+    let missing = "/nonexistent/file.sh";
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("skit-new-kept.py");
+    tui.send(missing.as_bytes());
+    tui.send(b"\r");
+    wait_for_screen(&mut tui, "the report", |screen| {
+        screen.contains("✗ File not found")
+    });
+
+    tui.send(b"\x1b[D");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    assert!(
+        screen.contains("✗ File not found"),
+        "a cursor key removed the report:\n{screen}"
+    );
+
+    // Four Tab presses move past the template, the name, and the description to the draft.
+    // Enter puts the draft in the path box.
+    tui.send(b"\t\t\t\t\r");
+    wait_for_screen(&mut tui, "the draft path in the path box", |screen| {
+        screen.contains(&draft)
+    });
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    assert!(
+        !screen.contains("File not found"),
+        "the report of the missing path stayed under the draft path:\n{screen}"
+    );
+}
+
 /// C12 of the 2026-11 audit: a new prompt draft takes its name from its first words. Before, the
 /// Library and the review title showed the temporary file name, such as `skit-new-91G1LH`.
 #[cfg(unix)]
@@ -2609,6 +2663,79 @@ fn the_resync_reports_a_matching_script_and_unticking_takes_the_report_back() {
     let _ = tui.wait_for_exit_after(quit);
     drop(tui);
     assert_eq!(tree_snapshot(data.path()), data_before);
+}
+
+/// Unticking the resync gives back an edit on a row that the report dropped.
+///
+/// The checkbox is reversible, so a person who ticks it by mistake can untick it
+/// (`docs/behavior-changes.md`). While the report shows, the dropped row is not on the screen. When
+/// the row comes back, its edit comes back too: the keep box stays unticked, leaving asks before it
+/// discards the edit, and the save unmanages the parameter.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn unticking_the_resync_gives_back_an_edit_on_a_dropped_row() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let payload = write_resync_entry(data.path(), home.path(), true);
+
+    let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("greet");
+    let opened = tui.checkpoint();
+    tui.send_effect_key(b"p");
+    tui.wait_for_after(opened, "GONE");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    let (row, column) = screen_position(&screen, "☑ GONE")
+        .unwrap_or_else(|| panic!("the kept GONE row is not on the screen:\n{screen}"));
+    // A click on the keep box unticks it. SGR mouse coordinates are one-based.
+    tui.write_raw(format!("\x1b[<0;{};{}M", column + 3, row + 1).as_bytes());
+    tui.write_raw(format!("\x1b[<0;{};{}m", column + 3, row + 1).as_bytes());
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("☐ GONE"),
+        "the click did not untick the keep box:\n{screen}"
+    );
+
+    let resynced = tui.checkpoint();
+    tui.send_effect_key(b"\x12");
+    tui.wait_for_after(resynced, "no longer exists in the script.");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        !compact_terminal_text(&screen).contains("GONEint3"),
+        "the dropped row is still on the screen:\n{screen}"
+    );
+
+    // Unticking is local: no host round trip, so no cursor question follows.
+    tui.send(b"\x12");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("☐ GONE"),
+        "unticking the resync lost the edit on the dropped row:\n{screen}"
+    );
+
+    let asked = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(asked, "Discard unsaved changes?");
+    tui.send(b"n");
+    tui.settle();
+    let saved = tui.checkpoint();
+    tui.send_effect_key(b"\x13");
+    tui.wait_for_after(saved, "Settings saved");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+
+    let stored = fs::read_to_string(&payload).unwrap();
+    assert!(!stored.contains("GONE"), "the save kept GONE: {stored}");
+    assert!(stored.contains("NAME"), "the save dropped NAME: {stored}");
 }
 
 /// A prompt with more detected variables than the inline list shows offers the full picker in the

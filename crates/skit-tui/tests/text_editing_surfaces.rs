@@ -10,12 +10,13 @@
 //! first line is empty. The multi-line boxes of the launch menu and of a form get the clipboard
 //! keys.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use skit_application::SourcePermissions;
 use skit_application::preferences::{
     AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
     PreferencesDraft, PreferencesSnapshot, ThemeChoice,
@@ -27,9 +28,10 @@ use skit_tui::{
     AgentReviewSnapshotError, EventHandling, TuiSession, ViewGeometry, render_with_session,
 };
 use skit_ui::{
-    Action, AddWorkflowState, FormField, FormPurpose, FormView, LibraryState, ModalState, NAME_KEY,
-    PreferencesAction, PreferencesControlId, PreferencesView, RunFormContext, RunFormView,
-    RunPathContext, RunnerEditorAction, Screen, SettingsInputs, SettingsView,
+    Action, AddWorkflowState, FormField, FormPurpose, FormView, KnownEntryKind, LibraryState,
+    ModalState, NAME_KEY, PreferencesAction, PreferencesControlId, PreferencesView, ReviewDefaults,
+    ReviewState, RunFormContext, RunFormView, RunPathContext, RunnerEditorAction, Screen,
+    SettingsInputs, SettingsView, SourceSnapshot,
 };
 
 /// Draw one frame, and return its geometry and the cell of the hardware cursor.
@@ -497,6 +499,290 @@ fn a_multi_line_form_box_copies_cuts_and_pastes_its_selection() {
         |state| state.form().unwrap().fields[0].value.clone(),
         "multi-line form",
     );
+}
+
+/// The Search box of one picker, driven through the session.
+///
+/// A picker keeps its query in the session, not in the model, so the value comes from the session
+/// snapshot at `pointer`.
+struct PickerQuery {
+    session: TuiSession,
+    state: LibraryState,
+    geometry: ViewGeometry,
+    caret: (u16, u16),
+    pointer: &'static str,
+    name: &'static str,
+}
+
+impl PickerQuery {
+    /// Draw `state`, give `open` to the session, and draw the picker that it opens.
+    fn open(
+        mut session: TuiSession,
+        mut state: LibraryState,
+        open: Event,
+        pointer: &'static str,
+        name: &'static str,
+    ) -> Self {
+        let (geometry, _) = draw(&mut session, &state);
+        if let EventHandling::Action(action) = session.handle_event(open, &state, &geometry) {
+            state.update(action);
+        }
+        let (geometry, caret) = draw(&mut session, &state);
+        let picker = Self {
+            session,
+            state,
+            geometry,
+            caret,
+            pointer,
+            name,
+        };
+        assert_eq!(picker.value(), "", "{name}: the picker did not open");
+        picker
+    }
+
+    fn value(&self) -> String {
+        let snapshot = serde_json::to_value(self.session.agent_review_snapshot().unwrap()).unwrap();
+        snapshot
+            .pointer(self.pointer)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: the snapshot has no query at {}",
+                    self.name, self.pointer
+                )
+            })
+            .to_owned()
+    }
+
+    fn send(&mut self, event: Event) -> EventHandling {
+        let handling = self
+            .session
+            .handle_event(event, &self.state, &self.geometry);
+        if let EventHandling::Action(action) = &handling {
+            self.state.update(action.clone());
+        }
+        (self.geometry, self.caret) = draw(&mut self.session, &self.state);
+        handling
+    }
+
+    fn step(&mut self, event: Event, expected: &str) -> EventHandling {
+        let handling = self.send(event.clone());
+        assert_eq!(
+            self.value(),
+            expected,
+            "{}: {event:?} gave {handling:?}",
+            self.name
+        );
+        handling
+    }
+
+    fn type_text(&mut self, text: &str) {
+        let mut typed = self.value();
+        for character in text.chars() {
+            typed.push(character);
+            let _ = self.step(press(KeyCode::Char(character), KeyModifiers::NONE), &typed);
+        }
+    }
+}
+
+/// Drive the paste, the editing keys, the clipboard, and the pointer on the Search box of a picker.
+///
+/// A space would tick a row of the variable picker, so the words are `alpha/beta`: the slash
+/// separates two words. Ways this can fail: the picker drops a terminal paste; Alt+B types the
+/// letter b; Ctrl+U or undo does nothing; Ctrl+C arms the quit, or Ctrl+X and Ctrl+V do not reach
+/// the session clipboard; a drag does not select; a double click places the caret only.
+fn exercise_picker_query(mut picker: PickerQuery) {
+    let name = picker.name;
+    let pasted = picker.step(Event::Paste("alpha\nlater line".to_owned()), "alpha");
+    assert!(
+        !matches!(pasted, EventHandling::Action(_)),
+        "{name}: the paste gave {pasted:?}"
+    );
+    picker.type_text("/beta");
+    let _ = picker.step(press(KeyCode::Char('b'), KeyModifiers::ALT), "alpha/beta");
+    let _ = picker.step(press(KeyCode::Char('u'), KeyModifiers::CONTROL), "beta");
+    let _ = picker.step(
+        press(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        "alpha/beta",
+    );
+    for _ in 0..4 {
+        let _ = picker.step(press(KeyCode::Right, KeyModifiers::SHIFT), "alpha/beta");
+    }
+    assert_eq!(
+        picker.step(
+            press(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            "alpha/beta"
+        ),
+        EventHandling::Consumed,
+        "{name}: Ctrl+C with a selection did not copy"
+    );
+    assert!(
+        !matches!(
+            picker.session.agent_review_snapshot(),
+            Err(AgentReviewSnapshotError::ClockActive)
+        ),
+        "{name}: a copy armed the quit"
+    );
+    let _ = picker.step(press(KeyCode::Right, KeyModifiers::NONE), "alpha/beta");
+    let _ = picker.step(
+        press(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        "alpha/betabeta",
+    );
+    let _ = picker.step(press(KeyCode::Char('w'), KeyModifiers::CONTROL), "alpha/");
+
+    // The caret is after `alpha/`, so the value starts six cells to its left.
+    let (caret, row) = picker.caret;
+    let start = caret - 6;
+    for (kind, column) in [
+        (MouseEventKind::Down(MouseButton::Left), start),
+        (MouseEventKind::Drag(MouseButton::Left), start + 5),
+        (MouseEventKind::Up(MouseButton::Left), start + 5),
+    ] {
+        let _ = picker.step(pointer(kind, column, row), "alpha/");
+    }
+    let _ = picker.step(press(KeyCode::Char('x'), KeyModifiers::CONTROL), "/");
+    let _ = picker.step(press(KeyCode::Char('e'), KeyModifiers::CONTROL), "/");
+    let _ = picker.step(press(KeyCode::Char('v'), KeyModifiers::CONTROL), "/alpha");
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        let _ = picker.step(pointer(kind, start + 3, row), "/alpha");
+    }
+    let _ = picker.step(press(KeyCode::Char('Z'), KeyModifiers::SHIFT), "/Z");
+}
+
+#[test]
+fn the_add_file_picker_query_uses_the_shared_editor() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(
+        AddWorkflowState::new(Vec::new()),
+    ))));
+    let session = TuiSession::with_file_picker_tree(
+        "/picker".into(),
+        BTreeSet::new(),
+        BTreeSet::from(["/picker/tool.sh".into()]),
+    );
+    exercise_picker_query(PickerQuery::open(
+        session,
+        state,
+        press(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        "/add_overlay/fields/session/fields/query/value",
+        "Add file picker",
+    ));
+}
+
+#[test]
+fn the_variable_picker_query_uses_the_shared_editor() {
+    // More placeholders than the review lists open the searchable picker with Ctrl+O.
+    let body = (0..21)
+        .map(|index| format!("{{{{h{index:02}}}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let review = ReviewState::from_source(
+        SourceSnapshot {
+            path: "task.prompt.md".into(),
+            source_record: "task.prompt.md".to_owned(),
+            bytes: body.into_bytes(),
+            permissions: SourcePermissions::default(),
+            executable: None,
+            is_regular: true,
+            is_directory: false,
+            is_draft: false,
+            identity: None,
+        },
+        KnownEntryKind::Prompt,
+        ReviewDefaults::default(),
+    );
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(
+        AddWorkflowState::from_review(review),
+    ))));
+    exercise_picker_query(PickerQuery::open(
+        TuiSession::default(),
+        state,
+        press(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        "/add_overlay/fields/session/fields/query/value",
+        "variable picker",
+    ));
+}
+
+#[test]
+fn the_settings_variable_picker_query_uses_the_shared_editor() {
+    // More detected variables than Entry settings lists open the searchable picker with Ctrl+O.
+    let names = (0..25).map(|index| format!("v{index}")).collect::<Vec<_>>();
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "flood".to_owned(),
+            kind: "prompt".to_owned(),
+            name: "Flood".to_owned(),
+            declared_schema: true,
+            interpolate: true,
+            candidates: names,
+            ..SettingsInputs::default()
+        }),
+    ))));
+    exercise_picker_query(PickerQuery::open(
+        TuiSession::default(),
+        state,
+        press(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        "/settings_prompt_overlay/fields/session/fields/query/value",
+        "Entry settings variable picker",
+    ));
+}
+
+#[test]
+fn the_launch_menu_file_picker_query_uses_the_shared_editor() {
+    let mut path = ParamDecl::new("path");
+    path.parameter_type = ParameterType::Path;
+    let form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[path],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/work".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/work".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-08".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    let field = state.run_form().unwrap().focused();
+    let session = TuiSession::with_file_picker_tree(
+        "/work".into(),
+        BTreeSet::new(),
+        BTreeSet::from(["/work/tool.sh".into()]),
+    );
+    let mut opened = state.clone();
+    opened.update(Action::OpenRunFilePicker(field));
+    assert!(
+        matches!(opened.modal(), Some(ModalState::RunFilePicker { .. })),
+        "the launch menu did not open its file picker"
+    );
+    exercise_picker_query(PickerQuery::open(
+        session,
+        opened,
+        Event::FocusGained,
+        "/run_modal/fields/file/fields/query/value",
+        "launch-menu file picker",
+    ));
 }
 
 /// Ctrl+C on a launch-menu control that has no text keeps the two-press quit.

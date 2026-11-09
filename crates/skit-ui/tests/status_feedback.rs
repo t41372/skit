@@ -145,6 +145,7 @@ fn every_receipt_action_is_a_success() {
         rerunnable: Vec::new(),
         slug: Slug::parse("beta").unwrap(),
         message: "Entry added".to_owned(),
+        kind: StatusKind::Success,
     });
     assert_eq!(state.status(), Some("Entry added"));
     assert_eq!(state.status_kind(), StatusKind::Success);
