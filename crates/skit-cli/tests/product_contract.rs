@@ -94,7 +94,7 @@ fn help_and_version_expose_the_complete_automation_surface() {
         .stdout(predicate::str::contains("--install-completion"))
         .stdout(predicate::str::contains("--show-completion"));
 
-    let version_line = expected_version::version_line("0.5.0");
+    let version_line = expected_version::version_line(env!("CARGO_PKG_VERSION"));
     sandbox
         .command()
         .arg("--version")

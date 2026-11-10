@@ -2919,7 +2919,7 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skit-application"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "regex",
  "serde",
@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "skit-benchmarks"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2974,7 +2974,7 @@ dependencies = [
 
 [[package]]
 name = "skit-cli-rs"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "assert_cmd",
  "cap-primitives",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "skit-domain"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "proptest",
  "serde",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "skit-form"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3046,14 +3046,14 @@ dependencies = [
 
 [[package]]
 name = "skit-i18n"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "sys-locale",
 ]
 
 [[package]]
 name = "skit-language"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "pep440_rs",
  "pep508_rs",
@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "skit-runtime"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "atomicwrites",
  "flate2",
@@ -3100,7 +3100,7 @@ dependencies = [
 
 [[package]]
 name = "skit-store"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "atomicwrites",
  "fs-id",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "skit-tui"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "glob",
  "portable-pty",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "skit-tui-walker-model"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "proptest",
  "ratatui-core",
@@ -3166,7 +3166,7 @@ dependencies = [
 
 [[package]]
 name = "skit-tui-walker-support"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "proptest",
  "ratatui-core",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "skit-ui"
-version = "0.5.0"
+version = "0.5.1-dev.0"
 dependencies = [
  "nucleo-matcher",
  "serde",

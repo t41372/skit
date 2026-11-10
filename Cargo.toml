@@ -21,7 +21,7 @@ default-members = ["crates/skit-cli"]
 strip = true
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1-dev.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "MIT"
@@ -101,18 +101,18 @@ tar = "0.4.46"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
-skit-domain = { version = "0.5.0", path = "crates/skit-domain" }
-skit-i18n = { version = "0.5.0", path = "crates/skit-i18n" }
-skit-application = { version = "0.5.0", path = "crates/skit-application" }
-skit-language = { version = "0.5.0", path = "crates/skit-language" }
-skit-form = { version = "0.5.0", path = "crates/skit-form" }
-skit-store = { version = "0.5.0", path = "crates/skit-store" }
-skit-runtime = { version = "0.5.0", path = "crates/skit-runtime" }
-skit-ui = { version = "0.5.0", path = "crates/skit-ui" }
-skit-tui = { version = "0.5.0", path = "crates/skit-tui" }
-skit-tui-walker-support = { version = "0.5.0", path = "crates/skit-tui-walker-support" }
-skit-tui-walker-model = { version = "0.5.0", path = "crates/skit-tui-walker-model" }
-skit-benchmarks = { version = "0.5.0", path = "crates/skit-benchmarks" }
+skit-domain = { version = "0.5.1-dev.0", path = "crates/skit-domain" }
+skit-i18n = { version = "0.5.1-dev.0", path = "crates/skit-i18n" }
+skit-application = { version = "0.5.1-dev.0", path = "crates/skit-application" }
+skit-language = { version = "0.5.1-dev.0", path = "crates/skit-language" }
+skit-form = { version = "0.5.1-dev.0", path = "crates/skit-form" }
+skit-store = { version = "0.5.1-dev.0", path = "crates/skit-store" }
+skit-runtime = { version = "0.5.1-dev.0", path = "crates/skit-runtime" }
+skit-ui = { version = "0.5.1-dev.0", path = "crates/skit-ui" }
+skit-tui = { version = "0.5.1-dev.0", path = "crates/skit-tui" }
+skit-tui-walker-support = { version = "0.5.1-dev.0", path = "crates/skit-tui-walker-support" }
+skit-tui-walker-model = { version = "0.5.1-dev.0", path = "crates/skit-tui-walker-model" }
+skit-benchmarks = { version = "0.5.1-dev.0", path = "crates/skit-benchmarks" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
