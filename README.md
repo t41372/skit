@@ -1,11 +1,9 @@
 <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png" alt="skit — script launcher and parameter manager" width="750">
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
-[![Mutation tested: cargo-mutants](https://img.shields.io/badge/mutation%20tested-cargo--mutants-blue)](https://github.com/sourcefrog/cargo-mutants)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
-[![Rust 1.98.1](https://img.shields.io/badge/rust-1.98.1-orange)](https://www.rust-lang.org/)
+[![Rust 1.99.1](https://img.shields.io/badge/rust-1.99.1-orange)](https://www.rust-lang.org/)
 [![TUI: Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -30,7 +28,7 @@ Not a terminal person? That is fine — skit works like a GUI app that happens t
 
 Your AI agent gets the same library: you use it from a menu, agents use it through a deterministic CLI and a skill, so scripts get saved and reused.
 
-<video src="https://github.com/user-attachments/assets/c992e855-965f-45c6-a746-6ef8a7a8ad40" controls></video>
+<video src="https://github.com/user-attachments/assets/3d69726e-914f-4384-bef9-02c1a176007e" controls></video>
 
 ### The interface
 
@@ -48,7 +46,7 @@ Your AI agent gets the same library: you use it from a menu, agents use it throu
 ## What it does
 
 - **One home for your scripts and prompts.** `skit add` collects scattered scripts and prompts into one searchable library.
-- **No flags to memorize, no opening an editor just to change a value.** Flags, `input()` calls, and the constants you select become typed and described fields in the launch menu. The Ratatui form validates booleans, choices, numbers, and paths when you submit it.
+- **No flags to memorize, no opening an editor just to change a value.** Flags, `input()` calls, and the constants you select become typed and described fields in the launch menu. The launch menu gives booleans a checkbox, choices a picker, and paths a file picker, and it checks the values when you submit it.
 - **Remembers your last inputs.** Input parameters in the launch menu come back prefilled on the next run. Clear an override to use the script's current default. Save favorites as named presets — tokens like `{cwd}` and `{today}` keep them portable. Parameters marked secret are never saved: not in last-used values, presets, or run history.
 - **No environment mess.** Python scripts declare their dependencies inline (PEP 723) and run via uv in isolated environments; JS/TS scripts get a per-script `node_modules`, installed from their declared packages on first run. Nothing global either way. Other languages use the tools already on your machine — skit checks that declared external commands are on your `PATH` before running.
 - **Prompts as scripts.** Store a parameterized prompt (managed `{{placeholders}}` become input fields) and launch it with your coding agent — claude, codex, opencode, or any prompt runner you like.
@@ -114,7 +112,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## Install
 
-skit uses [uv](https://docs.astral.sh/uv/) 0.12.3. If uv is not installed, skit asks for
+skit uses [uv](https://docs.astral.sh/uv/) 0.13.7. If uv is not installed, skit asks for
 consent and then downloads this version into its private directory. skit does not change your
 `PATH` or global environment. A system-wide
 [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.
@@ -154,12 +152,14 @@ Version 0.5 replaces the Python and Textual implementation with Rust, Ratatui, a
 configuration, presets, remembered values, and metadata in place. It keeps unknown TOML fields and
 does not rewrite data during startup.
 
-The terminal workflow is more direct. Search now uses case-insensitive substring matching. Forms
-use one text editor for every scalar type and validate values when you submit. The first Rust
-release does not show the old checkbox, choice-list, or file-browser widgets. The add screen is one
-form; use the settings screen after the add to manage detected source fields. These presentation
-changes do not change stored scripts or state. See the [cutover design](./docs/design/rust-rewrite.md)
-for the complete compatibility boundary.
+The terminal workflow is more direct. Search matches the way version 0.4 does (case-insensitive,
+letters in order) but lists the best match first: names that start with your query, then closer
+matches, then recent entries. The launch menu has checkboxes, radio choices, dropdowns, and a file
+picker, and it checks values when you submit. A status line marks a success with ✓, a warning with
+⚠, and an error with ✗. A run from the menu ends with one result line, `✓ <name> finished` or
+`✗ <name> exited with code N`, and by default skit then exits with the exit code of the run. These
+presentation changes do not change stored scripts or state. See the
+[cutover design](./docs/design/rust-rewrite.md) for the complete compatibility boundary.
 
 ## Usage
 
@@ -183,7 +183,7 @@ skit show my_script --json    # one script's full parameter schema, machine-read
 skit params my_script         # show managed parameters and last-used values
 skit deps my_script --dep "requests>=2"   # set a script's package dependencies
 skit list --json              # machine-readable listing
-skit config                   # settings: language, editor, mirror, form style
+skit config                   # settings: language, editor, mirror, launch menu style
 skit --help                   # everything else
 ```
 
@@ -269,9 +269,8 @@ skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/25
 
 ## Development
 
-Development uses the pinned Rust toolchain. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the TDD
-workflow and the complete coverage, cargo-mutants, supply-chain, wheel, documentation, and benchmark
-gates.
+Development uses the pinned Rust toolchain. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the
+engineering principles and the supply-chain, wheel, documentation, and benchmark gates.
 
 ```bash
 cargo build --locked

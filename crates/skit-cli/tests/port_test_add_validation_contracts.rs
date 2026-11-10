@@ -29,6 +29,7 @@
 //! - 4 semantic-duplicate closures name their stronger owned-draft owner.
 
 use std::fs;
+#[cfg(unix)]
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -37,7 +38,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use skit_i18n::{Locale, Localize};
-use skit_language::{read_uv_metadata, validate_pep440_specifiers, validate_pep508_requirement};
+#[cfg(unix)]
+use skit_language::read_uv_metadata;
+use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -226,7 +229,7 @@ fn snapshot_sandbox(sandbox: &Sandbox) -> Vec<TreeItem> {
 fn explicit_boundary_message(language: &str, file: &str, flags: &str) -> String {
     match language {
         "zh-CN" => format!(
-            "{file} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {flags}。"
+            "{file} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序条目做不到这点。请去掉 {flags}。"
         ),
         "zh-TW" => format!(
             "{file} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {flags}。"
@@ -237,6 +240,7 @@ fn explicit_boundary_message(language: &str, file: &str, flags: &str) -> String 
     }
 }
 
+#[cfg(unix)]
 fn inferred_boundary_message(language: &str, file: &str) -> String {
     match language {
         "zh-CN" => format!(

@@ -17,14 +17,13 @@ use super::{
     observation::escaped_os,
     projection::{
         AddProjectionCause, AddProjectionProvenance, PathMap, ReviewNameProjection,
-        StatusProjectionCause, draft_source_path,
+        SourcePathOrigin, StatusProjectionCause, draft_source_path,
     },
     projection_typed::NestedProjection,
 };
 
 pub(super) fn add_projection_cause(action: &AddAction) -> AddProjectionCause {
     match action {
-        AddAction::SetSourcePath(_) => AddProjectionCause::SourcePathEdited,
         AddAction::PickedSourcePath(path) => AddProjectionCause::PickedSourcePath(path.clone()),
         AddAction::SelectDraft(index) => AddProjectionCause::SelectDraft(*index),
         AddAction::SourceInspected { result, .. } => {
@@ -41,7 +40,10 @@ pub(super) fn add_projection_cause(action: &AddAction) -> AddProjectionCause {
         AddAction::SourceEdited {
             result: Ok(source), ..
         } => AddProjectionCause::ReviewSourceEdited(draft_source_path(source)),
-        AddAction::SetCommandTemplate(_)
+        // `reconcile_selected_source` follows the derived path through every edit: a changed
+        // path keeps its provenance as the yank, and undo can bring the path back.
+        AddAction::SetSourcePath(_)
+        | AddAction::SetCommandTemplate(_)
         | AddAction::SetCommandName(_)
         | AddAction::SetCommandDescription(_)
         | AddAction::HighlightDraft(_)
@@ -132,7 +134,7 @@ impl PathMap {
             | Action::RunPresetSaved { .. }
             | Action::AddCompleted { .. }
             | Action::Complete { .. }
-            | Action::SetStatus(_)
+            | Action::SetStatus { .. }
             | Action::ClearStatus => StatusProjectionCause::Replaced,
             _ => StatusProjectionCause::None,
         };
@@ -195,6 +197,8 @@ impl PathMap {
                 }
                 self.add_provenance.selected_source_path = Some(path);
                 self.add_provenance.picked_source_path = None;
+                // The box takes the new path from the model and starts a new history.
+                self.add_provenance.source_path_yank = None;
             }
             AddProjectionCause::PickedSourcePath(raw) => {
                 let _ = self.require_exact_picker_file(&raw)?;
@@ -203,10 +207,8 @@ impl PathMap {
                 }
                 self.add_provenance.selected_source_path = None;
                 self.add_provenance.picked_source_path = Some(raw);
-            }
-            AddProjectionCause::SourcePathEdited => {
-                self.add_provenance.selected_source_path = None;
-                self.add_provenance.picked_source_path = None;
+                // The box takes the new path from the model and starts a new history.
+                self.add_provenance.source_path_yank = None;
             }
             AddProjectionCause::ReviewSource(path) => {
                 self.add_provenance.review_source_path = path;
@@ -214,12 +216,24 @@ impl PathMap {
                 self.add_provenance.review_name_edited = false;
             }
             AddProjectionCause::ReviewNameEdited => {
-                self.add_provenance.review_name_yank = self
-                    .add_provenance
-                    .review_name
-                    .take()
-                    .or_else(|| self.add_provenance.review_name_yank.take());
-                self.add_provenance.review_name_edited = true;
+                // An action that sends the derived name again is no edit. Only a changed name
+                // is, and the changed name keeps the derived one as the yank.
+                let unchanged =
+                    self.add_provenance
+                        .review_name
+                        .as_ref()
+                        .is_some_and(|projection| {
+                            add.pointer("/review/name").and_then(Value::as_str)
+                                == Some(projection.raw_name.as_str())
+                        });
+                if !unchanged {
+                    self.add_provenance.review_name_yank = self
+                        .add_provenance
+                        .review_name
+                        .take()
+                        .or_else(|| self.add_provenance.review_name_yank.take());
+                    self.add_provenance.review_name_edited = true;
+                }
             }
             AddProjectionCause::ReviewSourceEdited(path) => {
                 self.add_provenance.review_source_path = path;
@@ -229,23 +243,36 @@ impl PathMap {
         self.reconcile_review_name(add)
     }
 
+    /// Follow the derived source path through the edits of its box.
+    ///
+    /// An edit that changes the path keeps the derived path as the yank: the undo history of the
+    /// box still holds it. Undo or redo that brings the exact path back gives the value its
+    /// provenance again.
     fn reconcile_selected_source(&mut self, add: &Value) {
         let source = add.pointer("/source/path").and_then(Value::as_str);
-        if self
-            .add_provenance
+        let provenance = &mut self.add_provenance;
+        if let Some(path) = provenance
             .selected_source_path
-            .as_ref()
-            .is_some_and(|path| source != Some(path.to_string_lossy().as_ref()))
+            .take_if(|path| source != Some(path.to_string_lossy().as_ref()))
         {
-            self.add_provenance.selected_source_path = None;
+            provenance.source_path_yank = Some(SourcePathOrigin::Draft(path));
         }
-        if self
-            .add_provenance
+        if let Some(raw) = provenance
             .picked_source_path
-            .as_ref()
-            .is_some_and(|path| source != Some(path.as_str()))
+            .take_if(|raw| source != Some(raw.as_str()))
         {
-            self.add_provenance.picked_source_path = None;
+            provenance.source_path_yank = Some(SourcePathOrigin::Picked(raw));
+        }
+        if provenance.selected_source_path.is_none()
+            && provenance.picked_source_path.is_none()
+            && let Some(origin) = provenance
+                .source_path_yank
+                .take_if(|origin| source == Some(origin.raw().as_ref()))
+        {
+            match origin {
+                SourcePathOrigin::Draft(path) => provenance.selected_source_path = Some(path),
+                SourcePathOrigin::Picked(raw) => provenance.picked_source_path = Some(raw),
+            }
         }
     }
 
@@ -264,23 +291,47 @@ impl PathMap {
                 || self.add_provenance.picked_source_path.is_none(),
             "Add draft and picker source provenance must not overlap",
         );
-        if let Some(path) = self.add_provenance.selected_source_path.as_ref() {
-            return self
+        let origin = match (
+            self.add_provenance.selected_source_path.as_ref(),
+            self.add_provenance.picked_source_path.as_ref(),
+        ) {
+            (Some(path), _) => SourcePathOrigin::Draft(path.clone()),
+            (None, Some(raw)) => SourcePathOrigin::Picked(raw.clone()),
+            (None, None) => return Ok(None),
+        };
+        self.source_origin_projection(&origin).map(Some)
+    }
+
+    /// The raw and stable text of the derived source path that an edit took away.
+    pub(super) fn source_path_yank_projection(&self) -> Result<Option<(String, String)>, String> {
+        self.add_provenance
+            .source_path_yank
+            .as_ref()
+            .map(|origin| self.source_origin_projection(origin))
+            .transpose()
+    }
+
+    /// The raw and stable text of one derived source path.
+    fn source_origin_projection(
+        &self,
+        origin: &SourcePathOrigin,
+    ) -> Result<(String, String), String> {
+        match origin {
+            SourcePathOrigin::Draft(path) => self
                 .draft_paths
                 .get(path)
                 .map(|draft| {
-                    Some((
+                    (
                         draft.raw_path.to_string_lossy().into_owned(),
                         draft.stable_path.clone(),
-                    ))
+                    )
                 })
-                .ok_or_else(|| "a selected Add draft path is not registered".to_owned());
+                .ok_or_else(|| "a selected Add draft path is not registered".to_owned()),
+            SourcePathOrigin::Picked(raw) => {
+                let exact = self.require_exact_picker_file(raw)?;
+                Ok((raw.clone(), self.normalize_path(exact)))
+            }
         }
-        let Some(raw) = self.add_provenance.picked_source_path.as_ref() else {
-            return Ok(None);
-        };
-        let exact = self.require_exact_picker_file(raw)?;
-        Ok(Some((raw.clone(), self.normalize_path(exact))))
     }
 
     fn reconcile_review_name(&mut self, add: &Value) -> Result<(), String> {
@@ -309,6 +360,21 @@ impl PathMap {
             }
             self.add_provenance.review_name_yank = self.add_provenance.review_name.take();
             self.add_provenance.review_name_edited = true;
+            return Ok(());
+        }
+        // Undo or redo can bring the derived name of the same draft back while the review still
+        // shows that draft. It is the same host value again, so it has its provenance again.
+        let review_source = add
+            .pointer("/review/source/path")
+            .and_then(Value::as_str)
+            .map(Path::new);
+        if let Some(yank) = self.add_provenance.review_name_yank.take_if(|yank| {
+            yank.raw_name == raw_name
+                && self.add_provenance.review_source_path.as_ref() == Some(&yank.source_path)
+                && review_source == Some(yank.source_path.as_path())
+        }) {
+            self.add_provenance.review_name = Some(yank);
+            self.add_provenance.review_name_edited = false;
             return Ok(());
         }
         if self.add_provenance.review_name_edited {
@@ -355,7 +421,39 @@ impl PathMap {
     }
 
     pub(super) fn project_session_value(&mut self, session: &mut Value) -> Result<(), String> {
+        self.reconcile_clipboard_provenance(session);
         self.project_agent_review_session(session)
+    }
+
+    /// Keep the proof of a derived value in the session clipboard for as long as the clipboard
+    /// holds it.
+    ///
+    /// A copy of a whole derived value takes its proof with it. The Add workflow that proved the
+    /// value can end while the clipboard keeps the copy, so the proof stays until the clipboard
+    /// holds other text.
+    fn reconcile_clipboard_provenance(&mut self, session: &Value) {
+        // The projection of the session checks the clipboard shape and the derived values, and
+        // reports their failures in its own order.
+        let Some(text) = session
+            .pointer("/clipboard/fields/state/text")
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        if let Some(derived) = self
+            .derived_text_projections()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|(raw, _)| raw == text)
+        {
+            self.clipboard_provenance = Some(derived);
+        } else if self
+            .clipboard_provenance
+            .as_ref()
+            .is_some_and(|(raw, _)| raw != text)
+        {
+            self.clipboard_provenance = None;
+        }
     }
 
     fn project_agent_review_session(&self, session: &mut Value) -> Result<(), String> {
@@ -419,7 +517,53 @@ impl PathMap {
         if !source.is_null() {
             self.project_memory_file_picker_node(source)?;
         }
+        self.project_clipboard(session)
+    }
+
+    /// Project the session clipboard, which can hold text that a person copied from a box the
+    /// host filled.
+    ///
+    /// A copy of a whole derived value takes its stable form, also after the Add workflow that
+    /// proved the value ends. Any other copy is host text, so the registered host spellings in it
+    /// take their labels.
+    fn project_clipboard(&self, session: &mut Value) -> Result<(), String> {
+        let mut derived = self.derived_text_projections()?;
+        derived.extend(self.clipboard_provenance.clone());
+        let clipboard = required_session_owner_mut(session, "clipboard")?;
+        let fields = agent_review_fields_mut(clipboard, "clipboard")?;
+        let state = required_field_mut(fields, "state", "clipboard")?;
+        for field in ["text", "pending_export"] {
+            let value = required_field_mut(state, field, "clipboard state")?;
+            match value {
+                Value::Null if field == "pending_export" => {}
+                Value::String(text) => {
+                    *text = derived.iter().find(|(raw, _)| raw == text).map_or_else(
+                        || self.normalize_host_text(text),
+                        |(_, stable)| stable.clone(),
+                    );
+                }
+                _ => return Err(format!("the clipboard {field} is not text")),
+            }
+        }
         Ok(())
+    }
+
+    /// Every derived value of the Add workflow that the host proved, as its raw and its stable
+    /// spelling: the values in the boxes and the values in their undo history.
+    fn derived_text_projections(&self) -> Result<Vec<(String, String)>, String> {
+        let mut derived = Vec::new();
+        derived.extend(self.add_source_path_projection()?);
+        derived.extend(self.source_path_yank_projection()?);
+        for projection in [
+            self.add_provenance.review_name.as_ref(),
+            self.add_provenance.review_name_yank.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            derived.push((projection.raw_name.clone(), projection.stable_name.clone()));
+        }
+        Ok(derived)
     }
 
     fn project_agent_signature(&self, fields: &mut Value) -> Result<(), String> {
@@ -572,6 +716,10 @@ impl PathMap {
             .then(|| self.add_source_path_projection())
             .transpose()?
             .flatten();
+        let source_cut = source_owned
+            .then(|| self.source_path_yank_projection())
+            .transpose()?
+            .flatten();
         let Some(inputs) = fields.get_mut("inputs").and_then(Value::as_array_mut) else {
             return Err("the add session fields are missing the inputs array".to_owned());
         };
@@ -586,6 +734,7 @@ impl PathMap {
                         return Err("the add session has duplicate source_path inputs".to_owned());
                     }
                     source_seen = true;
+                    cut_projection = source_cut.clone();
                     source_projection.clone()
                 }
                 Some("ReviewName") => {
@@ -844,6 +993,35 @@ fn add_session_stage(fields: &Value) -> Result<Option<skit_ui::AddStage>, String
         .map_err(|_| "the add session signature has an invalid stage".to_owned())
 }
 
+/// Map one cursor of a derived raw value onto its stable value.
+///
+/// The stable value is a name for the raw value, not a copy of its characters. Only the two ends
+/// of the value have an exact place in both values. The start maps to the start, and the end
+/// maps to the end. An empty raw value has one position, and it maps to the end. An interior
+/// cursor counts characters that the projection removes, so it has no exact place. It scales by
+/// the length ratio, rounds to the nearest position, and stays off both ends. The result keeps
+/// each fact that does not depend on the raw characters: where the ends are, that the cursor is
+/// inside the value, and the order of two cursors. Two values of the same length keep every
+/// cursor.
+pub(crate) fn derived_cursor(cursor: usize, raw: usize, stable: usize) -> usize {
+    if cursor >= raw {
+        return stable;
+    }
+    if cursor == 0 {
+        return 0;
+    }
+    let wide = |value: usize| u128::try_from(value).unwrap_or(u128::MAX);
+    let scaled = wide(cursor)
+        .saturating_mul(wide(stable))
+        .saturating_mul(2)
+        .saturating_add(wide(raw))
+        / wide(raw).saturating_mul(2);
+    usize::try_from(scaled)
+        .unwrap_or(stable)
+        .clamp(1, stable.saturating_sub(1).max(1))
+        .min(stable)
+}
+
 fn project_default_line_input(
     state: &mut Value,
     raw: &str,
@@ -854,69 +1032,109 @@ fn project_default_line_input(
     if object.get("value").and_then(Value::as_str) != Some(raw) {
         return Err("an auto-derived Add input value does not match its state".to_owned());
     }
-    if object
-        .get("cursor")
-        .and_then(Value::as_u64)
-        .and_then(|cursor| usize::try_from(cursor).ok())
-        != Some(raw.chars().count())
-    {
-        return Err("an auto-derived Add input cursor is not at the end".to_owned());
-    }
-    if !project_derived_cut(object, cut)? && object.get("yank").and_then(Value::as_str) != Some("")
-    {
-        return Err("an auto-derived Add input has nondefault yank state".to_owned());
-    }
-    if object.get("last_was_cut").and_then(Value::as_bool) != Some(false) {
-        return Err("an auto-derived Add input has nondefault cut state".to_owned());
-    }
+    // Undo and redo move the derived value between the box and its history, so the history can
+    // hold user text next to it. Each entry that holds a derived value takes its stable form.
+    project_derived_history(object, [Some((raw, stable)), cut].into_iter().flatten())?;
+    // A click or a cursor key moves the cursor and keeps the derived value. A Shift key or a
+    // drag also keeps it, and moves the selection anchor.
+    project_derived_positions(object, raw, stable)?;
     object.insert("value".to_owned(), Value::String(stable.to_owned()));
-    object.insert("cursor".to_owned(), Value::from(stable.chars().count()));
     Ok(())
 }
 
-/// Project only the cut derived name that one Add input still holds.
+/// Map the cursor and the selection anchor of one derived value to the stable value.
+fn project_derived_positions(
+    object: &mut Map<String, Value>,
+    raw: &str,
+    stable: &str,
+) -> Result<(), String> {
+    let raw_chars = raw.chars().count();
+    let stable_chars = stable.chars().count();
+    let position = |value: &Value| {
+        value
+            .as_u64()
+            .and_then(|position| usize::try_from(position).ok())
+            .filter(|position| *position <= raw_chars)
+    };
+    let cursor = object
+        .get("cursor")
+        .and_then(position)
+        .ok_or("an auto-derived Add input cursor is outside its value")?;
+    let anchor = match object.get("anchor") {
+        Some(Value::Null) => None,
+        Some(anchor) => {
+            Some(position(anchor).ok_or("an auto-derived Add input anchor is outside its value")?)
+        }
+        None => return Err("an auto-derived Add input has no anchor".to_owned()),
+    };
+    object.insert(
+        "cursor".to_owned(),
+        Value::from(derived_cursor(cursor, raw_chars, stable_chars)),
+    );
+    object.insert(
+        "anchor".to_owned(),
+        anchor.map_or(Value::Null, |anchor| {
+            Value::from(derived_cursor(anchor, raw_chars, stable_chars))
+        }),
+    );
+    Ok(())
+}
+
+/// Project only the cut derived name that the history of one Add input still holds.
 ///
-/// The value is user text again, so it keeps its exact bytes. The mirror still
-/// owns the cut buffer while that buffer holds the name the host derived.
+/// The value is user text again, so it keeps its exact bytes. The mirror still owns each history
+/// entry that holds the name the host derived, because undo can bring that name back.
 fn project_default_line_input_cut(
     state: &mut Value,
     cut: Option<(&str, &str)>,
 ) -> Result<(), String> {
     let object = default_line_input_object(state)?;
-    project_derived_cut(object, cut).map(|_| ())
+    project_derived_history(object, cut)
 }
 
 fn default_line_input_object(state: &mut Value) -> Result<&mut Map<String, Value>, String> {
     let object = state
         .as_object_mut()
         .ok_or("an auto-derived Add input state is not an object".to_owned())?;
-    if object.len() != 4
-        || !["value", "cursor", "yank", "last_was_cut"]
+    if object.len() != 6
+        || !["value", "cursor", "anchor", "undo", "redo", "group"]
             .into_iter()
             .all(|field| object.contains_key(field))
     {
-        return Err("an auto-derived Add input state is not a default LineInput shape".to_owned());
+        return Err("an auto-derived Add input state is not a single-line editor shape".to_owned());
     }
     Ok(object)
 }
 
-/// Replace one cut buffer that holds the exact derived name the host proved.
+/// Replace each history entry that holds one exact derived value that the host proved.
 ///
-/// It reports whether it replaced the buffer. Every other cut text is user
-/// text and keeps its exact bytes.
-fn project_derived_cut(
+/// Every other entry is user text and keeps its exact bytes.
+fn project_derived_history<'a>(
     object: &mut Map<String, Value>,
-    cut: Option<(&str, &str)>,
-) -> Result<bool, String> {
-    let yank = object
-        .get("yank")
-        .and_then(Value::as_str)
-        .ok_or("an auto-derived Add input yank is not text".to_owned())?;
-    let Some(stable) = cut.and_then(|(raw, stable)| (yank == raw).then_some(stable)) else {
-        return Ok(false);
-    };
-    object.insert("yank".to_owned(), Value::String(stable.to_owned()));
-    Ok(true)
+    derived: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), String> {
+    let derived = derived.into_iter().collect::<Vec<_>>();
+    for list in ["undo", "redo"] {
+        let entries = object
+            .get_mut(list)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("an auto-derived Add input {list} history is not a list"))?;
+        for entry in entries {
+            let entry = entry
+                .as_object_mut()
+                .ok_or("an auto-derived Add input history entry is not an object")?;
+            let value = entry
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or("an auto-derived Add input history entry is not text")?;
+            let Some((raw, stable)) = derived.iter().copied().find(|(raw, _)| value == *raw) else {
+                continue;
+            };
+            project_derived_positions(entry, raw, stable)?;
+            entry.insert("value".to_owned(), Value::String(stable.to_owned()));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn decode_session_path_value(value: &Value) -> Result<PathBuf, String> {

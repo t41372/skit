@@ -370,5 +370,5 @@ bash benchmarks/check.sh .bench/results.json benchmarks/budgets.toml --require-e
 cargo bench --locked -p skit-benchmarks
 ```
 
-Workspace coverage, mutation, dependency, and workflow security gates also cover this crate. Do not
-weaken those gates for orchestration code.
+Workspace dependency and workflow security gates also cover this crate. Do not weaken those gates
+for orchestration code.

@@ -29,7 +29,7 @@
 //!   `PromptCandidatePickerSession` (keys, filter, select-all, Done/Cancel events).
 //! - Python `RunnerAddModal` -> `RunnerEditorView` (typed `RunnerEditorError` refusals).
 //! - Python Library detail pane -> `LibraryEntryDetail::prompt_runner` rendered by
-//!   `skit-tui`'s library screen ("Runs with {}", "Runner picked on the run form",
+//!   `skit-tui`'s library screen ("Runs with {}", "Runner picked in the launch menu",
 //!   "{} (no longer configured)").
 //!
 //! Buckets (recorded per test):
@@ -219,6 +219,7 @@ fn detail_state(runner: LibraryPromptRunner) -> LibraryState {
             details,
         },
         rerunnable: Vec::new(),
+        message: None,
     });
     state
 }
@@ -650,7 +651,7 @@ fn test_detail_pane_unpinned_prompt_says_the_form_asks() {
     // An unpinned prompt says the runner is picked on the run form.
     let state = detail_state(LibraryPromptRunner::PickOnRunForm);
     let (terminal, _) = draw_session(&state, 120, 34);
-    assert!(rendered(terminal.backend().buffer()).contains("Runner picked on the run form"));
+    assert!(rendered(terminal.backend().buffer()).contains("Runner picked in the launch menu"));
 }
 
 #[test]
@@ -673,7 +674,7 @@ fn test_detail_pane_stale_pin_says_no_longer_configured() {
 fn test_tui_add_prompt_opens_the_review_panel() {
     // Never a blind direct add: the prompt review opens, prefilled — name from the stem,
     // description from the first line, both holes pre-ticked (under the cap), default runner
-    // empty (ask on the run form). Accept commits a prompt entry managing both placeholders.
+    // empty (ask in the launch menu). Accept commits a prompt entry managing both placeholders.
     let review = review_prompt(
         "task.prompt.md",
         b"# Task\n\nDo {{a}} and {{b}}\n",
@@ -685,12 +686,12 @@ fn test_tui_add_prompt_opens_the_review_panel() {
     let boxes = review.prompt_candidates();
     assert_eq!(boxes.len(), 2);
     assert!(boxes.iter().all(|candidate| candidate.selected)); // under the cap: everything pre-ticked
-    assert_eq!(review.runner(), ""); // default: ask on the run form
+    assert_eq!(review.runner(), ""); // default: ask in the launch menu
 
     let plan = review.create_entry().expect("the review accepts");
     assert_eq!(plan.kind, EntryKind::parse("prompt".to_owned()).unwrap());
     assert_eq!(plan.settings.params, ["a", "b"]);
-    assert_eq!(plan.settings.runner, ""); // default: ask on the run form
+    assert_eq!(plan.settings.runner, ""); // default: ask in the launch menu
 }
 
 #[test]
@@ -737,7 +738,7 @@ fn test_settings_prompt_rows_and_no_flag_input() {
 
 #[test]
 fn test_settings_runner_radio_pins_and_clears() {
-    // Picking a configured runner pins it on save; picking "ask on the run form" clears it.
+    // Picking a configured runner pins it on save; picking "ask in the launch menu" clears it.
     // (The last-picked argstate is untouched either way — that is host state.)
     let mut view =
         SettingsView::from_inputs(&prompt_settings(vec![placeholder("a")], "", RUNNERS, true));
@@ -778,10 +779,10 @@ fn test_settings_runner_radio_pins_and_clears() {
 
 #[test]
 fn test_settings_runner_section_empty_config_keeps_ask_and_the_door() {
-    // An emptied runner config keeps exactly one option ("ask on the run form"), stays on it,
+    // An emptied runner config keeps exactly one option ("ask in the launch menu"), stays on it,
     // keeps the New agent door open, and a save of the lone option is a clean no-op.
     let view = SettingsView::from_inputs(&prompt_settings(vec![placeholder("a")], "", &[], true));
-    assert_eq!(runner_options(&view), [""]); // just "ask on the run form"
+    assert_eq!(runner_options(&view), [""]); // just "ask in the launch menu"
     assert_eq!(view.field(RUNNER_KEY).unwrap().value().as_text(), "");
     assert!(view.field(RUNNER_KEY).unwrap().capabilities.new_runner); // the door never disappears
     let mut view = view;
@@ -1134,8 +1135,8 @@ fn test_settings_candidate_checkboxes_are_flood_capped() {
     ));
     for (locale, expected) in [
         (Locale::En, "…and 9 more"),
-        (Locale::ZhCn, "…以及另外 9 个"),
-        (Locale::ZhTw, "…以及另外 9 個"),
+        (Locale::ZhCn, "……还有 9 个"),
+        (Locale::ZhTw, "……還有 9 個"),
     ] {
         assert_eq!(
             skit_i18n::format_text(locale, "…and {} more", &[&9]),
@@ -1663,10 +1664,10 @@ fn test_review_insertion_switch_off_hides_ticks_and_stores_off() {
 
 #[test]
 fn test_review_runner_pick_pins_and_remembers() {
-    // No pin, no last pick means "ask on the run form"; picking the first configured runner
+    // No pin, no last pick means "ask in the launch menu"; picking the first configured runner
     // pins it and marks it a real pick (the "remembers" the run picker's default will honor).
     let mut review = review_prompt("r.prompt.md", b"Go {{a}}\n", review_defaults(&runners()));
-    assert_eq!(review.runner(), ""); // ask on the run form
+    assert_eq!(review.runner(), ""); // ask in the launch menu
     review.set_runner(RUNNERS[0], true);
     assert!(review.runner_was_picked()); // a real pick is remembered
     let plan = review.create_entry().expect("the review accepts");

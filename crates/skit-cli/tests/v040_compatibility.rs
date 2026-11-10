@@ -168,7 +168,7 @@ fn human_list_empty_library_keeps_the_localized_discovery_hint() {
         .arg("list")
         .assert()
         .success()
-        .stdout("還沒有任何條目。用 skit add <path> 加入一個。\n");
+        .stdout("還沒有任何項目。用 skit add <path> 加入一個。\n");
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn human_show_uses_the_missing_marker_and_localized_kind_label() {
     assert!(output.contains("Gone  (Python · reference)"));
     assert!(output.contains(&format!("⚠ 遺失:{}", source.display())));
     assert!(!output.contains("遺失：是"));
-    assert!(output.contains("沒有表單欄位——接在 -- 之後的參數會透傳給腳本。"));
+    assert!(output.contains("沒有要填的參數——接在 -- 之後的參數會透傳給腳本。"));
     assert!(output.contains("執行:skit run Gone"));
 }
 
@@ -388,7 +388,7 @@ fn show_reconciles_live_fields_defaults_and_complete_drift_explanations() {
     let human = String::from_utf8(human.stdout).unwrap();
     for line in [
         "The parameter definitions for Managed have drifted from the script:",
-        "  GONE: injection target no longer exists (dropped from this run's form)",
+        "  GONE: injection target no longer exists (dropped from this run's launch menu)",
         "  CHANGED: type changed from str to int in the source (still injected — double-check the value)",
         "To refresh the definitions, run: skit params Managed --resync",
     ] {

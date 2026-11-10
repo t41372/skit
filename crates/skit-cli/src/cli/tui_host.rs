@@ -15,18 +15,20 @@ use skit_application::{
 use skit_i18n::{Locale, format_text, requested_locale, system_locale, text};
 use skit_runtime::{InterpreterPlatform, InterpreterPolicy};
 use skit_store::{AgentSkillInstallPoint, FileFormStateStore, FileGlobExpander, FileStore};
-use skit_ui::{Action as UiAction, Effect as UiEffect, HealthAction, LibraryState, Screen};
+use skit_ui::{
+    Action as UiAction, Effect as UiEffect, HealthAction, LibraryState, Screen, StatusKind,
+};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::run::{RunClock, RunInvocation, RunPorts, RunServices};
 
 use super::{
-    AddHostContext, CliError, CliHealthInspector, EditRuntime, HumanStyle, PreferenceHost,
-    active_locale, edit_with_runtime, entry_parameters, human_output_width, paint_for_output,
-    refuse_empty_preset_schema, remove_with_state_dir, resolve_editor_argv_with, tui_add_effect_at,
-    tui_complete_at, tui_open_with_context, tui_preferences_effect_at,
-    tui_preflight_effect_with_probe, tui_rerun_with_services, tui_rerunnable, tui_save_runner_at,
-    tui_submit_at, user_home,
+    AddHostContext, CliError, CliHealthInspector, EditRuntime, EditedSource, HumanStyle,
+    PreferenceHost, active_locale, edit_with_runtime, entry_parameters, human_error_width,
+    human_output_width, paint_for_output, refuse_empty_preset_schema, remove_with_state_dir,
+    resolve_editor_argv_with, tui_add_effect_at, tui_complete_at, tui_open_with_context,
+    tui_preferences_effect_at, tui_preflight_effect_with_probe, tui_preview_settings_resync,
+    tui_rerun_with_services, tui_rerunnable, tui_save_runner_at, tui_submit_at, user_home,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +78,10 @@ pub(crate) trait HostOutput: std::fmt::Debug {
     fn plain(&self, message: &str);
     fn stdout(&self, message: &str);
     fn diagnostic(&self, message: &str);
+    /// Report work that failed. It goes to the diagnostic stream.
+    fn failure(&self, message: &str) {
+        self.diagnostic(message);
+    }
 }
 
 /// Report whether the process streams support an interactive exchange.
@@ -394,6 +400,13 @@ impl HostOutput for SystemHostOutput {
     fn diagnostic(&self, message: &str) {
         eprintln!("{message}");
     }
+
+    fn failure(&self, message: &str) {
+        eprintln!(
+            "{}",
+            paint_for_output(message, HumanStyle::Red, human_error_width())
+        );
+    }
 }
 
 static SYSTEM_CLOCK: SystemClock = SystemClock;
@@ -417,6 +430,8 @@ pub(super) struct TuiHost<'a, C: RunClock> {
     locale: Cell<Locale>,
     clock: &'a C,
     platform: TuiPlatform<'a>,
+    /// The exit code of a run that ended the session (`after_run = "exit"`).
+    run_exit: Cell<Option<i32>>,
 }
 
 impl<'a> TuiHost<'a, SystemClock> {
@@ -472,11 +487,20 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
             locale: Cell::new(locale),
             clock,
             platform,
+            run_exit: Cell::new(None),
         })
     }
 
     pub(super) const fn locale(&self) -> Locale {
         self.locale.get()
+    }
+
+    /// The exit code for the shell when the session ends.
+    ///
+    /// A run that ends the session (`after_run = "exit"`) gives its own exit code, as version 0.4
+    /// does (`src/skit/tui.py:1067-1103`). A session that ends any other way exits with 0.
+    pub(super) fn session_exit_code(&self) -> i32 {
+        self.run_exit.get().unwrap_or(0)
     }
 
     pub(super) fn initial_state(&self) -> Result<LibraryState, CliError> {
@@ -594,9 +618,16 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                     self.clock.now_utc(),
                 )?;
                 let rerunnable = tui_rerunnable(&surface.scan, &self.roots.state);
+                let count = surface.scan.entries.len();
+                let template = if count == 1 {
+                    "Library reloaded (1 entry)"
+                } else {
+                    "Library reloaded ({} entries)"
+                };
                 Ok(UiAction::ReplaceSurface {
                     surface,
                     rerunnable,
+                    message: Some(format_text(locale, template, &[&count])),
                 })
             }
             UiEffect::Rerun { selector } => {
@@ -611,6 +642,7 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                     self.token_context(),
                     self.editor_fallback(),
                     &run_services,
+                    &self.run_exit,
                 )
             }
             UiEffect::Open { request, selector } => {
@@ -718,6 +750,9 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
             UiEffect::SaveRunner { request, owner } => {
                 tui_save_runner_at(&self.roots.config, request, owner, locale)
             }
+            UiEffect::PreviewSettingsResync { selector } => {
+                tui_preview_settings_resync(self.service, store, &selector)
+            }
             UiEffect::Add(effects) => {
                 let pathext = self.platform.environment.variable("PATHEXT");
                 tui_add_effect_at(
@@ -740,7 +775,7 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
             }
             UiEffect::Edit { selector } => {
                 let argv = self.editor_argv();
-                edit_with_runtime(
+                let edited = edit_with_runtime(
                     self.service,
                     store,
                     &selector,
@@ -753,26 +788,58 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                         locale,
                     ),
                 )?;
+                // The interface reports the edit in its status line. The report of `skit edit`
+                // would go to the shell, where the person sees it only after skit ends.
+                let (message, kind) = match edited {
+                    Some(EditedSource {
+                        changed: Some(false),
+                        entry,
+                        ..
+                    }) => (
+                        format_text(locale, "No changes to {}.", &[&entry.meta.name]),
+                        StatusKind::Info,
+                    ),
+                    Some(EditedSource {
+                        changed: None,
+                        entry,
+                        path,
+                        ..
+                    }) => (
+                        format_text(
+                            locale,
+                            "skit could not read {}, so it cannot tell whether {} changed.",
+                            &[&path.display(), &entry.meta.name],
+                        ),
+                        StatusKind::Warning,
+                    ),
+                    // `no_input` refuses a name that no entry has, so `None` does not come back.
+                    Some(EditedSource {
+                        changed: Some(true),
+                        ..
+                    })
+                    | None => ("Source saved".to_owned(), StatusKind::Success),
+                };
                 tui_complete_at(
                     self.service,
                     &self.roots.state,
                     &self.roots.config,
                     self.clock.now_utc(),
-                    "Source saved",
+                    &message,
+                    kind,
                 )
             }
             UiEffect::Remove { selector } => {
                 let held = self.service.show(&selector)?;
-                let name = remove_with_state_dir(self.service, &held, &self.roots.state)?;
-                self.platform
-                    .output
-                    .success(&format_text(locale, "Removed: {}", &[&name]));
+                // The status line reports the removal. The interface keeps its screen for this
+                // effect, so it writes nothing to the terminal.
+                remove_with_state_dir(self.service, &held, &self.roots.state)?;
                 tui_complete_at(
                     self.service,
                     &self.roots.state,
                     &self.roots.config,
                     self.clock.now_utc(),
                     "Entry removed",
+                    StatusKind::Success,
                 )
             }
             UiEffect::Submit {
@@ -792,8 +859,9 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
                     &values,
                     locale,
                     self.clock.now_utc(),
-                    self.platform.output,
-                    run_services.as_ref(),
+                    run_services
+                        .as_ref()
+                        .map(|services| (services, &self.run_exit)),
                     PreferenceHost {
                         home: self.roots.home.as_deref(),
                         platform: self.platform.environment.platform(),
@@ -808,7 +876,7 @@ impl<'a, C: RunClock> TuiHost<'a, C> {
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::{Cell, RefCell},
+        cell::RefCell,
         collections::{BTreeMap, VecDeque},
         ffi::OsString,
         io::{self, IsTerminal as _},
@@ -817,7 +885,7 @@ mod tests {
     };
 
     use skit_application::{
-        AgentScope, AgentTarget, CreateEntry, EntryPayload, LibraryService, SourcePermissions,
+        AgentTarget, CreateEntry, EntryPayload, LibraryService, SourcePermissions,
         form_state::{FormStateService, LastRunState},
         health::HealthIssueKind,
         library_detail::LibraryRunAge,
@@ -834,19 +902,16 @@ mod tests {
         DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, InjectedCommand,
         InjectedCommandOutput, InjectedCommandRunner, InjectedCommandUnavailable,
         InterpreterPlatform, JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateRunner,
-        JavaScriptSyntaxGateUnavailable, LaunchError, LaunchPlan, LaunchProcessOutput,
-        LaunchRunner, ProgramProbe, UvArchiveFetchError, UvArchiveFetcher, UvDownloadConsent,
+        JavaScriptSyntaxGateUnavailable, LaunchPlan, LaunchProcessOutput, LaunchRunner,
+        ProgramProbe, UvArchiveFetchError, UvArchiveFetcher, UvDownloadConsent,
     };
-    use skit_store::{
-        AgentSkillInstallPoint, FileConfigStore, FileFormStateStore, FilePromptSelectionStore,
-        FileStore,
-    };
+    use skit_store::{FileConfigStore, FileFormStateStore, FilePromptSelectionStore, FileStore};
     use skit_ui::{
         Action as UiAction, AddAction, AddRequestId, AddWorkflowState, DraftKind, Effect,
         FieldValue, FormPurpose, HealthView, HostRequest, KnownEntryKind, LibrarySurface,
         PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormView,
         RunnerEditorOwner, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
-        SourceSnapshot,
+        SourceSnapshot, StatusKind,
     };
     use tempfile::TempDir;
     use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
@@ -855,11 +920,22 @@ mod tests {
         CliError, expand_user_path_with_home, tui_add_source, user_home_from_environment,
     };
     use super::{
-        EditorLauncher, HostEnvironment, HostOutput, PreferenceFiles, ProductRoots,
-        SYSTEM_FILE_ALLOCATOR, SYSTEM_PREFERENCE_FILES, SystemEnvironment,
+        EditorLauncher, HostEnvironment, HostOutput, ProductRoots, SystemEnvironment,
         SystemTerminalCapability, TerminalCapability, TuiHost, TuiPlatform,
     };
+    // The preference-file recorder, its contract, the launch failure contract, and the clock that a
+    // run moves on are Unix-only.
+    #[cfg(unix)]
+    use super::{PreferenceFiles, SYSTEM_FILE_ALLOCATOR, SYSTEM_PREFERENCE_FILES};
     use crate::run::{RunClock, RunError, RunPorts};
+    #[cfg(unix)]
+    use skit_application::AgentScope;
+    #[cfg(unix)]
+    use skit_runtime::LaunchError;
+    #[cfg(unix)]
+    use skit_store::AgentSkillInstallPoint;
+    #[cfg(unix)]
+    use std::cell::Cell;
 
     /// Read the run form of one presented screen. Another action returns nothing.
     fn presented_run_form(action: UiAction) -> Option<Box<RunFormView>> {
@@ -892,6 +968,7 @@ mod tests {
                 surface: Some(surface),
                 rerunnable: Some(rerunnable),
                 message,
+                ..
             } => Some((surface, rerunnable, message)),
             _ => None,
         }
@@ -908,7 +985,7 @@ mod tests {
     /// Read one host status line. Another action returns nothing.
     fn status_message(action: UiAction) -> Option<String> {
         match action {
-            UiAction::SetStatus(message) => Some(message),
+            UiAction::SetStatus { message, .. } => Some(message),
             _ => None,
         }
     }
@@ -1002,6 +1079,14 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingOutput(RefCell<Vec<OutputEvent>>);
 
+    /// The header that frames one run from the interface, as version 0.4 prints it.
+    fn run_header(name: &str) -> OutputEvent {
+        OutputEvent::Stdout(format!(
+            "\n── {} ──\n",
+            format_text(Locale::En, "Run {}", &[&name])
+        ))
+    }
+
     impl HostOutput for RecordingOutput {
         fn success(&self, message: &str) {
             self.0
@@ -1034,6 +1119,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum PreferenceFileCall {
         File(PathBuf),
@@ -1044,12 +1130,14 @@ mod tests {
         },
     }
 
+    #[cfg(unix)]
     #[derive(Debug, Default)]
     struct RecordingPreferenceFiles {
         calls: RefCell<Vec<PreferenceFileCall>>,
         fail_point: Cell<Option<AgentSkillInstallPoint>>,
     }
 
+    #[cfg(unix)]
     impl PreferenceFiles for RecordingPreferenceFiles {
         fn is_file(&self, path: &Path) -> bool {
             self.calls
@@ -1104,6 +1192,7 @@ mod tests {
     #[derive(Debug)]
     enum RecordedLaunchOutcome {
         Exit(i32),
+        #[cfg(unix)]
         Failure(io::ErrorKind, &'static str),
     }
 
@@ -1145,6 +1234,7 @@ mod tests {
                     exit_code: Some(exit_code),
                     signal: None,
                 }),
+                #[cfg(unix)]
                 RecordedLaunchOutcome::Failure(kind, message) => Err(io::Error::new(kind, message)),
             }
         }
@@ -1419,15 +1509,19 @@ mod tests {
         }
     }
 
+    // The clock that a run moves on, and its launch runner, serve only a Unix test.
+    #[cfg(unix)]
     #[derive(Debug)]
     struct MutableClock(Cell<OffsetDateTime>);
 
+    #[cfg(unix)]
     impl RunClock for MutableClock {
         fn now_utc(&self) -> OffsetDateTime {
             self.0.get()
         }
     }
 
+    #[cfg(unix)]
     #[derive(Debug)]
     struct AdvancingLaunchRunner<'a> {
         inner: &'a RecordingLaunchRunner,
@@ -1435,6 +1529,7 @@ mod tests {
         completed_at: Cell<OffsetDateTime>,
     }
 
+    #[cfg(unix)]
     impl LaunchRunner for AdvancingLaunchRunner<'_> {
         fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
             let result = self.inner.run(plan);
@@ -1827,6 +1922,12 @@ mod tests {
         let first = host.serve(Effect::Reload).unwrap();
         let second = host.serve(Effect::Reload).unwrap();
         assert_eq!(first, second, "a fixed instant must stabilize the surface");
+        // A reload that the user asked for answers with a receipt in the session locale.
+        assert!(matches!(
+            &first,
+            UiAction::ReplaceSurface { message: Some(message), .. }
+                if message == "工具庫已重新載入（2 個項目）"
+        ));
 
         let opened = host
             .serve(Effect::Open {
@@ -1875,14 +1976,8 @@ mod tests {
             FormStateService::new(FileFormStateStore::new(&roots.state)).last_run(&removed.slug),
             LastRunState::default()
         );
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [OutputEvent::Success(format_text(
-                Locale::ZhTw,
-                "Removed: {}",
-                &[&"Removed"]
-            ))]
-        );
+        // The status line reports the removal. Nothing goes to the shell.
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
         for poison in ["poison-data", "poison-state", "poison-config"] {
             assert!(!sandbox.path().join(poison).exists());
         }
@@ -2321,7 +2416,7 @@ mod tests {
         let fault_target = fault_skills.join("skit/SKILL.md");
         assert!(matches!(
             failed,
-            skit_ui::Action::SetStatus(ref message)
+            skit_ui::Action::SetStatus { ref message, kind: StatusKind::Error }
                 if message.contains("replace")
                     && message.contains(&fault_target.display().to_string())
                     && message.contains("injected preference filesystem failure")
@@ -2416,7 +2511,11 @@ mod tests {
                 selector: stored.slug.as_str().to_owned(),
             })
             .unwrap(),
-            skit_ui::Action::Complete { .. }
+            skit_ui::Action::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Source saved"
         ));
         assert_eq!(
             std::fs::read(store.payload_path(&stored).unwrap()).unwrap(),
@@ -2433,21 +2532,12 @@ mod tests {
         assert!(calls[0].1.starts_with(roots.data.join("drafts")));
         assert_eq!(calls[1].1, std::fs::canonicalize(&external).unwrap());
         assert_eq!(calls[2].1, store.payload_path(&stored).unwrap());
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Stored"])),
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
-                    &[&"Stored"],
-                )),
-            ]
-        );
+        // The interface reports the edit in its status line. Nothing goes to the shell.
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
     }
 
     #[test]
-    fn reference_python_edit_routes_each_receipt_through_host_output() {
+    fn reference_python_edit_names_its_original_and_reports_in_the_status() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let source = sandbox.path().join("reference.py");
@@ -2488,31 +2578,29 @@ mod tests {
         )
         .unwrap();
 
-        host.serve(Effect::Edit {
-            selector: entry.slug.as_str().to_owned(),
-        })
-        .unwrap();
+        let edited = host
+            .serve(Effect::Edit {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
 
+        assert_eq!(completion_message(edited).as_deref(), Some("Source saved"));
+        // The line before the editor names the file that the editor changes. The report of
+        // `skit edit` stays out of the shell.
         assert_eq!(
             output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Referenced"])),
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
-                    &[&"Referenced"],
-                )),
-            ]
+            [OutputEvent::Detail(format_text(
+                Locale::En,
+                "Editing the original file (reference mode): {}",
+                &[&source.display()],
+            ))]
         );
     }
 
+    // The prompt notice of `skit edit` ("Detected but not yet managed") is a line for the shell.
+    // The interface reports a prompt edit in its status line on any terminal.
     #[test]
-    fn injected_terminal_capability_owns_the_reference_prompt_receipt() {
+    fn a_reference_prompt_edit_reports_in_the_status_on_any_terminal() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let source = sandbox.path().join("reference.md");
@@ -2555,22 +2643,25 @@ mod tests {
         )
         .unwrap();
 
-        host.serve(Effect::Edit {
-            selector: entry.slug.as_str().to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Prompt"])),
-            ]
-        );
+        let saved = host
+            .serve(Effect::Edit {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(
+            saved,
+            UiAction::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Source saved"
+        ));
+        let opened = [OutputEvent::Detail(format_text(
+            Locale::En,
+            "Editing the original file (reference mode): {}",
+            &[&source.display()],
+        ))];
+        assert_eq!(output.0.borrow().as_slice(), opened);
 
         let noninteractive_output = RecordingOutput::default();
         let noninteractive_host = TuiHost::new(
@@ -2587,31 +2678,27 @@ mod tests {
             ),
         )
         .unwrap();
-        noninteractive_host
+        // The editor writes the bytes that the first edit left, so this edit changes nothing.
+        let unchanged = noninteractive_host
             .serve(Effect::Edit {
                 selector: entry.slug.as_str().to_owned(),
             })
             .unwrap();
-        assert_eq!(
-            noninteractive_output.0.borrow().as_slice(),
-            [
-                OutputEvent::Detail(format_text(
-                    Locale::En,
-                    "Editing the original file (reference mode): {}",
-                    &[&source.display()],
-                )),
-                OutputEvent::Success(format_text(Locale::En, "Saved {}.", &[&"Prompt"])),
-                OutputEvent::Plain(format_text(
-                    Locale::En,
-                    "Detected but not yet managed: {} (use --add to manage them)",
-                    &[&"fresh"],
-                )),
-            ]
-        );
+        assert!(matches!(
+            unchanged,
+            UiAction::Complete {
+                ref message,
+                kind: StatusKind::Info,
+                ..
+            } if message == "No changes to Prompt."
+        ));
+        assert_eq!(noninteractive_output.0.borrow().as_slice(), opened);
     }
 
+    // The interface keeps its screen for a rename, so the receipt of `skit rename` would write
+    // over its cells. The status line reports the rename instead.
     #[test]
-    fn rename_submit_routes_its_receipt_through_host_output() {
+    fn rename_submit_reports_in_the_status_and_writes_nothing() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         let store = FileStore::new(&roots.data);
@@ -2635,17 +2722,14 @@ mod tests {
                 values: BTreeMap::from([("name".to_owned(), FieldValue::text("After"))]),
             })
             .unwrap(),
-            skit_ui::Action::Complete { .. }
+            skit_ui::Action::Complete {
+                ref message,
+                kind: StatusKind::Success,
+                ..
+            } if message == "Entry renamed"
         ));
-        let renamed = service.show("After").unwrap();
-        assert_eq!(
-            output.0.borrow().as_slice(),
-            [OutputEvent::Plain(format_text(
-                Locale::En,
-                "Renamed: {} ({})",
-                &[&renamed.meta.name, &renamed.slug],
-            ))]
-        );
+        assert_eq!(service.show("After").unwrap().slug, entry.slug);
+        assert!(output.0.borrow().is_empty(), "{:?}", output.0.borrow());
     }
 
     #[test]
@@ -2828,6 +2912,120 @@ mod tests {
         );
     }
 
+    // Ways this can fail: a run that ends the session hands 0 to the shell, a later run keeps the
+    // code of an earlier one, the failure line is missing from the terminal, or a run that
+    // succeeds leaves no result line, so only a failure says how the run ended.
+    #[test]
+    fn a_run_that_ends_the_session_hands_its_exit_code_to_the_shell() {
+        let sandbox = TempDir::new().unwrap();
+        let roots = roots(sandbox.path());
+        std::fs::create_dir_all(&roots.cwd).unwrap();
+        let store = FileStore::new(&roots.data);
+        let service = LibraryService::new(store);
+        let entry = add_command(&service, "Exit");
+        FileConfigStore::new(&roots.config)
+            .set("after_run", "exit")
+            .unwrap();
+        let clock = fixed_clock();
+        let environment = poison_environment(sandbox.path());
+        let probe = RecordingProbe {
+            programs: BTreeMap::from([("sh".to_owned(), PathBuf::from("/runtime/sh"))]),
+            ..RecordingProbe::default()
+        };
+        let launch = RecordingLaunchRunner::new([
+            RecordedLaunchOutcome::Exit(3),
+            RecordedLaunchOutcome::Exit(5),
+            RecordedLaunchOutcome::Exit(0),
+        ]);
+        let output = RecordingOutput::default();
+        let host = TuiHost::new(
+            &service,
+            roots.clone(),
+            Locale::En,
+            &clock,
+            TuiPlatform::test(
+                &environment,
+                &NONINTERACTIVE_TERMINAL,
+                &NOOP_EDITOR,
+                run_ports(&probe, &launch),
+                &output,
+            ),
+        )
+        .unwrap();
+        assert_eq!(host.session_exit_code(), 0);
+
+        let submitted = host
+            .serve(Effect::Submit {
+                purpose: FormPurpose::Run,
+                selector: Some(entry.slug.as_str().to_owned()),
+                values: BTreeMap::from([
+                    ("_skit_args".to_owned(), FieldValue::text("")),
+                    ("_skit_runner_picked".to_owned(), FieldValue::text("false")),
+                    ("_skit_dry_run".to_owned(), FieldValue::text("false")),
+                ]),
+            })
+            .unwrap();
+        assert_eq!(submitted, UiAction::Quit);
+        assert_eq!(host.session_exit_code(), 3);
+        assert_eq!(
+            output.0.borrow().first(),
+            Some(&run_header("Exit")),
+            "the run header comes first"
+        );
+        assert_eq!(
+            output.0.borrow().last(),
+            Some(&OutputEvent::Diagnostic(format_text(
+                Locale::En,
+                "✗ {} exited with code {}",
+                &[&"Exit", &3],
+            )))
+        );
+
+        let rerun = host
+            .serve(Effect::Rerun {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
+        assert_eq!(rerun, UiAction::Quit);
+        assert_eq!(host.session_exit_code(), 5);
+        assert_eq!(
+            output.0.borrow().last(),
+            Some(&OutputEvent::Diagnostic(format_text(
+                Locale::En,
+                "✗ {} exited with code {}",
+                &[&"Exit", &5],
+            )))
+        );
+
+        // A run that succeeds prints its one result line too, after the output of the run.
+        output.0.borrow_mut().clear();
+        let succeeded = host
+            .serve(Effect::Rerun {
+                selector: entry.slug.as_str().to_owned(),
+            })
+            .unwrap();
+        assert_eq!(succeeded, UiAction::Quit);
+        assert_eq!(host.session_exit_code(), 0);
+        let events = output.0.borrow();
+        let finished = OutputEvent::Success(format_text(Locale::En, "✓ {} finished", &[&"Exit"]));
+        assert_eq!(events.last(), Some(&finished));
+        assert_eq!(
+            events.iter().filter(|event| **event == finished).count(),
+            1,
+            "{events:?}"
+        );
+        // A success must not print the failure line. That line would carry exit code 0 here.
+        let failure_line = OutputEvent::Diagnostic(format_text(
+            Locale::En,
+            "✗ {} exited with code {}",
+            &[&"Exit", &0],
+        ));
+        assert!(!events.contains(&failure_line), "{events:?}");
+    }
+
+    // Unix only: the test host runs the command through `sh`, and the test types the extra
+    // arguments with Unix quotes. A Windows build splits the extra arguments with Windows rules,
+    // where `'` is an ordinary character (`split_editable_arguments`).
     #[cfg(unix)]
     #[test]
     fn command_submit_and_rerun_use_the_exact_plan_and_persisted_invocation() {
@@ -2941,11 +3139,15 @@ mod tests {
         );
         assert_eq!(
             output.0.borrow().as_slice(),
-            [OutputEvent::Stdout(format_text(
-                Locale::En,
-                "→ {}",
-                &[&expected.display],
-            ))]
+            [
+                run_header("Command"),
+                OutputEvent::Stdout(format_text(Locale::En, "→ {}", &[&expected.display])),
+                OutputEvent::Diagnostic(format_text(
+                    Locale::En,
+                    "✗ {} exited with code {}",
+                    &[&"Command", &7],
+                )),
+            ]
         );
         let saved = FormStateService::new(FileFormStateStore::new(&roots.state)).load(&entry.slug);
         assert_eq!(
@@ -2998,12 +3200,14 @@ mod tests {
         assert_eq!(
             output.0.borrow().as_slice(),
             [
+                run_header("Command"),
                 OutputEvent::Diagnostic(format_text(
                     Locale::En,
                     "Reusing your last arguments: {}",
                     &[&"--one two words"],
                 )),
                 OutputEvent::Stdout(format_text(Locale::En, "→ {}", &[&rerun_expected.display],)),
+                OutputEvent::Success(format_text(Locale::En, "✓ {} finished", &[&"Command"])),
             ]
         );
         let rerun = FormStateService::new(FileFormStateStore::new(&roots.state)).load(&entry.slug);
@@ -3091,11 +3295,11 @@ mod tests {
         );
         assert_eq!(
             output.0.borrow().as_slice(),
-            [OutputEvent::Stdout(format_text(
-                Locale::En,
-                "→ {}",
-                &[&expected.display],
-            ))]
+            [
+                run_header("Prompt"),
+                OutputEvent::Stdout(format_text(Locale::En, "→ {}", &[&expected.display])),
+                OutputEvent::Success(format_text(Locale::En, "✓ {} finished", &[&"Prompt"])),
+            ]
         );
         assert_eq!(
             PromptSelectionService::new(FilePromptSelectionStore::new(&roots.state)).last_runner(),
@@ -3384,8 +3588,10 @@ mod tests {
             FormStateService::new(FileFormStateStore::new(&roots.state)).last_run(&entry.slug),
             LastRunState::default()
         );
-        assert_eq!(output.0.borrow().len(), 1);
-        assert!(matches!(output.0.borrow()[0], OutputEvent::Stdout(_)));
+        // The header goes out with the command line; a launch that fails prints no exit code.
+        assert_eq!(output.0.borrow().len(), 2);
+        assert_eq!(output.0.borrow()[0], run_header("Failure"));
+        assert!(matches!(output.0.borrow()[1], OutputEvent::Stdout(_)));
     }
 
     #[cfg(unix)]
@@ -3581,14 +3787,21 @@ mod tests {
                 values: base_values(Some("missing")),
             })
             .unwrap();
+        assert!(matches!(
+            action,
+            UiAction::Complete {
+                kind: StatusKind::Error,
+                ..
+            }
+        ));
         let message = completion_message(action)
             .expect("a selected missing runner must return a completion error status");
         assert_eq!(
             message,
             format_text(
                 Locale::En,
-                "Error: {}",
-                &[&"required program was not found: missing"],
+                "{} is not on PATH. Install it, or choose another agent.",
+                &[&"missing"],
             )
         );
         assert_eq!(
@@ -3680,11 +3893,14 @@ mod tests {
         );
         assert_eq!(
             output.0.borrow().as_slice(),
-            [OutputEvent::Diagnostic(format_text(
-                Locale::En,
-                "First run — downloading uv {}…",
-                &[&skit_runtime::UV_VERSION],
-            ))]
+            [
+                run_header("Python offline"),
+                OutputEvent::Diagnostic(format_text(
+                    Locale::En,
+                    "First run — downloading uv {}…",
+                    &[&skit_runtime::UV_VERSION],
+                )),
+            ]
         );
     }
 
@@ -3777,11 +3993,17 @@ mod tests {
         assert_eq!(
             output.0.borrow().as_slice(),
             [
+                run_header("JavaScript success"),
                 OutputEvent::Diagnostic(
                     skit_runtime::javascript_dependency_install_announcement("npm")
                         .localize(Locale::En),
                 ),
                 OutputEvent::Stdout(format_text(Locale::En, "→ {}", &[&success_display],)),
+                OutputEvent::Success(format_text(
+                    Locale::En,
+                    "✓ {} finished",
+                    &[&"JavaScript success"],
+                )),
             ]
         );
         assert_eq!(launch.plans.borrow().len(), 1);
@@ -3836,10 +4058,13 @@ mod tests {
         ));
         assert_eq!(
             failed_output.0.borrow().as_slice(),
-            [OutputEvent::Diagnostic(
-                skit_runtime::javascript_dependency_install_announcement("npm")
-                    .localize(Locale::En),
-            )]
+            [
+                run_header("JavaScript failure"),
+                OutputEvent::Diagnostic(
+                    skit_runtime::javascript_dependency_install_announcement("npm")
+                        .localize(Locale::En),
+                ),
+            ]
         );
         assert!(failed_launch.plans.borrow().is_empty());
         assert_eq!(

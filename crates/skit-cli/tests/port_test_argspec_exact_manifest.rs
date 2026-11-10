@@ -1,7 +1,7 @@
 //! Exact-name completeness guard for Python v0.4 `tests/test_argspec_mut.py`.
 //!
 //! This file is not behavioral coverage. The three executable tests remain independently named so
-//! broader argparse/Click/Typer suites cannot silently substitute for this mutation contract.
+//! broader argparse/Click/Typer suites cannot silently substitute for this exact contract.
 
 use std::{fs, path::Path};
 
@@ -12,14 +12,13 @@ const EXPECTED: &[&str] = &[
 ];
 
 #[test]
-fn argspec_axis_mutation_oracles_match_the_frozen_python_module_exactly() {
+fn argspec_axis_oracles_match_the_frozen_python_module_exactly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap();
     let source =
-        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_argspec_mut_exact.rs"))
-            .unwrap();
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_argspec_exact.rs")).unwrap();
     let file = syn::parse_file(&source).unwrap();
     let names = file
         .items

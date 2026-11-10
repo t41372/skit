@@ -826,6 +826,16 @@ impl RunFormView {
         self.focused
     }
 
+    /// Report whether choosing `value` at `index` applies a preset to the parameter fields.
+    ///
+    /// The empty option of the preset picker restores the last values, so it counts too.
+    pub(crate) fn is_preset_option(&self, index: usize, value: &str) -> bool {
+        self.fields.get(index).is_some_and(|field| {
+            matches!(field.role, RunFieldRole::Preset)
+                && matches!(&field.control, FormControl::Choice(control) if control.options.iter().any(|option| option == value))
+        })
+    }
+
     pub(crate) fn select_option(&mut self, index: usize, value: &str) {
         let is_preset = self
             .fields

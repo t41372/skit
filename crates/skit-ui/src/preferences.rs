@@ -122,7 +122,7 @@ pub enum PreferencesControlId {
     Accent,
     /// Editor command input.
     Editor,
-    /// Interactive form choice.
+    /// Launch menu choice.
     InteractiveForm,
     /// Post-run choice.
     AfterRun,
@@ -514,7 +514,10 @@ impl PreferencesView {
                 "",
                 choice_control(
                     vec![
-                        option("tui", "Mini form — opens in place, fully clickable"),
+                        option(
+                            "tui",
+                            "Inline launch menu — opens in place, fully clickable",
+                        ),
                         option(
                             "plain",
                             "Line-by-line prompts — plainest, best over slow terminals",
@@ -725,7 +728,7 @@ impl PreferencesView {
             ),
             section(
                 PreferencesSectionId::InteractiveForm,
-                "Interactive form",
+                "Launch menu",
                 "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel.",
                 Vec::new(),
                 controls_for(&controls, &[PreferencesControlId::InteractiveForm]),
@@ -1568,7 +1571,7 @@ mod tests {
             PreferencesControlKind::Choice(choice)
                 if choice.options.iter().map(|option| (option.value.as_str(), option.label.as_str())).collect::<Vec<_>>()
                     == [
-                        ("tui", "Mini form — opens in place, fully clickable"),
+                        ("tui", "Inline launch menu — opens in place, fully clickable"),
                         ("plain", "Line-by-line prompts — plainest, best over slow terminals"),
                     ]
         ));

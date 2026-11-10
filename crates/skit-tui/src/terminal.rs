@@ -1,16 +1,19 @@
 //! Crossterm lifecycle and blocking event loop.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
     CrosstermBackend,
     crossterm::{
         event::{
-            self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+            self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+            EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, KeyCode, KeyEvent,
+            KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
         },
         execute,
         style::{Colored, force_color_output},
@@ -21,10 +24,14 @@ use skit_application::path_completion::PathCompletionProvider;
 use skit_domain::Slug;
 use skit_i18n::{Locale, Localize, Message, detect_locale};
 use skit_ui::{
-    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, SubmittedValues,
+    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, StatusKind,
+    SubmittedValues,
 };
 use thiserror::Error;
 
+use crate::editor::{EditCommand, edit_command};
+use crate::status_clock::StatusClock;
+use crate::system_clipboard::SystemClipboard;
 use crate::{Appearance, EventHandling, TuiSession, ViewGeometry, render_with_session};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,10 +46,6 @@ pub(crate) const fn terminal_event_wait(path_completion_pending: bool) -> Termin
     } else {
         TerminalEventWait::Blocking
     }
-}
-
-fn read_terminal_event(wait: TerminalEventWait) -> io::Result<Option<event::Event>> {
-    read_terminal_event_with(wait, event::read, event::poll)
 }
 
 /// The refusal a session gets when its standard streams are not a terminal, if any.
@@ -79,7 +82,16 @@ fn claim_terminal() -> io::Result<()> {
     claim_terminal_with(enable_raw_mode, enter, restore_terminal)
 }
 
-/// Enter the screen modes of a session: the alternate screen, mouse capture, and focus reporting.
+/// Whether skit asks the terminal for bracketed paste.
+///
+/// Bracketed paste makes a paste one event, so a line break in it can never act as Enter and a Tab
+/// in it can never move the focus. crossterm on Windows reads console input records and reports no
+/// paste event, and the legacy console refuses the mode, so Windows does not ask for it: there a
+/// terminal types a paste as keys, and [`TerminalInput`] turns those keys back into a paste.
+const BRACKETED_PASTE: bool = cfg!(not(windows));
+
+/// Enter the screen modes of a session: the alternate screen, mouse capture, focus reporting, and
+/// bracketed paste where the platform has it ([`BRACKETED_PASTE`]).
 ///
 /// The terminal claim and the resume after a host effect share this set, so the two paths always
 /// enter the same modes.
@@ -89,22 +101,233 @@ fn enter_screen_modes(out: &mut impl Write) -> io::Result<()> {
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableFocusChange
-    )
+    )?;
+    if BRACKETED_PASTE {
+        execute!(out, EnableBracketedPaste)?;
+    }
+    Ok(())
 }
 
 /// Leave every screen mode of a session.
 ///
-/// The suspend before a host effect and the final restore share this set. Mouse capture and focus
-/// reporting are not part of the alternate screen. After `LeaveAlternateScreen` alone, the terminal
-/// keeps them on, and a child process on the same terminal then receives mouse and focus reports as
-/// input.
+/// The suspend before a run or an editor and the final restore share this set. Mouse capture, focus
+/// reporting, and bracketed paste are not part of the alternate screen. After
+/// `LeaveAlternateScreen` alone, the terminal keeps them on, and a child process on the same
+/// terminal then receives mouse and focus reports and paste markers as input.
 fn leave_screen_modes(out: &mut impl Write) -> io::Result<()> {
     execute!(
         out,
         LeaveAlternateScreen,
         DisableMouseCapture,
         DisableFocusChange
+    )?;
+    if BRACKETED_PASTE {
+        execute!(out, DisableBracketedPaste)?;
+    }
+    Ok(())
+}
+
+/// The longest pause between two keys of one burst.
+///
+/// A terminal with no bracketed paste types a paste by writing all of its keys at once, so they
+/// follow each other with no pause. A person leaves far more time than this between two keys.
+const BURST_GAP: Duration = Duration::from_millis(5);
+
+/// The input of one session.
+///
+/// It gives the loop one crossterm event at a time. On a terminal with no bracketed paste, it
+/// reads the keys that arrive together as one burst, and it gives a burst that is a paste to the
+/// loop as one paste event, as bracketed paste does ([`fold_paste_burst`]).
+#[derive(Debug)]
+struct TerminalInput {
+    /// Turn a burst of typed keys back into the paste that the terminal typed.
+    fold_pastes: bool,
+    /// The events of the last burst that the loop has not taken yet.
+    queued: VecDeque<event::Event>,
+}
+
+impl TerminalInput {
+    const fn new(fold_pastes: bool) -> Self {
+        Self {
+            fold_pastes,
+            queued: VecDeque::new(),
+        }
+    }
+
+    /// Take the next event, or report that the poll window closed with nothing to take.
+    fn next(&mut self, wait: TerminalEventWait) -> io::Result<Option<event::Event>> {
+        self.next_with(wait, event::read, event::poll)
+    }
+
+    /// Take the next event with the two terminal calls given as parameters.
+    ///
+    /// A test can then drive every burst without a live terminal: `poll` answers whether the next
+    /// event arrives within its pause.
+    fn next_with<R, P>(
+        &mut self,
+        wait: TerminalEventWait,
+        mut read: R,
+        mut poll: P,
+    ) -> io::Result<Option<event::Event>>
+    where
+        R: FnMut() -> io::Result<event::Event>,
+        P: FnMut(Duration) -> io::Result<bool>,
+    {
+        if let Some(event) = self.queued.pop_front() {
+            return Ok(Some(event));
+        }
+        let Some(first) = read_terminal_event_with(wait, &mut read, &mut poll)? else {
+            return Ok(None);
+        };
+        if !self.fold_pastes || !is_typed_text(&first) {
+            return Ok(Some(first));
+        }
+        let mut burst = vec![first];
+        let mut after = None;
+        while poll(BURST_GAP)? {
+            let event = read()?;
+            if is_typed_text(&event) || is_key_release(&event) {
+                burst.push(event);
+            } else {
+                after = Some(event);
+                break;
+            }
+        }
+        self.queued.extend(fold_paste_burst(burst));
+        self.queued.extend(after);
+        Ok(self.queued.pop_front())
+    }
+}
+
+/// Return the status that says why the line break of `event` did not act as Enter.
+///
+/// With no bracketed paste, [`TerminalInput`] puts each paste event together from typed keys, and
+/// the line break of such a paste never acts as Enter. A tool can also type text and Enter that
+/// fast, for example a text expander or the auto-type of a password manager. Without this
+/// warning, that Enter does nothing, and nothing on the screen tells why. The warning stays until
+/// the next key, which then acts as usual. A box that keeps more lines takes the line break as
+/// text, so it gets no warning.
+fn guessed_paste_warning(
+    input: &TerminalInput,
+    event: &event::Event,
+    session: &TuiSession,
+    state: &LibraryState,
+    locale: Locale,
+) -> Option<Action> {
+    let event::Event::Paste(text) = event else {
+        return None;
+    };
+    (input.fold_pastes && text.contains('\n') && session.focused_box_keeps_one_line(state)).then(
+        || Action::SetStatus {
+            kind: StatusKind::Warning,
+            message: Message::new(
+                "skit took this input as a paste, so its line break did not act as Enter.",
+            )
+            .localize(locale),
+        },
     )
+}
+
+/// Turn the keys of one burst into the paste event that bracketed paste reports.
+///
+/// A burst is a paste when it holds a typed character and also a line break or a Tab. A person
+/// cannot type both in one burst, and a held key repeats only itself. The paste then goes to the
+/// focused box with the paste rules of that box: a single-line box keeps the first line, and a
+/// paste never runs the launch menu or moves the focus. Every other burst stays as its keys, so a
+/// typed key and a held Enter or Tab work as before.
+fn fold_paste_burst(burst: Vec<event::Event>) -> Vec<event::Event> {
+    let mut text = String::new();
+    let mut has_character = false;
+    let mut has_separator = false;
+    for event in &burst {
+        if let event::Event::Key(key) = event
+            && key.kind != KeyEventKind::Release
+            && let Some(character) = pasted_character(key)
+        {
+            if matches!(character, '\n' | '\t') {
+                has_separator = true;
+            } else {
+                has_character = true;
+            }
+            text.push(character);
+        }
+    }
+    if has_character && has_separator {
+        vec![event::Event::Paste(text)]
+    } else {
+        burst
+    }
+}
+
+/// The character that one typed key adds to a paste: a character, a line break, or a Tab.
+///
+/// A pseudo-console types a line feed as Ctrl+Enter, so Enter with Ctrl is a line break too.
+fn pasted_character(key: &KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => Some('\n'),
+        KeyCode::Tab if key.modifiers.is_empty() => Some('\t'),
+        _ => match edit_command(key, false) {
+            Some(EditCommand::Insert(character)) => Some(character),
+            _ => None,
+        },
+    }
+}
+
+/// Report whether `event` is a key press that types text, a line break, or a Tab.
+fn is_typed_text(event: &event::Event) -> bool {
+    matches!(event, event::Event::Key(key)
+        if key.kind != KeyEventKind::Release && pasted_character(key).is_some())
+}
+
+/// Report whether `event` is a key release. crossterm on Windows reports one for every key.
+fn is_key_release(event: &event::Event) -> bool {
+    matches!(event, event::Event::Key(key) if key.kind == KeyEventKind::Release)
+}
+
+/// The longest time between the two presses of a double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// The time of the last primary press, so that a slow second press starts a new double click.
+///
+/// The session counts presses with no clock, so a walker gets the same answer every time. The
+/// live loop adds the time limit here.
+#[derive(Debug, Default)]
+struct PressClock {
+    last: Option<Instant>,
+}
+
+impl PressClock {
+    /// Report whether `event` is a primary press that comes too late to be a second press.
+    fn starts_new_sequence(&mut self, event: &event::Event, now: Instant) -> bool {
+        let event::Event::Mouse(mouse) = event else {
+            return false;
+        };
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return false;
+        }
+        let late = self
+            .last
+            .is_none_or(|last| now.saturating_duration_since(last) > DOUBLE_CLICK);
+        self.last = Some(now);
+        late
+    }
+}
+
+/// Send the last copy to the system clipboard, when there is a new one.
+///
+/// The copy goes to the terminal as OSC 52, and in a local session also to the clipboard program
+/// of the platform ([`SystemClipboard`]), which never makes the loop wait.
+fn export_clipboard(
+    session: &mut TuiSession,
+    out: &mut impl Write,
+    system: &SystemClipboard,
+) -> io::Result<()> {
+    if let Some(text) = session.take_clipboard_export() {
+        out.write_all(crate::editor::osc52_copy(&text).as_bytes())?;
+        out.flush()?;
+        system.copy(&text);
+    }
+    Ok(())
 }
 
 /// Restore both terminal modes after a completed session or a partial claim.
@@ -177,6 +400,10 @@ fn dispatch_event(
     geometry: &ViewGeometry,
 ) -> TerminalDispatch {
     let resized = matches!(event, event::Event::Resize(_, _));
+    // A hover, and a press that starts or ends, change only the look of a chip. The session
+    // ignores an event that changes only the look, so a changed look asks for a frame here.
+    let look = session.pointer_look(state);
+    session.track_pointer(&event);
     match session.handle_event(event, state, geometry) {
         EventHandling::Action(action) => TerminalDispatch {
             action: Some(action),
@@ -188,7 +415,7 @@ fn dispatch_event(
         },
         EventHandling::Ignored => TerminalDispatch {
             action: None,
-            redraw: resized,
+            redraw: resized || session.pointer_look(state) != look,
         },
     }
 }
@@ -249,7 +476,7 @@ where
     )
 }
 
-/// Run the terminal frontend with a check that occurs before terminal suspension.
+/// Run the terminal frontend with a check that occurs before the host serves an effect.
 ///
 /// The check must be local and read-only. A refusal stays on the active screen as a localized
 /// status. The host does not receive the refused effect.
@@ -365,12 +592,14 @@ where
         }
         let effect = state.update(action);
         if !matches!(effect, Effect::None) {
+            // The session has not claimed the terminal yet, so it has nothing to give away.
             let (quit, outcome) = drain_host_effects_observed(
                 &mut state,
                 &mut host,
                 effect,
                 &mut locale,
                 &mut observe,
+                &mut |_| Ok(()),
             )?;
             if quit || outcome.is_some() {
                 return Ok(outcome);
@@ -405,20 +634,35 @@ where
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
+    let mut status = StatusClock::default();
+    let mut presses = PressClock::default();
+    let mut input = TerminalInput::new(!BRACKETED_PASTE);
+    let system_clipboard = SystemClipboard::for_this_session();
     let outcome = loop {
         redraw = request_redraw(redraw, session.refresh_background());
+        redraw = request_redraw(redraw, tick_status(&mut status, &mut state));
         if redraw {
             terminal.draw(|frame| {
                 geometry = render_with_session(frame, &state, locale, &mut session);
             })?;
             redraw = false;
         }
-        let Some(event) =
-            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
-        else {
+        let wait = status.event_wait(
+            terminal_event_wait(
+                session.has_pending_path_completion() || session.has_timed_notice(),
+            ),
+            Instant::now(),
+        );
+        let Some(event) = input.next(wait)? else {
             continue;
         };
+        redraw = request_redraw(redraw, status.acknowledge(&mut state, &event));
+        if presses.starts_new_sequence(&event, Instant::now()) {
+            session.end_press_sequence();
+        }
+        let paste_warning = guessed_paste_warning(&input, &event, &session, &state, locale);
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
+        export_clipboard(&mut session, &mut io::stdout(), &system_clipboard)?;
         redraw = request_redraw(redraw, dispatched.redraw);
         if let Some(action) = dispatched.action {
             let step = advance_hosted_action(
@@ -453,6 +697,10 @@ where
                 break outcome;
             }
         }
+        if let Some(warning) = paste_warning {
+            let _ = state.update(warning);
+            redraw = true;
+        }
     };
     terminal.show_cursor()?;
     Ok(outcome)
@@ -474,6 +722,12 @@ enum HostedActionStep<O> {
 ///
 /// The transition callback is the terminal boundary. Production leaves and re-enters every screen
 /// mode there. Tests use the same path with a recorded fake lifecycle.
+///
+/// The session leaves its screen only for an effect that needs the terminal
+/// ([`Effect::needs_the_terminal`]): a run or an editor. Every other effect is served on the
+/// screen, as version 0.4 does. Leaving the screen shows the shell, and the return waits until the
+/// terminal reports the cursor position, which takes one round trip over SSH. A preset save, a
+/// reload, or a key in a pattern field must not make the screen flash.
 fn advance_hosted_action<F, P, E, O>(
     state: &mut LibraryState,
     action: Action,
@@ -503,9 +757,23 @@ where
             if !accept_host_effect(state, &effect, preflight, *locale) {
                 return Ok(HostedActionStep::Continue);
             }
-            transition(HostedTerminalTransition::Suspend)?;
-            let (quit, host_outcome) =
-                drain_host_effects_observed(state, host, effect, locale, observe)?;
+            // A chained effect can need the terminal after one that does not, so the session
+            // leaves its screen just before the first such effect, and at most once.
+            let mut suspended = false;
+            let (quit, host_outcome) = drain_host_effects_observed(
+                state,
+                host,
+                effect,
+                locale,
+                observe,
+                &mut |effect: &Effect| {
+                    if !suspended && effect.needs_the_terminal() {
+                        transition(HostedTerminalTransition::Suspend)?;
+                        suspended = true;
+                    }
+                    Ok(())
+                },
+            )?;
             if outcome.is_none() {
                 outcome = host_outcome;
             }
@@ -515,7 +783,9 @@ where
             if outcome.is_some() {
                 return Ok(HostedActionStep::Finish(outcome));
             }
-            transition(HostedTerminalTransition::Resume)?;
+            if suspended {
+                transition(HostedTerminalTransition::Resume)?;
+            }
             Ok(HostedActionStep::Continue)
         }
     }
@@ -534,10 +804,7 @@ where
     match preflight(effect) {
         Ok(()) => true,
         Err(error) => {
-            let status = Message::new("Error: {}")
-                .nested(error.message())
-                .localize(locale);
-            state.update(Action::SetStatus(status));
+            state.update(preflight_refusal_status(&error, locale));
             false
         }
     }
@@ -557,8 +824,40 @@ fn add_workflow_outcome(action: &Action) -> Option<AddWorkflowOutcome> {
     }
 }
 
-fn localized_status(error: &impl Localize, locale: Locale) -> String {
-    error.message().localize(locale)
+/// Return the status action that the hosted terminal shows when a preflight check refuses an
+/// effect.
+///
+/// The terminal shows it on its screen, and the effect never reaches the host. A walker
+/// host uses the same action, so a walk answers the refusal as the product answers it.
+#[must_use]
+pub fn preflight_refusal_status(error: &impl Localize, locale: Locale) -> Action {
+    Action::SetStatus {
+        kind: StatusKind::Error,
+        message: Message::new("Error: {}")
+            .nested(error.message())
+            .localize(locale),
+    }
+}
+
+/// Return the status action that the hosted terminal shows when the host fails one effect.
+///
+/// The terminal keeps the session and stops the effect chain. A walker host uses the same
+/// action, so a walk survives every host failure that the product survives.
+#[must_use]
+pub fn host_failure_status(error: &impl Localize, locale: Locale) -> Action {
+    Action::SetStatus {
+        kind: StatusKind::Error,
+        message: error.message().localize(locale),
+    }
+}
+
+/// Start the time of a status that the last change showed, and clear one whose time ended.
+///
+/// Return whether the state changed, so the loop draws again.
+fn tick_status(status: &mut StatusClock, state: &mut LibraryState) -> bool {
+    let now = Instant::now();
+    status.observe(state, now);
+    status.expire(state, now)
 }
 
 fn action_locale(action: &Action) -> Option<Locale> {
@@ -582,16 +881,21 @@ where
     E: Localize,
 {
     let (quit, _): (bool, Option<()>) =
-        drain_host_effects_observed(state, host, effect, locale, &mut |_| None)?;
+        drain_host_effects_observed(state, host, effect, locale, &mut |_| None, &mut |_| Ok(()))?;
     Ok(quit)
 }
 
+/// Serve one effect and every effect that its answer starts, in order.
+///
+/// `before_host` sees each effect just before the host serves it, so the caller can give the
+/// terminal away first.
 fn drain_host_effects_observed<F, E, O>(
     state: &mut LibraryState,
     host: &mut F,
     mut effect: Effect,
     locale: &mut Locale,
     observe: &mut impl FnMut(&Action) -> Option<O>,
+    before_host: &mut impl FnMut(&Effect) -> io::Result<()>,
 ) -> Result<(bool, Option<O>), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -602,21 +906,24 @@ where
         match effect {
             Effect::None => return Ok((false, outcome)),
             Effect::Quit => return Ok((true, outcome)),
-            current => match host(current) {
-                Ok(action) => {
-                    if outcome.is_none() {
-                        outcome = observe(&action);
+            current => {
+                before_host(&current)?;
+                match host(current) {
+                    Ok(action) => {
+                        if outcome.is_none() {
+                            outcome = observe(&action);
+                        }
+                        if let Some(next_locale) = action_locale(&action) {
+                            *locale = next_locale;
+                        }
+                        effect = state.update(action);
                     }
-                    if let Some(next_locale) = action_locale(&action) {
-                        *locale = next_locale;
+                    Err(error) => {
+                        state.update(host_failure_status(&error, *locale));
+                        return Ok((false, outcome));
                     }
-                    effect = state.update(action);
                 }
-                Err(error) => {
-                    state.update(Action::SetStatus(localized_status(&error, *locale)));
-                    return Ok((false, outcome));
-                }
-            },
+            }
         }
     }
     Err(TuiError::EffectCycle)
@@ -713,20 +1020,35 @@ where
 
     let mut geometry = ViewGeometry::default();
     let mut redraw = true;
+    let mut status = StatusClock::default();
+    let mut presses = PressClock::default();
+    let mut input = TerminalInput::new(!BRACKETED_PASTE);
+    let system_clipboard = SystemClipboard::for_this_session();
     let values = loop {
         redraw = request_redraw(redraw, session.refresh_background());
+        redraw = request_redraw(redraw, tick_status(&mut status, &mut state));
         if redraw {
             terminal.draw(|frame| {
                 geometry = render_with_session(frame, &state, locale, &mut session);
             })?;
             redraw = false;
         }
-        let Some(event) =
-            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
-        else {
+        let wait = status.event_wait(
+            terminal_event_wait(
+                session.has_pending_path_completion() || session.has_timed_notice(),
+            ),
+            Instant::now(),
+        );
+        let Some(event) = input.next(wait)? else {
             continue;
         };
+        redraw = request_redraw(redraw, status.acknowledge(&mut state, &event));
+        if presses.starts_new_sequence(&event, Instant::now()) {
+            session.end_press_sequence();
+        }
+        let paste_warning = guessed_paste_warning(&input, &event, &session, &state, locale);
         let dispatched = dispatch_event(&mut session, event, &state, &geometry);
+        export_clipboard(&mut session, &mut io::stdout(), &system_clipboard)?;
         redraw = request_redraw(redraw, dispatched.redraw);
         if let Some(action) = dispatched.action {
             match collect_action_step(&mut state, action) {
@@ -739,6 +1061,10 @@ where
                     }
                 }
             }
+        }
+        if let Some(warning) = paste_warning {
+            let _ = state.update(warning);
+            redraw = true;
         }
     };
     terminal.show_cursor()?;
@@ -793,7 +1119,7 @@ where
                     effect = state.update(action);
                 }
                 Err(error) => {
-                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    state.update(host_failure_status(&error, *locale));
                     return Ok(None);
                 }
             },
@@ -973,6 +1299,8 @@ mod tests {
                 "the entered modes miss {expected:?}: {entered:?}"
             );
         }
+        // Windows has no bracketed paste, so the mode is there only where the platform has it.
+        assert_eq!(entered.contains("\x1b[?2004h"), BRACKETED_PASTE);
 
         let mut left = Vec::new();
         leave_screen_modes(&mut left).unwrap();
@@ -983,6 +1311,390 @@ mod tests {
                 "the left modes miss {expected:?}: {left:?}"
             );
         }
+        assert_eq!(left.contains("\x1b[?2004l"), BRACKETED_PASTE);
+    }
+
+    /// A terminal for [`TerminalInput`] that gives a script of events.
+    ///
+    /// Each event arrives after its pause. `poll` answers yes when the next event arrives within
+    /// the pause that it gets, and `read` takes the next event. A read past the end of the script
+    /// is an error, so a test that reads too far fails.
+    struct ScriptedInput {
+        events: std::cell::RefCell<VecDeque<(Duration, event::Event)>>,
+        polls: Cell<u32>,
+        poll_fails: Cell<bool>,
+    }
+
+    impl ScriptedInput {
+        fn new(events: impl IntoIterator<Item = (Duration, event::Event)>) -> Self {
+            Self {
+                events: std::cell::RefCell::new(events.into_iter().collect()),
+                polls: Cell::new(0),
+                poll_fails: Cell::new(false),
+            }
+        }
+
+        fn read(&self) -> io::Result<event::Event> {
+            self.events
+                .borrow_mut()
+                .pop_front()
+                .map(|(_, event)| event)
+                .ok_or_else(|| io::Error::other("the script has no event left"))
+        }
+
+        fn poll(&self, pause: Duration) -> io::Result<bool> {
+            self.polls.set(self.polls.get() + 1);
+            if self.poll_fails.get() {
+                return Err(io::Error::other("poll failed"));
+            }
+            Ok(self
+                .events
+                .borrow()
+                .front()
+                .is_some_and(|(after, _)| *after <= pause))
+        }
+
+        fn next_in(
+            &self,
+            input: &mut TerminalInput,
+            wait: TerminalEventWait,
+        ) -> io::Result<Option<event::Event>> {
+            input.next_with(wait, || self.read(), |pause| self.poll(pause))
+        }
+
+        /// Take the next event with the blocking wait of a session that has no background work.
+        fn next(&self, input: &mut TerminalInput) -> event::Event {
+            self.next_in(input, TerminalEventWait::Blocking)
+                .unwrap()
+                .expect("a blocking wait always gives an event")
+        }
+
+        fn is_done(&self) -> bool {
+            self.events.borrow().is_empty()
+        }
+    }
+
+    fn key_press(code: KeyCode, modifiers: KeyModifiers) -> event::Event {
+        event::Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn key_release(code: KeyCode, modifiers: KeyModifiers) -> event::Event {
+        event::Event::Key(KeyEvent::new_with_kind(
+            code,
+            modifiers,
+            KeyEventKind::Release,
+        ))
+    }
+
+    /// The events that crossterm reads from a Windows console when a terminal types `text` at
+    /// once: a press and a release for each key, with no pause between them.
+    fn typed_at_once(text: &str) -> Vec<(Duration, event::Event)> {
+        text.chars()
+            .flat_map(|character| {
+                let (code, modifiers) = match character {
+                    '\r' => (KeyCode::Enter, KeyModifiers::NONE),
+                    '\t' => (KeyCode::Tab, KeyModifiers::NONE),
+                    character if character.is_uppercase() => {
+                        (KeyCode::Char(character), KeyModifiers::SHIFT)
+                    }
+                    character => (KeyCode::Char(character), KeyModifiers::NONE),
+                };
+                [
+                    (Duration::ZERO, key_press(code, modifiers)),
+                    (Duration::ZERO, key_release(code, modifiers)),
+                ]
+            })
+            .collect()
+    }
+
+    // Ways this can fail: the line break of a paste reaches the screen as Enter, or its Tab as the
+    // focus key; the paste loses a character, keeps a key release, or keeps an event for later.
+    #[test]
+    fn keys_that_arrive_together_with_a_line_break_are_one_paste() {
+        let script = ScriptedInput::new(typed_at_once("Bob\rCarol\tX"));
+        let mut input = TerminalInput::new(true);
+        assert_eq!(
+            script.next(&mut input),
+            event::Event::Paste("Bob\nCarol\tX".to_owned())
+        );
+        assert!(script.is_done() && input.queued.is_empty());
+
+        // A line break at the end of a paste is part of the paste too.
+        let trailing = ScriptedInput::new(typed_at_once("Bob\r"));
+        let mut input = TerminalInput::new(true);
+        assert_eq!(
+            trailing.next(&mut input),
+            event::Event::Paste("Bob\n".to_owned())
+        );
+    }
+
+    // Ways this can fail: the folded paste still runs the launch menu, moves the focus to the next
+    // box, or keeps its second line in a single-line box.
+    #[test]
+    fn a_paste_typed_as_keys_fills_the_launch_menu_box_and_never_runs() {
+        let form = RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[
+                skit_domain::parameters::ParamDecl::new("name"),
+                skit_domain::parameters::ParamDecl::new("other"),
+            ],
+            &std::collections::BTreeMap::new(),
+            &[],
+            "",
+            &std::collections::BTreeMap::new(),
+            "",
+        );
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(form))));
+        let mut session = TuiSession::default();
+        let geometry = ViewGeometry::default();
+        let script = ScriptedInput::new(typed_at_once("Bob\rCarol"));
+        let mut input = TerminalInput::new(true);
+        while !script.is_done() || !input.queued.is_empty() {
+            let event = script.next(&mut input);
+            if let Some(action) = dispatch_event(&mut session, event, &state, &geometry).action {
+                assert!(
+                    !matches!(action, Action::Submit),
+                    "the paste ran the launch menu"
+                );
+                state.update(action);
+            }
+        }
+        let form = state.run_form().unwrap();
+        assert_eq!(form.fields()[0].control.value(), "Bob");
+        assert_eq!(form.fields()[1].control.value(), "");
+        assert_eq!(form.focused(), 0, "the paste moved the focus");
+    }
+
+    // Ways this can fail: a key that a person types alone waits for a paste that never comes, or
+    // joins the release that comes after it; a held Enter or Tab, which repeats only itself,
+    // becomes a paste; typed text with no line break becomes a paste.
+    #[test]
+    fn keys_that_are_not_a_paste_stay_keys() {
+        let enter = KeyCode::Enter;
+        let alone = ScriptedInput::new([
+            (Duration::ZERO, key_press(enter, KeyModifiers::NONE)),
+            (
+                Duration::from_millis(80),
+                key_release(enter, KeyModifiers::NONE),
+            ),
+        ]);
+        let mut input = TerminalInput::new(true);
+        assert_eq!(alone.next(&mut input), key_press(enter, KeyModifiers::NONE));
+        assert_eq!(
+            alone.next(&mut input),
+            key_release(enter, KeyModifiers::NONE)
+        );
+
+        // The release of a key can wait in the input with the key, and the key stays a key.
+        let with_release = ScriptedInput::new(typed_at_once("\r"));
+        assert_eq!(
+            with_release.next(&mut input),
+            key_press(enter, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            with_release.next(&mut input),
+            key_release(enter, KeyModifiers::NONE)
+        );
+
+        for held in ["\t\t\t", "\r\r", "ab"] {
+            let script = ScriptedInput::new(typed_at_once(held));
+            let expected = typed_at_once(held);
+            for (_, event) in expected {
+                assert_eq!(script.next(&mut input), event, "{held:?}");
+            }
+        }
+    }
+
+    // Ways this can fail: a line feed, which a pseudo-console types as Ctrl+Enter, or a character
+    // that Windows reports with AltGr as Ctrl+Alt is lost from the paste or ends it.
+    #[test]
+    fn a_paste_keeps_a_line_feed_and_an_altgr_character() {
+        let script = ScriptedInput::new([
+            (
+                Duration::ZERO,
+                key_press(
+                    KeyCode::Char('@'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+            ),
+            (
+                Duration::ZERO,
+                key_press(KeyCode::Enter, KeyModifiers::CONTROL),
+            ),
+            (
+                Duration::ZERO,
+                key_press(KeyCode::Char('b'), KeyModifiers::NONE),
+            ),
+        ]);
+        let mut input = TerminalInput::new(true);
+        assert_eq!(
+            script.next(&mut input),
+            event::Event::Paste("@\nb".to_owned())
+        );
+    }
+
+    // Ways this can fail: an event that no paste types, such as a mouse move or an arrow key, joins
+    // the paste or is lost; a key that comes after the gap joins the burst.
+    #[test]
+    fn the_burst_ends_at_an_event_that_is_not_typed_text_or_at_the_gap() {
+        let mouse = event::Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        let none = KeyModifiers::NONE;
+        let script = ScriptedInput::new([
+            (Duration::ZERO, key_press(KeyCode::Char('a'), none)),
+            (Duration::ZERO, key_press(KeyCode::Enter, none)),
+            // A key that comes exactly one gap later is still part of the burst.
+            (BURST_GAP, key_press(KeyCode::Char('b'), none)),
+            (Duration::ZERO, mouse.clone()),
+            (Duration::ZERO, key_press(KeyCode::Char('c'), none)),
+            // An Enter that comes after the gap is a key of its own.
+            (
+                BURST_GAP + Duration::from_millis(1),
+                key_press(KeyCode::Enter, none),
+            ),
+        ]);
+        let mut input = TerminalInput::new(true);
+        assert_eq!(
+            script.next(&mut input),
+            event::Event::Paste("a\nb".to_owned())
+        );
+        assert_eq!(script.next(&mut input), mouse);
+        assert_eq!(script.next(&mut input), key_press(KeyCode::Char('c'), none));
+        assert_eq!(script.next(&mut input), key_press(KeyCode::Enter, none));
+    }
+
+    // Ways this can fail: a terminal with bracketed paste waits after each key, or folds keys that
+    // a person types; a poll window with no event reports one; a failed poll or read inside a
+    // burst is lost.
+    #[test]
+    fn terminal_input_waits_only_for_a_burst_and_reports_every_failure() {
+        let script = ScriptedInput::new(typed_at_once("a\rb"));
+        let mut input = TerminalInput::new(false);
+        for (_, event) in typed_at_once("a\rb") {
+            assert_eq!(script.next(&mut input), event);
+        }
+        assert_eq!(script.polls.get(), 0, "a blocking wait must not poll");
+
+        let empty = ScriptedInput::new([]);
+        let mut input = TerminalInput::new(true);
+        assert!(
+            empty
+                .next_in(&mut input, TerminalEventWait::Poll(BURST_GAP))
+                .unwrap()
+                .is_none()
+        );
+
+        let failing = ScriptedInput::new(typed_at_once("a\rb"));
+        failing.poll_fails.set(true);
+        assert!(
+            failing
+                .next_in(&mut input, TerminalEventWait::Blocking)
+                .is_err()
+        );
+
+        let cut_short = ScriptedInput::new([
+            (
+                Duration::ZERO,
+                key_press(KeyCode::Char('a'), KeyModifiers::NONE),
+            ),
+            (
+                Duration::ZERO,
+                key_press(KeyCode::Char('b'), KeyModifiers::NONE),
+            ),
+        ]);
+        // The poll says that an event is there, but the read finds none.
+        let mut polls = 0;
+        assert!(
+            input
+                .next_with(
+                    TerminalEventWait::Blocking,
+                    || {
+                        let event = cut_short.read()?;
+                        cut_short.events.borrow_mut().clear();
+                        Ok(event)
+                    },
+                    |_| {
+                        polls += 1;
+                        Ok(true)
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(polls, 1);
+    }
+
+    // Ways this can fail: a fast second press starts a new sequence, so no double click is
+    // possible; a slow one continues the old sequence; a key or a release counts as a press.
+    #[test]
+    fn a_press_after_the_double_click_time_starts_a_new_sequence() {
+        let press = event::Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: event::KeyModifiers::NONE,
+        });
+        let release = event::Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: event::KeyModifiers::NONE,
+        });
+        let start = Instant::now();
+        let mut clock = PressClock::default();
+        assert!(clock.starts_new_sequence(&press, start));
+        assert!(!clock.starts_new_sequence(&release, start + DOUBLE_CLICK * 4));
+        assert!(!clock.starts_new_sequence(&event::Event::FocusGained, start));
+        assert!(!clock.starts_new_sequence(&press, start + DOUBLE_CLICK));
+        assert!(
+            clock.starts_new_sequence(&press, start + DOUBLE_CLICK * 2 + Duration::from_millis(1))
+        );
+    }
+
+    // Ways this can fail: a copy never reaches the terminal, or one copy reaches it twice.
+    #[test]
+    fn a_copy_reaches_the_terminal_once_as_osc_52() {
+        let system = SystemClipboard::new(Vec::new(), Duration::ZERO);
+        let mut session = TuiSession::default();
+        let mut out = Vec::new();
+        export_clipboard(&mut session, &mut out, &system).unwrap();
+        assert!(out.is_empty());
+        session.copy_for_test("hi");
+        export_clipboard(&mut session, &mut out, &system).unwrap();
+        assert_eq!(out, b"\x1b]52;c;aGk=\x07");
+        export_clipboard(&mut session, &mut out, &system).unwrap();
+        assert_eq!(out, b"\x1b]52;c;aGk=\x07");
+    }
+
+    // Ways this can fail: a copy does not reach the clipboard program of a local session, or one
+    // copy reaches it twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_reaches_the_clipboard_program_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("copies.txt");
+        let program = crate::system_clipboard::CopyProgram::new(
+            "sh",
+            [
+                std::ffi::OsString::from("-c"),
+                std::ffi::OsString::from("cat >> \"$1\""),
+                std::ffi::OsString::from("sh"),
+                saved.clone().into_os_string(),
+            ],
+        );
+        let system = SystemClipboard::new(vec![program], Duration::from_secs(10));
+        let mut session = TuiSession::default();
+        let mut out = Vec::new();
+        session.copy_for_test("hi");
+        export_clipboard(&mut session, &mut out, &system).unwrap();
+        export_clipboard(&mut session, &mut out, &system).unwrap();
+        drop(system);
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "hi");
     }
 
     #[test]
@@ -1004,6 +1716,24 @@ mod tests {
 
     fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
         Ok(Action::ClearStatus)
+    }
+
+    /// A Library with one selected Python entry, so `Action::Edit` asks the host for the editor.
+    fn library_with_one_script() -> LibraryState {
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, StorageMode};
+
+        LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        })
     }
 
     #[test]
@@ -1090,12 +1820,25 @@ mod tests {
     #[test]
     fn host_errors_use_the_terminal_locale() {
         assert_eq!(
-            localized_status(&HostError, Locale::ZhCn),
-            "找不到条目：demo"
+            host_failure_status(&HostError, Locale::ZhCn),
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "找不到条目：demo".to_owned(),
+            }
         );
         assert_eq!(
-            localized_status(&HostError, Locale::ZhTw),
-            "找不到項目：demo"
+            host_failure_status(&HostError, Locale::ZhTw),
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "找不到項目：demo".to_owned(),
+            }
+        );
+        assert_eq!(
+            preflight_refusal_status(&HostError, Locale::ZhTw),
+            Action::SetStatus {
+                kind: StatusKind::Error,
+                message: "錯誤：找不到項目：demo".to_owned(),
+            }
         );
     }
 
@@ -1115,6 +1858,7 @@ mod tests {
             Locale::ZhCn,
         ));
         assert_eq!(state.status(), Some("错误：找不到条目：demo"));
+        assert_eq!(state.status_kind(), StatusKind::Error);
     }
 
     #[test]
@@ -1169,6 +1913,7 @@ mod tests {
         assert!(!drain_host_effects(&mut state, &mut host, effect, &mut locale).unwrap());
         assert!(matches!(state.screen(), Screen::Form(_)));
         assert_eq!(state.status(), Some("entry not found: demo"));
+        assert_eq!(state.status_kind(), StatusKind::Error);
     }
 
     #[test]
@@ -1199,6 +1944,7 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: completed.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             })
         };
         let mut locale = Locale::En;
@@ -1208,6 +1954,7 @@ mod tests {
             Effect::Reload,
             &mut locale,
             &mut add_workflow_outcome,
+            &mut |_| Ok(()),
         )
         .unwrap();
 
@@ -1246,6 +1993,7 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: slug.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             }],
             harmless_host,
             Locale::En,
@@ -1265,6 +2013,7 @@ mod tests {
                     rerunnable: Vec::new(),
                     slug: slug.clone(),
                     message: "Added".to_owned(),
+                    kind: StatusKind::Success,
                 })
             },
             Locale::En,
@@ -1321,9 +2070,7 @@ mod tests {
         );
         assert!(transitions.borrow().is_empty());
 
-        // The same recorder is live when an actual host effect crosses the terminal boundary.
-        // This distinguishes the two local actions above from an accidentally suppressed
-        // transition callback.
+        // A host effect that needs no terminal is served on the screen.
         let mut continuing_state = LibraryState::default();
         let mut continuing_host = harmless_host;
         let mut no_outcome = |_action: &Action| None::<()>;
@@ -1340,6 +2087,25 @@ mod tests {
             .unwrap(),
             HostedActionStep::Continue
         );
+        assert!(transitions.borrow().is_empty());
+
+        // The same recorder is live when an effect gives the terminal to another program. This
+        // distinguishes the actions above from an accidentally suppressed transition callback.
+        let mut editing_state = library_with_one_script();
+        let mut editing_host = harmless_host;
+        assert_eq!(
+            advance_hosted_action(
+                &mut editing_state,
+                Action::Edit,
+                &mut preflight,
+                &mut editing_host,
+                &mut locale,
+                &mut no_outcome,
+                &mut record_transition,
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
         assert_eq!(
             &*transitions.borrow(),
             &[
@@ -1349,19 +2115,65 @@ mod tests {
         );
     }
 
+    // Ways this can fail: an effect that needs no terminal leads to one that does, and the
+    // session serves the second one on its screen, so the editor draws over the interface; or
+    // the session leaves its screen twice in one chain.
+    #[test]
+    fn a_chain_leaves_the_screen_just_before_its_first_effect_that_needs_the_terminal() {
+        let mut state = library_with_one_script();
+        let mut locale = Locale::En;
+        let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
+        let mut no_outcome = |_action: &Action| None::<()>;
+        let events = std::cell::RefCell::new(Vec::new());
+        // The reload answers with a request for the editor, and the editor ends the chain.
+        let mut host = |effect: Effect| -> Result<Action, HostError> {
+            events.borrow_mut().push(format!("host {effect:?}"));
+            Ok(match effect {
+                Effect::Reload => Action::Edit,
+                _ => Action::ClearStatus,
+            })
+        };
+        assert_eq!(
+            advance_hosted_action(
+                &mut state,
+                Action::Reload,
+                &mut preflight,
+                &mut host,
+                &mut locale,
+                &mut no_outcome,
+                &mut |transition| {
+                    events.borrow_mut().push(format!("{transition:?}"));
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
+        assert_eq!(
+            *events.borrow(),
+            [
+                "host Reload".to_owned(),
+                "Suspend".to_owned(),
+                "host Edit { selector: \"alpha\" }".to_owned(),
+                "Resume".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn hosted_action_step_finishes_for_quit_or_outcome_independently() {
         let mut locale = Locale::En;
         let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
 
-        let mut quit_state = LibraryState::default();
+        // A run that ends the session quits while the run has the terminal.
+        let mut quit_state = library_with_one_script();
         let mut quit_host = |_effect| -> Result<Action, HostError> { Ok(Action::Quit) };
         let mut no_outcome = |_action: &Action| None::<()>;
         let mut transitions = Vec::new();
         assert_eq!(
             advance_hosted_action(
                 &mut quit_state,
-                Action::Reload,
+                Action::Edit,
                 &mut preflight,
                 &mut quit_host,
                 &mut locale,
@@ -1388,10 +2200,12 @@ mod tests {
                 rerunnable: Vec::new(),
                 slug: completed.clone(),
                 message: "Added".to_owned(),
+                kind: StatusKind::Success,
             })
         };
         let mut observe = add_workflow_outcome;
         transitions.clear();
+        // The add commit needs no terminal, so the session finishes on its screen.
         assert_eq!(
             advance_hosted_action(
                 &mut outcome_state,
@@ -1408,16 +2222,16 @@ mod tests {
             .unwrap(),
             HostedActionStep::Finish(Some(AddWorkflowOutcome::Completed(slug)))
         );
-        assert_eq!(transitions, [HostedTerminalTransition::Suspend]);
+        assert!(transitions.is_empty());
 
-        let mut continuing_state = LibraryState::default();
+        let mut continuing_state = library_with_one_script();
         let mut continuing_host = harmless_host;
         let mut no_outcome = |_action: &Action| None::<()>;
         transitions.clear();
         assert_eq!(
             advance_hosted_action(
                 &mut continuing_state,
-                Action::Reload,
+                Action::Edit,
                 &mut preflight,
                 &mut continuing_host,
                 &mut locale,
@@ -1715,5 +2529,118 @@ mod tests {
         );
         assert!(action.redraw, "an action must request a redraw");
         assert_eq!(action.action, Some(Action::Quit));
+    }
+
+    // Ways this can fail: a drag or another button ends the press of a chip and changes only its
+    // look, but the event asks for no frame, so the screen keeps the pressed look; the release
+    // after the drag activates the chip; or a release that changes no look asks for a frame.
+    #[test]
+    fn a_press_that_ends_without_an_action_asks_for_a_frame() {
+        use ratatui_core::{backend::TestBackend, terminal::Terminal};
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, StorageMode};
+
+        fn draw(
+            terminal: &mut Terminal<TestBackend>,
+            session: &mut TuiSession,
+            state: &LibraryState,
+        ) -> ViewGeometry {
+            let mut geometry = ViewGeometry::default();
+            terminal
+                .draw(|frame| {
+                    geometry = render_with_session(frame, state, Locale::En, session);
+                })
+                .unwrap();
+            geometry
+        }
+
+        let state = LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        });
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let buffer = terminal.backend().buffer();
+        let (column, row) = (0..buffer.area.height)
+            .rev()
+            .find_map(|row| {
+                let line = (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>();
+                line.find("? Help")
+                    .map(|byte| (u16::try_from(line[..byte].chars().count()).unwrap(), row))
+            })
+            .expect("the footer shows the Help chip");
+        let mouse = |kind, column| {
+            event::Event::Mouse(event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: event::KeyModifiers::NONE,
+            })
+        };
+        let label = column + 2;
+
+        let pressed = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Left), label),
+            &state,
+            &geometry,
+        );
+        assert!(pressed.redraw, "a press asks for no frame");
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let dragged = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Drag(MouseButton::Left), label + 1),
+            &state,
+            &geometry,
+        );
+        assert_eq!(dragged.action, None);
+        assert!(
+            dragged.redraw,
+            "a drag inside the chip ends the press, but asks for no frame"
+        );
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let released = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Up(MouseButton::Left), label + 1),
+            &state,
+            &geometry,
+        );
+        assert_eq!(
+            released.action, None,
+            "the release after the drag activated the chip"
+        );
+        assert!(
+            !released.redraw,
+            "a release that changes no look asks for a frame"
+        );
+
+        let _ = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Left), label),
+            &state,
+            &geometry,
+        );
+        let geometry = draw(&mut terminal, &mut session, &state);
+        let other = dispatch_event(
+            &mut session,
+            mouse(MouseEventKind::Down(MouseButton::Right), label),
+            &state,
+            &geometry,
+        );
+        assert_eq!(other.action, None);
+        assert!(
+            other.redraw,
+            "another button ends the press, but asks for no frame"
+        );
     }
 }

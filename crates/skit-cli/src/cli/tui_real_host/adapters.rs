@@ -705,13 +705,15 @@ fn create_private_file(path: &Path) -> io::Result<fs::File> {
 }
 
 fn create_private_directory(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(path)
     }
-    builder.create(path)
+    #[cfg(not(unix))]
+    {
+        fs::DirBuilder::new().create(path)
+    }
 }
 
 impl FileAllocator for RecordingAdapters {

@@ -11,8 +11,6 @@ build/
 
 # Rust
 /target/
-*.profraw
-lcov.info
 
 # Claude Code session-local state (worktrees and task metadata) is temporary.
 # It is not product source and must not enter repository checks.
@@ -20,11 +18,6 @@ lcov.info
 
 # Agent handoff notes are local and temporary.
 /CLAUDE_HANDOFF.md
-
-# Test / coverage artifacts
-mutants/
-mutants.out/
-mutants.out.old/
 
 # Benchmark pipeline artifacts (results are CI artifacts, never committed)
 .bench/

@@ -45,5 +45,5 @@ presets, state, and open entry kinds. Writes use identity and source-hash checks
 locks, staging, atomic replacement, and rollback tests.
 
 The language corpus in `tests/corpus/` is byte-exact. The release gates include all-feature tests,
-complete executable-source line coverage, Clippy and Rustdoc warnings as errors, zero surviving
-mutants, complete localization, and documentation and packaging builds.
+Clippy and Rustdoc warnings as errors, complete localization, and documentation and packaging
+builds.

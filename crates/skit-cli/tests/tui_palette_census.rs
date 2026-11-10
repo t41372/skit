@@ -29,7 +29,7 @@ use tempfile::TempDir;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, TerminalColors};
+use pty::{AnswerQueries, PtyChild, TerminalColors, screen_size, terminal_parser};
 
 const ROWS: u16 = 30;
 const COLUMNS: u16 = 100;
@@ -110,7 +110,12 @@ const SCREENS: &[Screen] = &[
     },
     screen("search", &[step(b"/", "list")]),
     screen("search-typed", &[step(b"/", "list"), step(b"al", "1/5")]),
+    // `eta` matches Beta, Eta, and Zeta. The entry that the query names comes first and is
+    // selected, although Beta is newer.
+    screen("search-ranked", &[step(b"/", "list"), step(b"eta", "3/5")]),
     screen("quit-notice", &[step(CTRL_C, "again")]),
+    // The reload is a host effect, so the step waits for its receipt, not for a quiet terminal.
+    screen("library-reloaded", &[step(CTRL_R, "reloaded")]),
     screen("help", &[step(b"?", "Rerun")]),
     screen("run-form", &[OPEN_ALPHA_RUN]),
     screen("run-required", &[OPEN_ALPHA_RUN, step(b"\r", "required.")]),
@@ -512,8 +517,7 @@ impl Fixture {
 
 /// End the session the way a person does: two Ctrl+C presses.
 ///
-/// A screen that already shows the quit notice ends at the first press. A killed child never
-/// writes its coverage profile, so the census would add no coverage.
+/// A screen that already shows the quit notice ends at the first press.
 fn quit(child: &mut PtyChild, screen: &str) {
     let before = child.checkpoint();
     child.send(CTRL_C);
@@ -549,7 +553,7 @@ fn quit(child: &mut PtyChild, screen: &str) {
 
 /// Whether the output leaves the terminal on the alternate screen, where the interface draws.
 fn in_interface(raw: &[u8]) -> bool {
-    let mut parser = vt100::Parser::new(ROWS, COLUMNS, 0);
+    let mut parser = terminal_parser(ROWS, COLUMNS);
     parser.process(raw);
     parser.screen().alternate_screen()
 }
@@ -563,7 +567,7 @@ fn wait_for_screen(child: &mut PtyChild, screen: &Screen, needle: &str) {
     loop {
         child.settle();
         let raw = child.raw_after(0);
-        let mut parser = vt100::Parser::new(screen.rows, screen.columns, 0);
+        let mut parser = terminal_parser(screen.rows, screen.columns);
         parser.process(&raw);
         let shown = parser.screen().contents();
         if shown.contains(needle) {
@@ -716,7 +720,7 @@ fn write_last_run(state: &Path, slug: &str, exit: i64) {
 
 /// The screen that `raw` leaves on a terminal of the given size.
 fn replay(raw: &[u8], rows: u16, columns: u16) -> vt100::Parser {
-    let mut parser = vt100::Parser::new(rows, columns, 0);
+    let mut parser = terminal_parser(rows, columns);
     parser.process(raw);
     assert!(
         parser.screen().alternate_screen(),
@@ -764,7 +768,7 @@ impl CellView {
 }
 
 fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<CellView> {
-    let (_, columns) = screen.size();
+    let (_, columns) = screen_size(screen);
     (0..columns)
         .map(|column| screen.cell(row, column).unwrap())
         .filter(|cell| !cell.is_wide_continuation())
@@ -916,8 +920,9 @@ fn run_census(environment: &Environment) {
             let raw = fixture.capture(environment, screen);
             let file = format!("{}.{}.json", screen.name, environment.name);
             let mut failures = Vec::new();
+            let parser = replay(&raw, screen.rows, screen.columns);
+            failures.extend(empty_title_gaps(parser.screen(), screen.name));
             if environment.theme == "terminal" {
-                let parser = replay(&raw, screen.rows, screen.columns);
                 failures.extend(terminal_rule_breaks(parser.screen(), screen.name));
             }
             failures.extend(check_census(
@@ -974,12 +979,40 @@ fn census_terminal_theme_with_no_color() {
     run_census(&TERMINAL_NO_COLOR);
 }
 
+/// Every top border that shows a title with no words, checked on every row of every theme.
+///
+/// A box without a label has an unbroken top border. A widget that draws an empty label as a title
+/// still puts one space on each side of it, so the border shows a gap of blank cells after its
+/// corner, as in `┌  ────┐`.
+fn empty_title_gaps(screen: &vt100::Screen, name: &str) -> Vec<String> {
+    let (rows, columns) = screen_size(screen);
+    (0..rows)
+        .filter_map(|row| {
+            let text = screen.contents_between(row, 0, row, columns);
+            let characters = text.chars().collect::<Vec<_>>();
+            characters
+                .iter()
+                .enumerate()
+                .filter(|(_, character)| matches!(character, '┌' | '╭'))
+                .find_map(|(corner, _)| {
+                    let blanks = characters[corner + 1..]
+                        .iter()
+                        .take_while(|character| **character == ' ')
+                        .count();
+                    (blanks > 0 && characters.get(corner + 1 + blanks) == Some(&'─')).then(|| {
+                        format!("{name} r{row}: a top border with an empty title: {text:?}")
+                    })
+                })
+        })
+        .collect()
+}
+
 /// The rules of the terminal theme (`docs/design/terminal-palette.md`), checked on every cell.
 ///
 /// A site that bypasses the theme shows up here: the terminal theme uses only the default
 /// colors, the 16 ANSI colors as hues, and reverse video for any background.
 fn terminal_rule_breaks(screen: &vt100::Screen, name: &str) -> Vec<String> {
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let mut breaks = std::collections::BTreeSet::new();
     for row in 0..rows {
         for column in 0..columns {
@@ -1008,7 +1041,9 @@ fn terminal_rule_breaks(screen: &vt100::Screen, name: &str) -> Vec<String> {
             if background != vt100::Color::Default && !cell.inverse() {
                 breaks.insert(format!("{at}: background without reverse"));
             }
-            if foreground != vt100::Color::Default
+            // Success and warning text is green and yellow, as in version 0.4. The census accent
+            // is cyan or magenta, so a green or yellow letter is never the accent.
+            if !matches!(foreground, vt100::Color::Default | vt100::Color::Idx(2 | 3))
                 && !cell.inverse()
                 && text.chars().any(char::is_alphanumeric)
             {
@@ -1088,7 +1123,7 @@ fn shown(environment: &Environment, name: &str) -> vt100::Parser {
 /// The cells that show the first occurrence of `needle` on the screen.
 fn cells_of(parser: &vt100::Parser, needle: &str) -> Vec<vt100::Cell> {
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     for row in 0..rows {
         let text = screen.contents_between(row, 0, row, columns);
         if let Some(byte) = text.find(needle) {
@@ -1158,7 +1193,7 @@ fn skit_theme_hints_are_dim_default_text() {
 fn skit_theme_scrollbars_use_the_version_0_4_color() {
     let settings = shown(&TRUECOLOR, "entry-settings");
     let screen = settings.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let bar = (0..rows)
         .map(|row| screen.cell(row, columns - 1).unwrap().clone())
         .filter(|cell| ["▲", "▼", "█", "║"].contains(&cell.contents()))
@@ -1193,7 +1228,7 @@ fn skit_theme_widget_labels_use_the_default_foreground() {
 fn colors_on(environment: &Environment, name: &str) -> Vec<String> {
     let parser = shown(environment, name);
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     (0..rows)
         .flat_map(|row| (0..columns).map(move |column| (row, column)))
         .flat_map(|(row, column)| {
@@ -1323,40 +1358,41 @@ fn terminal_theme_draws_footer_keys_as_keycaps() {
     }
 }
 
-/// The focused dialog button is reversed; the other button is plain.
+/// The focused dialog chip is reversed; the other chip keeps a plain label beside its keycap.
 #[test]
 fn terminal_theme_reverses_the_focused_dialog_button() {
     let remove = shown(&TERMINAL_UNKNOWN, "remove");
-    let keep = cells_of(&remove, "Keep");
-    let delete = cells_of(&remove, "Remove ")[..6].to_vec();
+    let keep = cells_of(&remove, " Esc Keep ");
+    let delete = cells_of(&remove, " y Remove ");
     assert!(
         all(&keep, vt100::Cell::inverse),
         "Keep: {}",
         describe(&keep)
     );
     assert!(
-        all(&delete, |cell| !cell.inverse()),
+        all(&delete[..3], vt100::Cell::inverse) && all(&delete[3..], |cell| !cell.inverse()),
         "Remove: {}",
         describe(&delete)
     );
 }
 
-/// A status line colors only its glyph.
+/// A success line is green and a warning line is yellow, text included, as in version 0.4. A
+/// warning without a glyph must not look like body text.
 #[test]
-fn terminal_theme_colors_only_the_status_glyph() {
-    let health = shown(&TERMINAL_DARK, "health");
-    let line = cells_of(&health, "✓ 5 entries");
-    assert_eq!(
-        line[0].fgcolor(),
-        vt100::Color::Idx(2),
-        "glyph: {}",
-        describe(&line)
-    );
-    assert!(
-        all(&line[2..], |cell| cell.fgcolor() == vt100::Color::Default),
-        "text: {}",
-        describe(&line)
-    );
+fn terminal_theme_colors_success_and_warning_text() {
+    let health = shown(&TERMINAL_DARK, "health-rebuilt");
+    for (needle, color) in [
+        ("✓ 5 entries registered", 2),
+        ("Index rebuilt: 5 entries", 2),
+        ("Issues (Enter jumps to the entry):", 3),
+    ] {
+        let line = cells_of(&health, needle);
+        assert!(
+            all(&line, |cell| cell.fgcolor() == vt100::Color::Idx(color)),
+            "{needle}: {}",
+            describe(&line)
+        );
+    }
 }
 
 /// The selected option of an unfocused radio group is bold, not reversed.
@@ -1446,14 +1482,9 @@ fn terminal_theme_titles_are_bold_and_never_dim() {
 fn terminal_theme_marks_idle_buttons_with_brackets() {
     for (name, labels) in [
         (
-            "entry-settings-discard",
-            &["[Discard]", "[Keep editing]"][..],
-        ),
-        (
             "run-path-suggestion",
-            &["[▾ insert]", "[↺ default]", "[📁 browse]"],
+            &["[▾ insert]", "[↺ default]", "[📁 browse]"][..],
         ),
-        ("remove", &["[Remove]"]),
         ("preferences-agent-skill", &["[Cancel]"]),
     ] {
         let parser = shown(&TERMINAL_UNKNOWN, name);
@@ -1466,21 +1497,56 @@ fn terminal_theme_marks_idle_buttons_with_brackets() {
     assert!(!skit.screen().contents().contains("[Discard]"));
 }
 
-/// The focused dialog button reverses its label and its padding, and no cell after them.
+/// The focused dialog chip reverses its keycap, its label, and its padding, and no cell after
+/// them.
 #[test]
 fn terminal_theme_reverses_only_the_focused_button() {
     let parser = shown(&TERMINAL_UNKNOWN, "remove");
-    let cells = cells_of(&parser, " Keep   ");
+    let cells = cells_of(&parser, " Esc Keep   ");
     assert!(
-        all(&cells[..6], vt100::Cell::inverse),
+        all(&cells[..10], vt100::Cell::inverse),
         "{}",
         describe(&cells)
     );
     assert!(
-        all(&cells[6..], |cell| !cell.inverse()),
+        all(&cells[10..], |cell| !cell.inverse()),
         "{}",
         describe(&cells)
     );
+}
+
+/// The actions of both confirmation dialogs are chips that name their keys, as the footer chips
+/// do: an idle chip shows a reversed keycap and a plain label (version 0.4
+/// `src/skit/tui.py:160-165`, `src/skit/tui_settings.py:58-63`).
+#[test]
+fn terminal_theme_draws_dialog_actions_as_key_chips() {
+    for (name, idle, focused) in [
+        ("remove", " y Remove ", " Esc Keep "),
+        (
+            "entry-settings-discard",
+            " y Discard ",
+            " Esc Keep editing ",
+        ),
+    ] {
+        let parser = shown(&TERMINAL_UNKNOWN, name);
+        let chip = cells_of(&parser, idle);
+        assert!(
+            all(&chip[..3], |cell| cell.inverse() && cell.bold()),
+            "{name} keycap: {}",
+            describe(&chip)
+        );
+        assert!(
+            all(&chip[3..], |cell| !cell.inverse()),
+            "{name} label: {}",
+            describe(&chip)
+        );
+        let ring = cells_of(&parser, focused);
+        assert!(
+            all(&ring, vt100::Cell::inverse),
+            "{name} focus ring: {}",
+            describe(&ring)
+        );
+    }
 }
 
 /// The keys of the agent rows in Preferences are keycaps, as the footer keys are.
@@ -1518,7 +1584,7 @@ fn terminal_theme_footer_labels_stay_plain_in_a_wide_script() {
     quit(&mut child, library.name);
     let parser = replay(&raw, library.rows, library.columns);
     let screen = parser.screen();
-    let (rows, columns) = screen.size();
+    let (rows, columns) = screen_size(screen);
     let row = (0..rows)
         .rev()
         .find(|row| {
@@ -1839,7 +1905,7 @@ fn a_late_color_answer_never_becomes_keys() {
     }
     child.settle_quiet(Duration::from_millis(500));
     let raw = child.raw_after(0);
-    let mut parser = vt100::Parser::new(library.rows, library.columns, 0);
+    let mut parser = terminal_parser(library.rows, library.columns);
     parser.process(&raw);
     let shown = parser.screen().contents();
     assert!(

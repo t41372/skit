@@ -551,8 +551,8 @@ fn expected_environment_visible(
     let _ = replay.update(Action::OpenRunTokenMenuFor(field));
     let _ = replay.update(Action::OpenRunEnvironmentPicker(field));
     let _ = replay.update(Action::SetRunEnvironmentQuery(query.to_owned()));
-    // The replay reopens a picker the caller already proved reachable. The result is collected
-    // into an option so every line of the rule runs.
+    // The replay reopens a picker the caller already proved reachable. Any other modal is an
+    // error that names the field.
     let modal = replay.modal();
     let mut replayed = None;
     if let Some(ModalState::RunEnvironmentPicker { visible, .. }) = modal {
@@ -568,8 +568,8 @@ fn expected_file_contract(
     let mut replay = state.clone();
     let _ = replay.update(Action::Back);
     let _ = replay.update(Action::OpenRunFilePicker(field));
-    // The replay reopens a picker the caller already proved reachable. The result is collected
-    // into an option so every line of the rule runs.
+    // The replay reopens a picker the caller already proved reachable. Any other modal is an
+    // error that names the field.
     let modal = replay.modal();
     let mut replayed = None;
     if let Some(ModalState::RunFilePicker { context, mode, .. }) = modal {

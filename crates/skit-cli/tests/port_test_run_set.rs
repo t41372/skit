@@ -340,7 +340,7 @@ fn test_save_preset_on_field_less_entry_refused_saves_nothing() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "has no form fields, so there's nothing to save.",
+            "has no parameters, so there is nothing to save.",
         ));
     let saved = state_text(&root, "noargs");
     assert!(

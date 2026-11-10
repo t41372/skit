@@ -87,10 +87,64 @@ fn every_catalog_row_has_two_complete_translations() {
     }
 }
 
+/// Report whether `english` holds the word "form" or "forms" as a whole word.
+///
+/// A word such as "platform" or "format" holds the letters, but not the word.
+fn names_a_form(english: &str) -> bool {
+    english
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("form") || word.eq_ignore_ascii_case("forms"))
+}
+
+// Ways this can fail: a row still calls the screen where a person fills the parameters "the run
+// form" or "a form", in English or in Chinese, so the product names one screen two ways. The
+// owner decided on 2026-11-08 that the product calls it the launch menu, as the README does.
+#[test]
+fn every_catalog_row_calls_the_parameter_screen_the_launch_menu() {
+    assert!(names_a_form("the run form asks"));
+    assert!(names_a_form("Form label:"));
+    assert!(!names_a_form("Label in the launch menu:"));
+    assert!(!names_a_form("this platform's limit"));
+    assert!(!names_a_form("format"));
+    let mut offenders = Vec::new();
+    for row in catalog() {
+        if names_a_form(row.english) {
+            offenders.push(format!("en: {}", row.english));
+        }
+        if row.zh_cn.contains("表单") {
+            offenders.push(format!("zh-CN: {}", row.zh_cn));
+        }
+        if row.zh_tw.contains("表單") {
+            offenders.push(format!("zh-TW: {}", row.zh_tw));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "say launch menu (启动菜单, 啟動選單) or parameter definitions:\n{}",
+        offenders.join("\n")
+    );
+    for (english, simplified, traditional) in [
+        ("Launch menu", "启动菜单", "啟動選單"),
+        (
+            "Parameters (fields in the launch menu)",
+            "参数（启动菜单里的字段）",
+            "參數（啟動選單裡的欄位）",
+        ),
+        (
+            "Inline launch menu — opens in place, fully clickable",
+            "内嵌启动菜单——就地展开、可戳可点",
+            "內嵌啟動選單——就地展開、可戳可點",
+        ),
+    ] {
+        assert_eq!(text(Locale::ZhCn, english), simplified);
+        assert_eq!(text(Locale::ZhTw, english), traditional);
+    }
+}
+
 #[test]
 fn settings_parameter_editor_keeps_the_version_04_chinese_labels() {
     for (source, simplified, traditional) in [
-        ("Form label:", "字段提示：", "欄位提示："),
+        ("Label in the launch menu:", "字段提示：", "欄位提示："),
         (
             "secret (never saved to disk)",
             "机密（不会存盘）",
@@ -151,11 +205,11 @@ fn exact_text_and_longest_first_rendering_are_deterministic() {
 #[test]
 fn formatted_messages_translate_the_template_without_translating_user_values() {
     assert_eq!(
-        format_text(Locale::ZhTw, "Added: {} ({} mode)", &[&"Library", &"copy"]),
-        "已加入:Library (copy 模式)"
+        format_text(Locale::ZhTw, "Added: {} (copy mode)", &[&"Library"]),
+        "已加入:Library (複製模式)"
     );
     assert_eq!(
-        format_text(Locale::En, "Added: {} ({} mode)", &[&"Alpha", &"copy"]),
+        format_text(Locale::En, "Added: {} (copy mode)", &[&"Alpha"]),
         "Added: Alpha (copy mode)"
     );
     assert_eq!(
@@ -364,20 +418,22 @@ fn declared_parameter_receipt_matches_the_oracle_in_every_locale() {
     assert!(pseudo.contains("width"), "{pseudo}");
 }
 
+// The note names the launch menu since the owner decision of 2026-11-08, so it no longer
+// matches the version 0.4 sentence (`src/skit/cli.py`), which said "run form".
 #[test]
-fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
-    let template = "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).";
+fn managed_parameter_flip_note_names_the_launch_menu_in_every_locale() {
+    let template = "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments ({}) until you remove the managed parameters (--unmanage).";
     assert_eq!(
         format_text(Locale::En, template, &[&"getopts"]),
-        "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage)."
+        "The launch menu now asks for the managed parameters. It does not show the script's own command-line arguments (getopts) until you remove the managed parameters (--unmanage)."
     );
     assert_eq!(
         format_text(Locale::ZhCn, template, &[&"getopts"]),
-        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（getopts）会先搁置，直到它们被移除（--unmanage）为止。"
+        "启动菜单现在改问这些管理的参数；脚本自己的命令行参数（getopts）先不显示，等你移除这些管理的参数（--unmanage）后才会回来。"
     );
     assert_eq!(
         format_text(Locale::ZhTw, template, &[&"getopts"]),
-        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（getopts）會先擱置，直到它們被移除（--unmanage）為止。"
+        "啟動選單現在改問這些管理的參數；腳本自己的命令列參數（getopts）先不顯示，等你移除這些管理的參數（--unmanage）後才會回來。"
     );
     let pseudo = format_text(Locale::Pseudo, template, &[&"getopts"]);
     assert!(pseudo.contains("getopts"), "{pseudo}");
@@ -417,7 +473,7 @@ fn add_dispatch_messages_match_the_oracle_in_every_locale() {
         (
             "a --cmd template takes only --name/--description",
             "--cmd 模板只接受 --name/--description",
-            "--cmd 樣板只接受 --name/--description",
+            "--cmd 範本只接受 --name/--description",
         ),
         (
             "stdin authors a brand-new copy, and --ref/--exe need an existing file",
@@ -535,7 +591,7 @@ fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
         "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
         &[&"x"],
         "x 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
-        "x 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+        "x 不是範本佔位符，無法使用 placeholder 傳遞方式，已跳過。",
     );
     assert_zh(
         "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
@@ -631,23 +687,23 @@ fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
     let pseudo = format_text(Locale::Pseudo, plural, &[&"a, b", &4]);
     assert!(pseudo.contains("möré"), "{pseudo}");
 
-    let heading = "Prompt placeholders (the run form asks for them):";
+    let heading = "Prompt placeholders (the launch menu asks for them):";
     assert_eq!(
         text(Locale::ZhCn, heading),
-        "提示词的占位符(运行表单会询问):"
+        "提示词的占位符(启动菜单会询问):"
     );
     assert_eq!(
         text(Locale::ZhTw, heading),
-        "提示詞的佔位符(執行表單會詢問):"
+        "提示詞的佔位符(啟動選單會詢問):"
     );
-    let command_heading = "Command template placeholders (the run form asks for them):";
+    let command_heading = "Command template placeholders (the launch menu asks for them):";
     assert_eq!(
         text(Locale::ZhCn, command_heading),
-        "命令模板的占位符（运行表单会询问）："
+        "命令模板的占位符（启动菜单会询问）："
     );
     assert_eq!(
         text(Locale::ZhTw, command_heading),
-        "命令樣板的佔位符（執行表單會詢問）："
+        "命令範本的佔位符（啟動選單會詢問）："
     );
     let environment = "Declared environment variables (set on the run):";
     assert_eq!(
@@ -687,10 +743,10 @@ fn add_onboarding_controls_and_source_facts_are_fully_localized() {
     assert_eq!(
         format_text(
             Locale::ZhTw,
-            "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
+            "✓ skit read this script's own arguments ({} field). Running it opens the launch menu — nothing to memorize.",
             &[&1],
         ),
-        "✓ skit 已讀取這支腳本自己的參數（1 個欄位）。執行時會開啟表單，無需記憶指令。"
+        "✓ skit 看懂了這支腳本自己的參數（共 1 項）。執行時會打開啟動選單——不用背任何指令。"
     );
     assert_eq!(
         format_text(
@@ -717,7 +773,7 @@ fn chinese_terms_keep_distinct_product_meanings() {
     assert_eq!(text(Locale::ZhCn, "Storage mode"), "存储模式");
     assert_eq!(text(Locale::ZhCn, "Choices: {}"), "可选值：{}");
     assert_eq!(text(Locale::ZhCn, "Options:"), "选项：");
-    assert_eq!(text(Locale::ZhCn, "Secret: yes"), "敏感值：是");
+    assert_eq!(text(Locale::ZhCn, "Secret: yes"), "机密：是");
 
     assert_eq!(text(Locale::ZhTw, "Kind"), "類型");
     assert_eq!(text(Locale::ZhTw, "Type: {}"), "類型：{}");
@@ -753,7 +809,7 @@ fn a_typed_message_keeps_its_values_out_of_the_translation() {
     assert_eq!(message.to_string(), "entry not found: list-me");
 
     let quoted = skit_i18n::Message::new("preset {} does not exist").quoted("on off");
-    assert_eq!(quoted.localize(Locale::ZhTw), "預設 \"on off\" 不存在");
+    assert_eq!(quoted.localize(Locale::ZhTw), "參數組合 \"on off\" 不存在");
 
     let nested = skit_i18n::Message::new("invalid entry mutation: {}")
         .nested(skit_i18n::Message::new("entry name cannot be blank"));
@@ -793,16 +849,16 @@ fn framework_rendering_changes_only_whole_words() {
 fn every_tui_completion_status_has_two_complete_translations() {
     for (english, zh_cn, zh_tw) in [
         ("Source saved", "源文件已保存", "來源已儲存"),
-        ("Entry removed", "条目已删除", "項目已移除"),
-        ("Entry added", "条目已添加", "項目已新增"),
+        ("Entry removed", "条目已移除", "項目已移除"),
+        ("Entry added", "条目已添加", "項目已加入"),
         ("Settings saved", "设置已保存", "設定已儲存"),
         ("Preferences saved", "偏好设置已保存", "偏好設定已儲存"),
         (
             "Prompt runners saved",
-            "提示词运行器已保存",
+            "提示词执行器已保存",
             "提示詞執行器已儲存",
         ),
-        ("Presets saved", "预设已保存", "預設已儲存"),
+        ("Presets saved", "参数组合已保存", "參數組合已儲存"),
         ("Entry renamed", "条目已重命名", "項目已重新命名"),
         (
             "Run finished with exit status",
@@ -819,22 +875,33 @@ fn every_tui_completion_status_has_two_complete_translations() {
     );
 }
 
-/// The add receipt block must carry the version 0.4 strings byte for byte.
+/// The add receipt block must carry the version 0.4 strings.
 ///
 /// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:595-632` and the same
 /// msgids in `zh_TW`. The verbs and the colon widths are the oracle's, never
-/// house style: `已加入:` with an ASCII colon, `描述:`, `管理中的参数:`, and the
-/// full-width colon that the secrets note really uses.
+/// house style: `已加入:` with an ASCII colon, `管理中的参数:`, and the
+/// full-width colon that the secrets note really uses. Two parts differ from the
+/// oracle. The receipt says `说明:` because the whole catalog uses `说明` for a
+/// description, where version 0.4 mixed `说明` and `描述`. And the mode note
+/// names the copy mode in Chinese: version 0.4 put the stored value into the
+/// sentence (`(copy 模式)`), and the catalog calls that mode `复制模式`. The
+/// reference mode keeps the name of its `--ref`/`--reference` flag, as every
+/// other catalog row does.
 #[test]
-fn the_add_receipt_block_is_verbatim_version_0_4() {
+fn the_add_receipt_block_keeps_the_version_0_4_wording() {
     for (key, zh_cn, zh_tw) in [
         ("Added: {}", "已加入:x", "已加入:x"),
         (
-            "Added: {} ({} mode)",
-            "已加入:x (y 模式)",
-            "已加入:x (y 模式)",
+            "Added: {} (copy mode)",
+            "已加入:x (复制模式)",
+            "已加入:x (複製模式)",
         ),
-        ("Description: {}", "描述:x", "描述:x"),
+        (
+            "Added: {} (reference mode)",
+            "已加入:x (reference 模式)",
+            "已加入:x (reference 模式)",
+        ),
+        ("Description: {}", "说明:x", "說明:x"),
         ("Managed parameters: {}", "管理中的参数:x", "管理中的參數:x"),
         (
             "Secret parameter values are never saved by skit: {}",

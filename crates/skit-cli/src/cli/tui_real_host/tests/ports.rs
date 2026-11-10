@@ -180,7 +180,7 @@ fn preferences_drive_locale_file_discovery_install_and_raw_checkpoint_ports() {
         }))
         .unwrap();
     assert!(
-        matches!(failed, Action::SetStatus(ref status) if status.contains("walker replace denied"))
+        matches!(failed, Action::SetStatus { message: ref status, .. } if status.contains("walker replace denied"))
     );
     assert_eq!(fs::read(install.join("skit/SKILL.md")).unwrap(), before);
 
@@ -444,7 +444,7 @@ fn observations_keep_full_ui_state_unknown_config_and_port_transcripts() {
     };
     assert!(matches!(
         host.dispatch(dependency_effect).unwrap(),
-        Action::SetStatus(ref message)
+        Action::SetStatus { ref message, .. }
             if message.starts_with("Error:") && message.contains("dependencies")
     ));
     let action = host
@@ -575,6 +575,7 @@ fn command_submit_records_the_exact_low_level_request_and_outcome_sequence() {
             json!({ "environment_variable": "SystemRoot", "result": null }),
             json!({ "clock": "2026-08-28T12:34:56+00:00" }),
             json!({ "platform": "Other" }),
+            json!({ "output": "stdout", "text": "\n── Run Command ──\n" }),
             json!({ "output": "diagnostic", "text": "Reusing your last arguments: tail" }),
             json!({ "probe": "is_dir", "path": "<profile:fixture>/cwd", "result": true }),
             json!({ "probe": "find_program", "path": "sh", "result": "/virtual/bin/sh" }),
@@ -594,6 +595,7 @@ fn command_submit_records_the_exact_low_level_request_and_outcome_sequence() {
             }}),
             json!({ "clock": "2026-08-28T12:34:56+00:00" }),
             json!({ "clock": "2026-08-28T12:34:56+00:00" }),
+            json!({ "output": "success", "text": "✓ Command finished" }),
         ]
     );
 }
@@ -1324,11 +1326,12 @@ fn rejected_preflight_is_localized_and_never_enters_the_effect_server() {
                 "result": null,
             })
     }));
-    let expected_action = Action::SetStatus(
-        Message::new("Error: {}")
+    let expected_action = Action::SetStatus {
+        kind: skit_ui::StatusKind::Error,
+        message: Message::new("Error: {}")
             .nested(error.message())
             .localize(Locale::ZhTw),
-    );
+    };
 
     host.clear_transcript();
     assert_eq!(host.dispatch(effect).unwrap(), expected_action);

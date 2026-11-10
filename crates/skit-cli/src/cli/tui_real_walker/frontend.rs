@@ -8,7 +8,9 @@ use ratatui_core::{
 use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyModifiers};
 use serde_json::{Value, json};
 use skit_i18n::{Locale, detect_locale};
-use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
+use skit_tui::{
+    Appearance, Background, EventHandling, ThemeName, TuiSession, ViewGeometry, render_with_session,
+};
 use skit_tui_walker_model::{invariants, model::LiveInventory, parity};
 use skit_tui_walker_support::{
     RectSnapshot, StyledFrameSnapshot,
@@ -23,6 +25,17 @@ use super::corpus::{
     screen_target_error_message,
 };
 use crate::cli::tui_real_host::WalkerFilePickerTree;
+
+/// Give `session` the colors that most users get: the default terminal theme, on a terminal that
+/// says its background is dark.
+fn default_appearance(mut session: TuiSession) -> TuiSession {
+    session.set_appearance(
+        Appearance::default()
+            .with_theme(ThemeName::Terminal)
+            .with_background(Background::Dark),
+    );
+    session
+}
 
 /// Return the geometry that the parity probe reads.
 ///
@@ -51,7 +64,7 @@ impl RealFrontend {
         Ok(Self {
             state,
             locale,
-            session: TuiSession::default(),
+            session: default_appearance(TuiSession::default()),
             terminal: Terminal::new(TestBackend::new(size.width, size.height))
                 .map_err(|error| error.to_string())?,
             geometry: ViewGeometry::default(),
@@ -247,11 +260,11 @@ impl CorpusFrontend {
         mut inner: RealFrontend,
         file_picker_tree: WalkerFilePickerTree,
     ) -> Self {
-        inner.session = TuiSession::with_file_picker_tree(
+        inner.session = default_appearance(TuiSession::with_file_picker_tree(
             file_picker_tree.root,
             file_picker_tree.directories,
             file_picker_tree.files,
-        );
+        ));
         Self { inner }
     }
 

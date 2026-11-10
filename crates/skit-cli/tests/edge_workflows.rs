@@ -95,6 +95,8 @@ impl Sandbox {
         .unwrap();
     }
 
+    // Only the Unix draft-editor contract drives an editor on a terminal.
+    #[cfg(unix)]
     fn editor_pty(
         &self,
         args: &[&str],
@@ -349,6 +351,42 @@ fn configuration_runner_and_completion_edges_are_explicit() {
     }
 }
 
+/// A description that keeps a line break prints every line under the indent of the view.
+///
+/// Entry settings and `skit describe` can store a line break. `skit show` and the add receipt
+/// print the description with a two-space indent (`src/skit/cli.py:2226-2229`, `:2371-2372`). The
+/// second line lost that indent, so it read as a new item of the view. Shell completion is not
+/// part of this: `clap_complete` shows only the first line of a candidate's help.
+#[test]
+fn a_multi_line_description_keeps_the_indent_of_the_show_view_and_the_add_receipt() {
+    let sandbox = Sandbox::new();
+    let receipt = String::from_utf8(sandbox.ok(&[
+        "add",
+        "--cmd",
+        "true",
+        "--name",
+        "Greeter",
+        "--description",
+        "Say hello from Ruby.\nSecond line",
+    ]))
+    .unwrap();
+    assert!(
+        receipt.contains("\n  Description: Say hello from Ruby.\n               Second line\n"),
+        "{receipt}"
+    );
+
+    sandbox.ok(&[
+        "describe",
+        "greeter",
+        "Say hello from Ruby.\n\nAfter a blank line",
+    ]);
+    let shown = String::from_utf8(sandbox.ok(&["show", "greeter"])).unwrap();
+    assert!(
+        shown.contains("\n  Say hello from Ruby.\n\n  After a blank line\n"),
+        "{shown}"
+    );
+}
+
 #[test]
 fn locale_fallbacks_use_config_then_environment_without_changing_json() {
     let sandbox = Sandbox::new();
@@ -443,7 +481,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
     for text in [
         "Index rebuilt: 5 entries",
         "launch target is gone",
-        "form definitions are out of sync",
+        "parameter definitions are out of sync",
         "missing external commands",
         "a run would refuse to start",
         "Ignored malformed runner row(s) in config: bad. Inspect and repair with: skit runner list --all",

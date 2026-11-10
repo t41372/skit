@@ -146,7 +146,7 @@ pub(super) fn record_corpus_profile(
         let sink_ref = sink
             .as_mut()
             .expect("the corpus sink exists before trace finish");
-        engine.start(sink_ref).map_err(&context)?;
+        engine.start(sink_ref).map_err(context)?;
         for (index, operation) in operations.iter().enumerate() {
             engine
                 .run_operation(operation.clone(), sink_ref)
@@ -165,7 +165,7 @@ pub(super) fn record_corpus_profile(
             .iter()
             .map(corpus_operation_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(&context)?;
+            .map_err(context)?;
         let final_liveness = corpus_operation_value(&CorpusOperation::FinalLiveness)
             .expect("the fixed final-liveness operation serializes");
         let facts = engine.host().inner.leak_oracle_facts();
@@ -173,7 +173,7 @@ pub(super) fn record_corpus_profile(
             .take()
             .expect("the corpus sink is consumed exactly once")
             .finish(operation_values, final_liveness)
-            .map_err(&context)?;
+            .map_err(context)?;
         Ok((trace, facts))
     })();
     drop(sink);
@@ -845,8 +845,10 @@ pub(crate) fn draft_quarantine_corpus_operations() -> Vec<CorpusOperation> {
 
 /// The short operation vector that cuts the derived Add review name.
 ///
-/// It authors one prompt draft, reaches the review name, and cuts that name with `Control+U`.
-/// The cut name stays in the input cut buffer after the paste replaces the value.
+/// It authors one script draft, reaches the review name, and cuts that name with `Control+U`.
+/// The cut name stays in the undo history of the input after the paste replaces the value. A
+/// script draft keeps the allocator stem in its name. A prompt draft takes its name from its
+/// first words.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
     let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
@@ -860,6 +862,37 @@ pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
         )
     };
     let add_focus = |target| CorpusOperation::ScreenFocus(ScreenTarget::Add(target));
+    let add_local = |target, key| CorpusOperation::LocalKeyboard {
+        target: LocalActionTarget::Add(target),
+        key,
+    };
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        add_focus(AddControlId::NewScript),
+        add_local(AddControlId::NewScript, plain(CorpusKey::Enter)),
+        add_focus(AddControlId::EditSource),
+        add_local(AddControlId::EditSource, control('e')),
+        add_focus(AddControlId::Text(AddTextField::ReviewName)),
+        CorpusOperation::RawKey(control('u')),
+        CorpusOperation::Paste("Corpus Script".to_owned()),
+        add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
+        add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The short operation vector that moves the cursor in the derived Add review name.
+///
+/// It authors one script draft, because a script draft keeps the allocator stem in its review
+/// name. A prompt draft takes its name from its first words. The review stage opens with the
+/// focus on the review name and the cursor at its end. One arrow key moves the cursor inside the
+/// name, and `Home` moves it to the start. The narrow viewport then makes the click at the center
+/// of the name field land inside the name, as in the nightly walks that found the defect. `End`
+/// moves the cursor back to the end. The value stays the derived name the whole time. Two `Esc`
+/// presses then leave the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_cursor_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    let add_focus = |target| CorpusOperation::ScreenFocus(ScreenTarget::Add(target));
     let add_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Add(target));
     let add_local = |target, key| CorpusOperation::LocalKeyboard {
         target: LocalActionTarget::Add(target),
@@ -867,17 +900,217 @@ pub(crate) fn review_name_cut_corpus_operations() -> Vec<CorpusOperation> {
     };
     vec![
         CorpusOperation::CommandKeyboard(UiCommand::Add),
-        add_focus(AddControlId::NewPrompt),
-        add_local(AddControlId::NewPrompt, plain(CorpusKey::Enter)),
-        add_focus(AddControlId::Interpolate),
-        add_hit(AddControlId::Interpolate),
-        add_focus(AddControlId::EditSource),
-        add_local(AddControlId::EditSource, control('e')),
-        add_focus(AddControlId::Text(AddTextField::ReviewName)),
-        CorpusOperation::RawKey(control('u')),
-        CorpusOperation::Paste("Corpus Prompt".to_owned()),
-        add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
-        add_local(AddControlId::Cancel, plain(CorpusKey::Escape)),
+        add_focus(AddControlId::NewScript),
+        add_local(AddControlId::NewScript, plain(CorpusKey::Enter)),
+        CorpusOperation::RawKey(plain(CorpusKey::Left)),
+        CorpusOperation::RawKey(plain(CorpusKey::Home)),
+        CorpusOperation::Resize {
+            width: 24,
+            height: 6,
+        },
+        add_hit(AddControlId::Text(AddTextField::ReviewName)),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The short operation vector that moves the cursor in a picked Add source path.
+///
+/// It picks one seeded file, so the focused source path is the path that the host proved. One
+/// arrow key moves the cursor inside the path, and `Home` moves it to the start. The narrow
+/// viewport then makes the click at the center of the path field land inside the path, and `End`
+/// moves the cursor back to the end. The value stays the picked path the whole time. `Esc` then
+/// leaves the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn source_path_cursor_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    let add_hit = |target| CorpusOperation::ScreenHit(ScreenTarget::Add(target));
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        add_hit(AddControlId::BrowseSource),
+        CorpusOperation::ScreenHit(ScreenTarget::FilePickerEntry {
+            relative: PathBuf::from("picked.sh"),
+        }),
+        CorpusOperation::RawKey(plain(CorpusKey::Left)),
+        CorpusOperation::RawKey(plain(CorpusKey::Home)),
+        CorpusOperation::Resize {
+            width: 24,
+            height: 6,
+        },
+        add_hit(AddControlId::Text(AddTextField::SourcePath)),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The key events of one chord with Control.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn control_key(character: char) -> CorpusOperation {
+    CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Character(character),
+        CorpusModifiers {
+            control: true,
+            ..CorpusModifiers::NONE
+        },
+    ))
+}
+
+/// The key events of one key with Shift.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn shift_key(code: CorpusKey) -> CorpusOperation {
+    CorpusOperation::RawKey(CorpusKeyEvent::press(
+        code,
+        CorpusModifiers {
+            shift: true,
+            ..CorpusModifiers::NONE
+        },
+    ))
+}
+
+/// The operations that author one script draft and reach its derived review name.
+///
+/// The review stage opens with the focus on the name and the cursor at its end. A script draft
+/// keeps the allocator stem in its name.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn script_review_name_operations() -> Vec<CorpusOperation> {
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        CorpusOperation::ScreenFocus(ScreenTarget::Add(AddControlId::NewScript)),
+        CorpusOperation::LocalKeyboard {
+            target: LocalActionTarget::Add(AddControlId::NewScript),
+            key: CorpusKeyEvent::press(CorpusKey::Enter, CorpusModifiers::NONE),
+        },
+    ]
+}
+
+/// The short operation vector that types the same text over a selection of the derived review
+/// name.
+///
+/// `Shift+Left` selects the last `0` of the allocator stem, and the paste puts back a `0`. The
+/// value stays the derived name, so the editor must record no edit. Two `Esc` presses then leave
+/// the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_same_text_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        shift_key(CorpusKey::Left),
+        CorpusOperation::Paste("0".to_owned()),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that deletes the derived review name and brings it back.
+///
+/// `Control+U` deletes the whole name, `Control+Z` brings it back, and `Control+Y` deletes it
+/// again. The derived name moves between the value and the undo history. Two `Esc` presses then
+/// leave the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_undo_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        control_key('u'),
+        control_key('z'),
+        control_key('y'),
+        control_key('z'),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that cuts the whole derived review name and leaves Add.
+///
+/// `Shift+Home` selects the name and `Control+X` cuts it to the session clipboard. The two `Esc`
+/// presses end the Add workflow, and the clipboard keeps the name after the workflow is gone.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn review_name_clipboard_corpus_operations() -> Vec<CorpusOperation> {
+    let escape = CorpusOperation::RawKey(CorpusKeyEvent::press(
+        CorpusKey::Escape,
+        CorpusModifiers::NONE,
+    ));
+    let mut operations = script_review_name_operations();
+    operations.extend([
+        shift_key(CorpusKey::Home),
+        control_key('x'),
+        escape.clone(),
+        escape,
+    ]);
+    operations
+}
+
+/// The short operation vector that deletes a picked Add source path and brings it back.
+///
+/// It picks one seeded file. `End` and `Control+U` delete the whole path, `Control+Z` brings it
+/// back, and `Control+Y` deletes it again. The picked path moves between the value and the undo
+/// history. `Esc` then leaves the Add workflow.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn source_path_undo_corpus_operations() -> Vec<CorpusOperation> {
+    let plain = |code| CorpusKeyEvent::press(code, CorpusModifiers::NONE);
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Add),
+        CorpusOperation::ScreenHit(ScreenTarget::Add(AddControlId::BrowseSource)),
+        CorpusOperation::ScreenHit(ScreenTarget::FilePickerEntry {
+            relative: PathBuf::from("picked.sh"),
+        }),
+        CorpusOperation::RawKey(plain(CorpusKey::End)),
+        control_key('u'),
+        control_key('z'),
+        control_key('y'),
+        control_key('z'),
+        CorpusOperation::RawKey(plain(CorpusKey::Escape)),
+    ]
+}
+
+/// The interpreter that [`refused_run_corpus_operations`] pastes into the entry settings.
+///
+/// It holds one C0 control character, as the nightly walk that found the defect pasted one. It
+/// has no line break, because a single-line box keeps only the first line of a paste.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) const MISSING_PROGRAM: &str = "one\u{3}é";
+
+/// The text that [`refused_run_corpus_operations`] adds to the extra arguments of the run form.
+///
+/// Its quote has no end, so the host cannot split the arguments.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) const UNBALANCED_ARGUMENTS: &str = " \"unbalanced";
+
+/// The short operation vector that runs an entry twice, and the host refuses both runs.
+///
+/// Three `Tab` presses move the settings focus from the name past the description and the
+/// working directory to the interpreter. It pastes [`MISSING_PROGRAM`] there, saves the settings,
+/// and runs the entry. The host cannot find the program, so it answers with a status that names
+/// the program. One more `Tab` moves the run form focus from the parameter to the extra
+/// arguments, and [`UNBALANCED_ARGUMENTS`] makes their quoting invalid. The host fails the second
+/// run before it looks for the program. The product shows each refusal as a status line and
+/// keeps the session, so the walk goes on and goes back to the Library.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn refused_run_corpus_operations() -> Vec<CorpusOperation> {
+    let tab = CorpusOperation::RawKey(CorpusKeyEvent::press(CorpusKey::Tab, CorpusModifiers::NONE));
+    vec![
+        CorpusOperation::CommandKeyboard(UiCommand::Settings),
+        tab.clone(),
+        tab.clone(),
+        tab.clone(),
+        CorpusOperation::Paste(MISSING_PROGRAM.to_owned()),
+        CorpusOperation::CommandKeyboard(UiCommand::SaveSettings),
+        CorpusOperation::CommandKeyboard(UiCommand::Run),
+        CorpusOperation::CommandKeyboard(UiCommand::Submit),
+        CorpusOperation::Focus { gained: false },
+        tab,
+        CorpusOperation::Paste(UNBALANCED_ARGUMENTS.to_owned()),
+        CorpusOperation::CommandKeyboard(UiCommand::Submit),
+        CorpusOperation::CommandKeyboard(UiCommand::Back),
     ]
 }
 

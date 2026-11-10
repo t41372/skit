@@ -18,13 +18,12 @@ fresh-context Opus reviewer) shaped revision 31; their accepted changes are fold
 required vocabulary (20 served names, 13 nested names, exact key lists). Codex's G4a
 `RecordedRealCorpus::new` also requires the canonical 100-operation vector. Under those rules the
 aggregate transaction can only run on the full corpus, about 495 seconds per generation. A test that
-generates twice takes about 17 minutes. It cannot be a normal `#[test]`: `.cargo/mutants.toml` sets
-`test_workspace = true`, `mutation.yml` passes `--timeout 300`, and `ci.yml` runs
-`cargo llvm-cov --workspace --all-targets --all-features` without `--include-ignored`, so an
-`#[ignore]` owner contributes no line coverage while every `#[cfg(test)]` line under `crates/*/src/`
-is gated. The transaction must therefore be exercisable with a small real corpus (four real stable
-profiles, a short vector), and the "this is the final corpus" rules are a separate policy that the
-final owner applies.
+generates twice takes about 17 minutes. That is too slow for a normal `#[test]`. Also, `ci.yml` then
+ran `cargo llvm-cov --workspace --all-targets --all-features` without `--include-ignored`, so an
+`#[ignore]` owner contributed no line coverage while every `#[cfg(test)]` line under
+`crates/*/src/` was gated. The transaction must therefore be exercisable with a small real corpus
+(four real stable profiles, a short vector), and the "this is the final corpus" rules are a
+separate policy that the final owner applies.
 
 Decision:
 
@@ -61,7 +60,7 @@ The G3 tests `complete_timeline_builds_one_valid_required_profile_coverage_summa
 `four_profile_coverage_merge_is_exact_checked_and_stored_comparable` keep their assertions by
 calling the policy validator explicitly.
 
-## D2. Walker-support additions (pure, mutation-visible)
+## D2. Walker-support additions (pure)
 
 All in `crates/skit-tui-walker-support/src/bundle.rs`, with contracts in `bundle_tests.rs` or
 `aggregate_contract_tests.rs`. No `std::fs`, no product dependency.
@@ -120,7 +119,7 @@ pub fn validate_review_files(
 ) -> Result<ReviewProgress, ArtifactError>;
 ```
 
-Contracts must pin each refusal message and kill mutants: exact root-level matching for
+Contracts must pin each refusal message and each rule: exact root-level matching for
 `is_reviewer_mutable`; digest validation and prefix for the directory name; missing, extra, and
 changed immutable paths versus changed mutable paths for the comparison; random mode, missing,
 extra, and misnamed profiles for the run rule; digest mismatch, stored-profile inequality (including
@@ -361,15 +360,16 @@ current `pub(super)` surface; prefer reusing `open_directory` semantics over any
 Location: `<checkout>/target/ui-walker-review-corpus/` (`checkout_root()`), mirroring the legacy
 `target/ui-walker-agent-review`. The final corpus uses `StableSandboxNamespace::system()`.
 
-Owner structure. An `#[ignore]`d test body under `crates/*/src/` is a set of uncovered lines
-under the CI coverage command (`scripts/check_coverage.sh` has no exemption for it, and the repo's
-own ignored tests in `cli/tests.rs` are spawned by non-ignored parents for that reason). A
-17-minute owner cannot use that pattern, so no committed test in `src/` is ignored. Instead:
+Owner structure. An `#[ignore]`d test body under `crates/*/src/` was a set of uncovered lines
+under the CI coverage command of that time (`scripts/check_coverage.sh` had no exemption for it,
+and the repo's own ignored tests in `cli/tests.rs` were spawned by non-ignored parents for that
+reason). A 17-minute owner could not use that pattern, so no committed test in `src/` was ignored.
+Instead:
 
 - `pub(super) fn generate_and_install_review_corpus(namespace: StableSandboxNamespace, parent: &Path, operations: &[CorpusOperation], fingerprint: &mut impl FnMut() -> Result<String, String>) -> Result<(PathBuf, StableCorpusTracePair), String>`
   is the permanent generation owner: it records main, installs, records replay from fresh seeds,
-  installs again, and returns the installed path with the pair. Fast tests cover every line of it
-  with the small vector. The canonical-vector invocation (with `StableSandboxNamespace::system()`,
+  installs again, and returns the installed path with the pair. Fast tests run all of it with the
+  small vector. The canonical-vector invocation (with `StableSandboxNamespace::system()`,
   `checkout_root().join("target/ui-walker-review-corpus")`, `source_identity`, then
   `read_review_corpus`, `validate_final_review_corpus`, the per-profile `SaveRunner { name ==
   "new-agent" }` and `Add(RememberRunner("new-agent"))` reachability assertions, and no `.walker-*`
@@ -383,14 +383,14 @@ own ignored tests in `cli/tests.rs` are spawned by non-ignored parents for that 
   and otherwise from a small corpus it completes itself, written without a branch:
   `env::var_os("SKIT_WALKER_REVIEW").map(PathBuf::from).unwrap_or_else(|| small_completed_corpus(..))`,
   and the expected revision from `SKIT_WALKER_EXPECT_REVISION` the same way. A human validates a real
-  review by setting the variable; CI covers every line with the small corpus. This env-driven test
+  review by setting the variable; CI runs all of it with the small corpus. This env-driven test
   applies the final policy only when the path came from the environment, which is itself a branch;
   so the fast test covers the shared function with `expected_final: bool` passed as a plain
   parameter, and the env-driven entry passes `env::var_os("SKIT_WALKER_REVIEW").is_some()`.
 - Measured 2026-09-04: the repository's coverage measurement (`cargo llvm-cov` with its default
-  ignore rules) records no `SF` entry for `*_tests.rs`, `tests.rs`, or `tests/` files (117 files in
-  the committed `lcov.info`, none of them); `bundle_tests.rs`, `aggregate_contract_tests.rs`, and
-  `cli/tests.rs` have always been outside the gate. So the two checked-in owners live in a new
+  ignore rules) recorded no `SF` entry for `*_tests.rs`, `tests.rs`, or `tests/` files (117 files
+  in the committed `lcov.info`, none of them); `bundle_tests.rs`, `aggregate_contract_tests.rs`,
+  and `cli/tests.rs` had always been outside the gate. So the two checked-in owners live in a new
   `crates/skit-cli/src/cli/tui_walker_corpus_tests.rs` (declared `#[cfg(test)] mod` from
   `tui_walker_bundle.rs` or `cli.rs`), both `#[ignore]`, both thin: the canonical-vector generation
   owner calls `generate_and_install_review_corpus` with `StableSandboxNamespace::system()`,
@@ -453,11 +453,9 @@ short prefix already used by `short_stable_corpus_prefix_replays_the_complete_re
     referenced by two profiles), so the shared-object double-scan branch is either exercised or
     known to be dead and removed.
 
-Coverage: zero new executable-line misses in every changed file (cargo-llvm-cov plus
-`scripts/check_coverage.sh`). Mutation: every D2 rule has a killing contract; the package-scoped
-`cargo mutants --no-config --package skit-tui-walker-support --file crates/skit-tui-walker-support/src/bundle.rs`
-run is development evidence only; the real workspace gate (`test_workspace = true`) remains the
-deferred issue #47 debt, and the small-corpus recordings add to every mutant's suite time.
+The coverage gate of that time required zero new executable-line misses in every changed file
+(cargo-llvm-cov plus `scripts/check_coverage.sh`). Every D2 rule has a contract that fails when the
+rule changes.
 Preservation is conditional on replay byte equality: `review-progress.json` binds the manifest
 digest, so a stable-replay divergence makes regeneration refuse rather than preserve.
 Do not touch `.github/workflows/ui-walker.yml`; `scripts/test_tooling_contracts.sh` pins its text.
@@ -484,8 +482,8 @@ push.
   embedded profile; do not duplicate it.
 - `InstalledBundleLeakOracle::new` and `masked_run_value` already handle every profile in
   `run.sandbox.profiles()`.
-- Every line in a `#[cfg(test)]` module under `crates/*/src/` is coverage-gated; use
-  `#[cfg(target_os)]` function pairs, no runtime platform branches, no unreachable `else`.
+- Every line in a `#[cfg(test)]` module under `crates/*/src/` was coverage-gated, so the code used
+  `#[cfg(target_os)]` function pairs, no runtime platform branches, and no unreachable `else`.
 - `refs/codex-review/g3-final-full-diagnostic-20260902` is a stash commit on `095ef1c`; read its
   test `canonical_corpus_reaches_required_measured_coverage_in_every_profile` as an example and
   build on `record_corpus_profile`.

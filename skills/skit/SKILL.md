@@ -1,6 +1,6 @@
 ---
 name: skit
-description: Run, inspect, and manage entries in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, command templates, and AI-agent prompts, with typed parameter forms, saved presets, and per-entry launch policy. Use when the user asks to run/list/add their scripts or prompts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
+description: Run, inspect, and manage entries in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, command templates, and AI-agent prompts, with typed launch menus, saved presets, and per-entry launch policy. Use when the user asks to run/list/add their scripts or prompts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
@@ -81,7 +81,7 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   says so on stderr). Pass your own `--` args, use `--raw` (which never replays old
   arguments), or `--forget-args` (erases the remembered tail up front,
   then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
-- `--raw` runs a script's stored copy as-is, skipping the parameter form and injection.
+- `--raw` runs a script's stored copy as-is, skipping the launch menu and injection.
   It applies to every kind EXCEPT prompt and command, whose placeholders ARE the
   artifact — there is no "as-is" without them, so `--raw` is refused there (exit 2). (exe
   and the interpreted kinds run as-is exactly like python.) It also refuses
@@ -100,7 +100,7 @@ When the entry's target process actually ran, its exit code passes through **unt
 | 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
 | 126 | target cannot launch: not executable, interpreter/runtime/need missing, or prompt runner unresolved |
 | 127 | no such entry in the library (or launch target missing) |
-| 130 | user cancelled the interactive form |
+| 130 | user cancelled an interactive screen, such as the launch menu |
 
 ## Add entries to the library
 
@@ -142,7 +142,7 @@ skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-vi
   are `needs`, checked before every run: `skit deps <name> --need jq --need ffmpeg`.
 - **Under `--no-input`, detected parameters are NOT auto-managed.** For a Python or
   shell script that reads constants, prompts, or `${VAR:-}` env-defaults (no
-  argparse/getopts), bring its parameters under management so they become form fields
+  argparse/getopts), bring its parameters under management so they become launch menu fields
   / `--set` targets:
 
 ```bash
@@ -155,7 +155,7 @@ skit params <name> --secret API_KEY --env-source API_KEY=OPENAI_API_KEY
   value never appears in commands, files, or output. Scripts that parse their own CLI
   (Python argparse/click/typer, shell getopts, JS `util.parseArgs`, fish `argparse`,
   PowerShell `param()`) need no management — skit reads them statically. When the
-  parser cannot be read statically (a dynamic optstring, docopt/fire), the run form
+  parser cannot be read statically (a dynamic optstring, docopt/fire), the launch menu
   falls back to an extra-arguments field, and managed constants add fields
   alongside it rather than replacing anything.
 - **Declared parameters** (for exe, command, and reader-less kinds like ruby/perl/lua/r)
@@ -207,7 +207,7 @@ skit preset delete <name> nightly -y
 ## Prompts & runners
 
 A **prompt** entry is a reusable, parameterized piece of text for an AI coding agent:
-`{{placeholder}}` holes (double braces, identifier names) become form fields / `--set`
+`{{placeholder}}` holes (double braces, identifier names) become launch menu fields / `--set`
 targets, and the rendered text is handed to a **runner** — a configured agent CLI
 (claude, codex, opencode, amp, antigravity, copilot, cursor, pi are preconfigured).
 There are NO escape sequences: single-brace text (JSON, `${VAR}`, f-strings) is never a
@@ -226,7 +226,7 @@ skit add big.prompt.md --prompt --no-interpolate --no-input       # no insertion
 skit show <name> --json           # adds "runner", "runners_available", "interpolate"
 skit run <name> --runner claude --set target=src/app.py --no-input
 skit params <name> --runner claude   # pin the agent
-skit params <name> --runner ''       # clear the pin (ask on the run form)
+skit params <name> --runner ''       # clear the pin (ask in the launch menu)
 skit params <name> --add extra_hole  # manage a {{hole}} typed into the body later
 skit params <name> --rm noise        # unmanage a false positive (it stays verbatim text)
 skit params <name> --no-interpolate  # switch insertion off; --interpolate turns it back on

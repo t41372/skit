@@ -9,7 +9,7 @@ use std::{
 };
 
 use ratatui_core::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
@@ -19,9 +19,9 @@ use ratatui_crossterm::crossterm::event::{
 };
 use ratatui_interact::{
     components::{
-        CheckBox, CheckBoxState, ListPickerState, ScrollableContentState, Select, SelectAction,
-        SelectState, SelectStyle, handle_scrollable_content_key, handle_scrollable_content_mouse,
-        handle_select_key,
+        Button, ButtonState, ButtonVariant, CheckBox, CheckBoxState, ListPickerState,
+        ScrollableContentState, Select, SelectAction, SelectState, SelectStyle,
+        handle_scrollable_content_key, handle_scrollable_content_mouse, handle_select_key,
     },
     state::FocusManager,
 };
@@ -29,14 +29,16 @@ use ratatui_widgets::{
     clear::Clear,
     paragraph::{Paragraph, Wrap},
 };
-use skit_domain::StorageMode;
+use skit_domain::{
+    StorageMode,
+    parameters::{ParamDecl, ParameterType, ParameterValue},
+};
 use skit_i18n::{Locale, format_text, kind_choice_label, text};
 use skit_ui::{
     AddAction, AddNotice, AddProblem, AddStage, AddWorkflowState, DependencySurface,
     DraftDeleteOutcome, DraftKind, DraftSummary, KnownEntryKind, PathOutputPolicy, PathPickerState,
     PathSelectionMode, PickerPurpose, ReviewLane, SourceSnapshot,
 };
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -48,9 +50,14 @@ use crate::{
         path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
         select as snapshot_select, value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor, edit_command},
     footer::handle_footer_scroll,
+    layout::ViewportProfile,
     local_action::LocalKey,
-    pointer::{ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry},
+    pointer::{
+        ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, PointerPosition,
+        is_primary_drag,
+    },
     rowclip::RowClip,
     session::render_line_input_band,
     theme::{self, Panel, Status, panel_block},
@@ -147,6 +154,8 @@ pub struct AddScreenGeometry {
     pub first_visible: usize,
     /// Keyboard-equivalent mouse regions.
     pub hits: Vec<AddHitRegion>,
+    /// The visible buttons and footer chips, which show the hover and pressed looks.
+    pub pointer_targets: Vec<AddHitRegion>,
 }
 
 impl AddScreenGeometry {
@@ -157,23 +166,30 @@ impl AddScreenGeometry {
             body,
             first_visible,
             hits,
+            pointer_targets,
         } = self;
-        let hits = hits
-            .iter()
-            .map(|hit| {
-                let AddHitRegion { area, target } = hit;
-                Ok(serde_json::json!({
-                    "area": snapshot_rect(*area),
-                    "target": snapshot_value("add.geometry.target", target)?,
-                }))
-            })
-            .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
+        let regions = |regions: &[AddHitRegion]| {
+            regions
+                .iter()
+                .map(|hit| {
+                    let AddHitRegion { area, target } = hit;
+                    Ok(serde_json::json!({
+                        "area": snapshot_rect(*area),
+                        "target": snapshot_value("add.geometry.target", target)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()
+        };
         Ok(snapshot_node(
             "add_geometry",
             [
                 ("body", snapshot_rect(*body)),
                 ("first_visible", serde_json::json!(first_visible)),
-                ("hits", serde_json::json!(hits)),
+                ("hits", serde_json::json!(regions(hits)?)),
+                (
+                    "pointer_targets",
+                    serde_json::json!(regions(pointer_targets)?),
+                ),
             ],
         ))
     }
@@ -212,7 +228,7 @@ struct AddSignature {
 pub struct AddScreenSession {
     signature: Option<AddSignature>,
     focus: FocusManager<AddControlId>,
-    inputs: BTreeMap<AddTextField, LineInput>,
+    inputs: BTreeMap<AddTextField, TextEditor>,
     checks: BTreeMap<AddControlId, CheckBoxState>,
     kind_picker: ListPickerState,
     draft_picker: ListPickerState,
@@ -319,7 +335,7 @@ impl AddScreenSession {
             .map(|(id, input)| {
                 Ok(serde_json::json!({
                     "id": snapshot_value("add.input.id", id)?,
-                    "state": snapshot_value("add.input.state", input)?,
+                    "state": input.agent_review_snapshot(),
                 }))
             })
             .collect::<Result<Vec<_>, AgentReviewSnapshotError>>()?;
@@ -419,6 +435,28 @@ impl AddScreenSession {
     pub(crate) fn set_picker_root(&mut self, root: PathBuf) {
         self.picker_root = Some(root);
     }
+
+    /// Each visible button and footer chip, and whether a primary press holds it.
+    ///
+    /// A body button and a footer chip can name the same action, and the press holds the action.
+    /// A press moves the pointer onto its target, and a drag ends the press, so the target under
+    /// the pointer is the one that the press holds.
+    pub(crate) fn pointer_targets(
+        &self,
+        geometry: &AddScreenGeometry,
+        pointer: PointerPosition,
+    ) -> Vec<(Rect, bool)> {
+        geometry
+            .pointer_targets
+            .iter()
+            .map(|hit| {
+                (
+                    hit.area,
+                    self.click.pressed() == Some(&hit.target) && pointer.is_over(hit.area),
+                )
+            })
+            .collect()
+    }
     pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, AddControlId, AddScreenEvent)] {
         &self.advertised
     }
@@ -493,6 +531,8 @@ impl AddScreenSession {
                     AddTextField::CommandDescription,
                     &source.command_description,
                 );
+                // The focus order is the order on the screen: the kept drafts and their delete
+                // button come before the blank-page buttons.
                 for index in 0..source.listed_drafts().len() {
                     self.focus.register(AddControlId::Draft(index));
                 }
@@ -500,14 +540,16 @@ impl AddScreenSession {
                 if let Some(index) = source.selected_draft {
                     self.draft_picker.select(index);
                 }
-                self.focus
-                    .register_all([AddControlId::NewScript, AddControlId::NewPrompt]);
                 match source.listed_drafts() {
                     [] => {}
                     [_first, ..] => self.focus.register(AddControlId::DeleteDraft),
                 }
-                self.focus
-                    .register_all([AddControlId::Continue, AddControlId::Cancel]);
+                self.focus.register_all([
+                    AddControlId::NewScript,
+                    AddControlId::NewPrompt,
+                    AddControlId::Continue,
+                    AddControlId::Cancel,
+                ]);
             }
             AddStage::Kind => {
                 let picker = state
@@ -641,6 +683,15 @@ impl AddScreenSession {
             {
                 return Some(AddScreenEvent::Changed);
             }
+            // A drag that started in a text box selects in that box and keeps the press armed.
+            if is_primary_drag(mouse)
+                && let Some(AddControlId::Text(field)) = self.click.pressed().cloned()
+                && let Some(editable) = self.editables.get(&field).copied()
+                && let Some(input) = self.inputs.get_mut(&field)
+            {
+                let _ = editable.pointer(input, mouse);
+                return Some(AddScreenEvent::Changed);
+            }
             let target = geometry
                 .hits
                 .iter()
@@ -652,7 +703,7 @@ impl AddScreenSession {
                 && let Some(editable) = self.editables.get(field).copied()
                 && let Some(input) = self.inputs.get_mut(field)
             {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                let _ = editable.pointer(input, mouse);
             }
             let ClickDispatch::Captured(outcome) = self.click.dispatch(mouse, target) else {
                 return None;
@@ -682,10 +733,18 @@ impl AddScreenSession {
                 return None;
             };
             let input = self.inputs.get_mut(&field)?;
-            for character in value.chars() {
-                let _ = input.handle(InputRequest::InsertChar(character));
-            }
-            return Some(AddScreenEvent::Action(text_action(field, input.value())));
+            return Some(match input.paste(&value) {
+                EditResponse::Changed => {
+                    let action = text_action(field, input.value());
+                    // A paste brings its box back into view, as a typed key does, so no paste
+                    // lands in a box that the wheel scrolled away.
+                    self.ensure_focus_visible();
+                    AddScreenEvent::Action(action)
+                }
+                EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                    AddScreenEvent::Changed
+                }
+            });
         }
         let Event::Key(key) = event else {
             return None;
@@ -695,13 +754,10 @@ impl AddScreenSession {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             let text_focused = matches!(self.focus.current(), Some(AddControlId::Text(_)));
-            // Editing keys belong to the focused mature Input. Ctrl+E moves to the end in a
-            // review field. Ctrl+D deletes the next character in a source field.
-            let input_owns_key = text_focused
-                && matches!(
-                    (key.code, state.stage()),
-                    (KeyCode::Char('e'), AddStage::Review) | (KeyCode::Char('d'), AddStage::Source)
-                );
+            // Editing keys belong to the focused text box: Ctrl+E goes to the end of a review
+            // box, and Ctrl+D deletes the next character of a source box. The screen chords that
+            // are not editing keys (Ctrl+N, Ctrl+P, Ctrl+O, Ctrl+S) keep working.
+            let input_owns_key = text_focused && edit_command(&key, false).is_some();
             if !input_owns_key {
                 if let Some(target) = self.advertised_target(&key) {
                     return self.activate(target, state);
@@ -776,15 +832,18 @@ impl AddScreenSession {
                     return Some(AddScreenEvent::Action(AddAction::Continue));
                 }
                 let input = self.inputs.get_mut(&field)?;
-                if let (true, (KeyCode::Char('d'), AddStage::Source)) = (
-                    key.modifiers.contains(KeyModifiers::CONTROL),
-                    (key.code, state.stage()),
-                ) {
-                    let _ = input.handle(InputRequest::DeleteNextChar);
-                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
-                }
-                if input.handle_event(&Event::Key(key)).is_some() {
-                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
+                let event = match input.handle_key(&key) {
+                    EditResponse::Changed => {
+                        Some(AddScreenEvent::Action(text_action(field, input.value())))
+                    }
+                    EditResponse::Consumed => Some(AddScreenEvent::Changed),
+                    EditResponse::Ignored | EditResponse::Boundary => None,
+                };
+                if event.is_some() {
+                    // An edit brings its box back into view, so no key types into a box that
+                    // the wheel scrolled away.
+                    self.ensure_focus_visible();
+                    return event;
                 }
             }
             if id == AddControlId::Storage {
@@ -883,8 +942,15 @@ impl AddScreenSession {
                     false,
                 )))
             }
+            // The first activation puts the draft in the path box. A second one on the same
+            // draft continues with it, so `Enter`, `Enter` resumes a kept draft, as one pick
+            // resumes it in version 0.4 (`src/skit/tui_add.py:332-336`).
             AddControlId::Draft(index) => {
-                Some(AddScreenEvent::Action(AddAction::SelectDraft(index)))
+                Some(AddScreenEvent::Action(if draft_in_path_box(state, index) {
+                    AddAction::Continue
+                } else {
+                    AddAction::SelectDraft(index)
+                }))
             }
             AddControlId::NewScript => Some(AddScreenEvent::Action(AddAction::NewDraft(
                 DraftKind::Script,
@@ -980,7 +1046,7 @@ impl AddScreenSession {
     }
 
     fn insert_input(&mut self, field: AddTextField, value: &str) {
-        self.inputs.insert(field, LineInput::new(value.to_owned()));
+        self.inputs.insert(field, TextEditor::single_line(value));
         self.focus.register(AddControlId::Text(field));
     }
 
@@ -989,7 +1055,23 @@ impl AddScreenSession {
             return;
         };
         if input.value() != value {
-            *input = LineInput::new(value.to_owned());
+            input.replace_text(value);
+        }
+    }
+
+    /// Report whether the cell shows the text of one box of this screen.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        self.editables
+            .values()
+            .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The text box that has the keyboard, when the focus is on one.
+    pub(crate) fn focused_editor(&self) -> Option<&TextEditor> {
+        if let Some(AddControlId::Text(field)) = self.focus.current() {
+            self.inputs.get(field)
+        } else {
+            None
         }
     }
 
@@ -1305,7 +1387,7 @@ mod agent_review_tests {
         };
         session
             .inputs
-            .insert(AddTextField::ReviewName, LineInput::new("name".to_owned()));
+            .insert(AddTextField::ReviewName, TextEditor::single_line("name"));
         session
             .checks
             .insert(AddControlId::Interpolate, CheckBoxState::new(true));
@@ -1400,9 +1482,14 @@ mod agent_review_tests {
                 area: Rect::new(0, 0, 1, 1),
                 target: AddControlId::Cancel,
             }],
+            pointer_targets: vec![AddHitRegion {
+                area: Rect::new(1, 0, 1, 1),
+                target: AddControlId::Save,
+            }],
         };
         let geometry = serde_json::to_string(&geometry.agent_review_snapshot().unwrap()).unwrap();
         assert!(geometry.contains("Cancel"));
+        assert!(geometry.contains("pointer_targets") && geometry.contains("Save"));
     }
 
     #[test]
@@ -1520,10 +1607,10 @@ pub fn render_add(
             body: area,
             first_visible: session.scroll.scroll_offset(),
             hits: Vec::new(),
+            pointer_targets: Vec::new(),
         };
     }
-    let short = area.height < 14;
-    let footer_height = if short { 1 } else { 2 }.min(area.height);
+    let footer_height = add_footer_height(area, state, session, locale);
     let chunks = crate::viewport::Viewport::split_footer(area, footer_height);
     let title = match state.stage() {
         AddStage::Source => text(locale, "Add an entry").into_owned(),
@@ -1540,9 +1627,17 @@ pub fn render_add(
                 || review.name().to_owned(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            format!("{} {filename}", text(locale, "Add"))
+            // A new draft lives in a temporary file whose name means nothing to the person, so
+            // the title follows the name box instead (C12 of the 2026-11 audit).
+            let subject = match (review.is_fresh(), review.name().trim()) {
+                (true, name) if !name.is_empty() => name.to_owned(),
+                _ => filename,
+            };
+            format!("{} {subject}", text(locale, "Add"))
         }
-        AddStage::ConfirmDraftDelete => text(locale, "Confirm removal").into_owned(),
+        // A kept draft is a file, so its question uses the verb of the button that asked it.
+        // Removal is the word for an entry.
+        AddStage::ConfirmDraftDelete => text(locale, "Delete draft…").into_owned(),
         AddStage::Complete | AddStage::Cancelled => text(locale, "Add").into_owned(),
     };
     let body_block = panel_block(title, Panel::Add);
@@ -1556,12 +1651,12 @@ pub fn render_add(
     session.viewport = body;
     session.visible_height = usize::from(body.height);
     session.row_spans.clear();
-    let mut logical = 0;
+    let mut logical = 0_usize;
     for row in &rows {
-        if let Some(id) = row.id() {
+        for (id, line, height) in row.spans(body.width) {
             session
                 .row_spans
-                .insert(id.clone(), (logical, row.height(body.width)));
+                .insert(id.clone(), (logical.saturating_add(line), height));
         }
         logical = logical.saturating_add(row.height(body.width));
     }
@@ -1584,6 +1679,7 @@ pub fn render_add(
         .set_scroll_offset(session.scroll.scroll_offset().min(maximum));
     let offset = session.scroll.scroll_offset();
     let mut hits = Vec::new();
+    let mut pointer_targets = Vec::new();
     let mut row_start = 0_usize;
     for row in &rows {
         let height = row.height(body.width);
@@ -1603,13 +1699,11 @@ pub fn render_add(
                 u16::try_from(visible_height.get()).expect("the Add row band fits its viewport"),
             );
             let clip = RowClip::new(height, clipped_top, rect);
-            render_row(frame, clip, row, state, session, locale);
-            if let Some(id) = row.id() {
-                hits.push(AddHitRegion {
-                    area: clip.area(),
-                    target: id.clone(),
-                });
+            let row_hits = render_row(frame, clip, row, state, session, locale);
+            if matches!(row, RenderRow::Buttons(_)) {
+                pointer_targets.extend(row_hits.iter().cloned());
             }
+            hits.extend(row_hits);
         }
         row_start = row_end;
     }
@@ -1626,7 +1720,9 @@ pub fn render_add(
             state,
         );
     }
-    hits.extend(render_footer(frame, chunks[1], state, session, locale));
+    let footer_hits = render_footer(frame, chunks[1], state, session, locale);
+    pointer_targets.extend(footer_hits.iter().cloned());
+    hits.extend(footer_hits);
     let select_anchors = [AddSelectControl::Storage, AddSelectControl::Runner]
         .into_iter()
         .filter_map(|select| {
@@ -1646,20 +1742,122 @@ pub fn render_add(
             &mut hits,
         );
     }
+    // An open dropdown covers the targets under it, so they show no look.
+    let covering = hits
+        .iter()
+        .filter(|hit| {
+            matches!(
+                hit.target,
+                AddControlId::StorageOption(_) | AddControlId::RunnerOption(_)
+            )
+        })
+        .map(|hit| hit.area)
+        .collect::<Vec<_>>();
+    pointer_targets.retain(|target| !covering.iter().any(|area| area.intersects(target.area)));
     AddScreenGeometry {
         body,
         first_visible: offset,
         hits,
+        pointer_targets,
     }
+}
+
+/// The rows of the Add footer.
+///
+/// A short terminal keeps one row, and its chips scroll. Otherwise the footer wraps its chips as
+/// the shared footer does: each chip that does not fit moves to the next row, and the footer grows
+/// up to the row budget of the shared footer on a screen that is not the Library. It keeps at
+/// least two rows, so the body does not move when a stage has fewer chips.
+fn add_footer_height(
+    area: Rect,
+    state: &AddWorkflowState,
+    session: &AddScreenSession,
+    locale: Locale,
+) -> u16 {
+    if area.height < 14 {
+        return area.height.min(1);
+    }
+    let (_, rows) = position_footer_chips(footer_chips(state, locale, session), area.width);
+    let budget = ViewportProfile::new(area).footer_row_budget(false);
+    u16::try_from(rows.min(budget).max(2))
+        .unwrap_or(u16::MAX)
+        .min(area.height)
 }
 
 #[derive(Clone, Debug)]
 enum RenderRow {
-    Input(AddTextField, String),
-    Button(AddControlId, String),
+    /// A bordered single-line input with its label and an example that shows while it is empty.
+    Input(AddTextField, String, Option<String>),
+    /// One choice in a list, such as a kind or a kept draft.
+    Item(AddControlId, String),
+    /// Buttons side by side. A narrow row puts the next button on a new line.
+    Buttons(Vec<RowButton>),
     Check(AddControlId, String),
     Select(AddSelectControl, String),
     Note(String, Style),
+    /// A status line, such as the reason why the source path cannot be added.
+    Status(String, Status),
+}
+
+/// One action button in a [`RenderRow::Buttons`] row.
+#[derive(Clone, Debug)]
+struct RowButton {
+    id: AddControlId,
+    label: String,
+    /// The key that the button names beside its label, when the footer does not name it.
+    key: Option<LocalKey>,
+}
+
+impl RowButton {
+    fn new(id: AddControlId, label: String) -> Self {
+        Self {
+            id,
+            label,
+            key: None,
+        }
+    }
+
+    /// The painted width: the label with one blank on each side, then the key name.
+    fn width(&self) -> u16 {
+        let key = self
+            .key
+            .map_or(0, |key| key.hint().width().saturating_add(1));
+        u16::try_from(self.label.width().saturating_add(2).saturating_add(key)).unwrap_or(u16::MAX)
+    }
+}
+
+/// The columns between two buttons on one line.
+const BUTTON_GAP: u16 = 2;
+
+/// The place of one button in its row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ButtonSlot {
+    index: usize,
+    line: usize,
+    x: u16,
+    width: u16,
+}
+
+/// Put the buttons of one row on lines of `width` columns, from left to right.
+fn button_slots(buttons: &[RowButton], width: u16) -> Vec<ButtonSlot> {
+    let width = width.max(1);
+    let mut slots = Vec::with_capacity(buttons.len());
+    let (mut line, mut x) = (0_usize, 0_u16);
+    for (index, button) in buttons.iter().enumerate() {
+        let wanted = button.width().min(width);
+        if x > 0 && x.saturating_add(wanted) > width {
+            line = line.saturating_add(1);
+            x = 0;
+        }
+        slots.push(ButtonSlot {
+            index,
+            line,
+            x,
+            width: wanted,
+        });
+        x = x.saturating_add(wanted).saturating_add(BUTTON_GAP);
+    }
+    slots
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1688,17 +1886,21 @@ impl RenderRow {
     fn height(&self, width: u16) -> usize {
         match self {
             Self::Input(..) | Self::Select(..) => 3,
-            Self::Button(..) | Self::Check(..) => 1,
-            Self::Note(message, _) => Paragraph::new(message.as_str())
+            Self::Item(..) | Self::Check(..) => 1,
+            Self::Buttons(buttons) => button_slots(buttons, width)
+                .last()
+                .map_or(1, |slot| slot.line.saturating_add(1)),
+            Self::Note(message, _) | Self::Status(message, _) => Paragraph::new(message.as_str())
                 .wrap(Wrap { trim: false })
                 .line_count(width.max(1))
                 .max(1),
         }
     }
 
+    /// The one control of a single-control row. A button row names its controls in its slots.
     const fn id(&self) -> Option<&AddControlId> {
         match self {
-            Self::Input(field, _) => Some(match field {
+            Self::Input(field, ..) => Some(match field {
                 AddTextField::SourcePath => &SOURCE_PATH_ID,
                 AddTextField::CommandTemplate => &COMMAND_TEMPLATE_ID,
                 AddTextField::CommandName => &COMMAND_NAME_ID,
@@ -1708,9 +1910,24 @@ impl RenderRow {
                 AddTextField::Dependencies => &DEPENDENCIES_ID,
                 AddTextField::PythonConstraint => &PYTHON_ID,
             }),
-            Self::Button(id, _) | Self::Check(id, _) => Some(id),
+            Self::Item(id, _) | Self::Check(id, _) => Some(id),
             Self::Select(select, _) => Some(select.control_id()),
-            Self::Note(..) => None,
+            Self::Buttons(_) | Self::Note(..) | Self::Status(..) => None,
+        }
+    }
+
+    /// Each control in the row with the band of source lines that shows it.
+    fn spans(&self, width: u16) -> Vec<(&AddControlId, usize, usize)> {
+        match self {
+            Self::Buttons(buttons) => button_slots(buttons, width)
+                .into_iter()
+                .map(|slot| (&buttons[slot.index].id, slot.line, 1))
+                .collect(),
+            _ => self
+                .id()
+                .map(|id| (id, 0, self.height(width)))
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -1735,7 +1952,11 @@ fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         AddStage::ConfirmDraftDelete => confirm_draft_delete_rows(state, locale),
         AddStage::Complete | AddStage::Cancelled => Vec::new(),
     };
-    if let Some(problem) = state.problem() {
+    // A problem with one source box shows under that box. Every other problem opens the panel.
+    let opening = state
+        .problem()
+        .filter(|problem| !shown_under_its_box(problem));
+    if let Some(problem) = opening {
         rows.insert(
             0,
             RenderRow::Note(problem_text(problem, locale), theme::status(Status::Danger)),
@@ -1743,13 +1964,33 @@ fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     }
     if let Some(notice) = state.notice() {
         rows.insert(
-            usize::from(state.problem().is_some()),
+            usize::from(opening.is_some()),
             RenderRow::Note(notice_text(notice, locale), theme::notice()),
         );
     }
     rows
 }
 
+/// Whether the source screen shows `problem` under the box that it concerns.
+const fn shown_under_its_box(problem: &AddProblem) -> bool {
+    matches!(
+        problem,
+        AddProblem::SourceUnavailable { .. } | AddProblem::MissingCommandName
+    )
+}
+
+/// The example that the empty source box shows, as version 0.4 does
+/// (`src/skit/tui_add.py:235`). It is a path, not a sentence, so it has no translation.
+const SOURCE_PATH_EXAMPLE: &str = "~/scripts/tool.py";
+/// The example that the empty template box shows (`src/skit/tui_add.py:241`).
+const COMMAND_TEMPLATE_EXAMPLE: &str = "ffmpeg -i {input} {output}";
+
+/// Rows of the source screen.
+///
+/// Version 0.4 puts each way to add an entry in its own part, and the parts after the path read
+/// as alternatives: "…or register a command template below", "…or resume a kept draft:",
+/// "…or start from a blank page:" (`src/skit/tui_add.py:234-313`). The Name and Description boxes
+/// sit in the template part and say that they name the command (C2 of the 2026-11 audit).
 fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     let source = state.source();
     let mut rows = vec![
@@ -1760,58 +2001,94 @@ fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         RenderRow::Input(
             AddTextField::SourcePath,
             text(locale, "Source path").into_owned(),
+            Some(SOURCE_PATH_EXAMPLE.to_owned()),
         ),
-        RenderRow::Button(
-            AddControlId::BrowseSource,
-            format!("[{}] {}", BROWSE_SOURCE_KEY.hint(), text(locale, "Select")),
+    ];
+    if let Some(AddProblem::SourceUnavailable { reason, .. }) = state.problem() {
+        rows.push(RenderRow::Status(format!("✗ {reason}"), Status::Danger));
+    }
+    rows.extend([
+        RenderRow::Buttons(vec![RowButton {
+            key: Some(BROWSE_SOURCE_KEY),
+            ..RowButton::new(
+                AddControlId::BrowseSource,
+                text(locale, "Browse…").into_owned(),
+            )
+        }]),
+        RenderRow::Note(
+            text(
+                locale,
+                "…or register a command template below (e.g. ffmpeg -i {input}):",
+            )
+            .into_owned(),
+            theme::muted(),
         ),
         RenderRow::Input(
             AddTextField::CommandTemplate,
             text(locale, "Command template").into_owned(),
+            Some(COMMAND_TEMPLATE_EXAMPLE.to_owned()),
         ),
-        RenderRow::Input(AddTextField::CommandName, text(locale, "Name").into_owned()),
         RenderRow::Input(
-            AddTextField::CommandDescription,
-            text(locale, "Description").into_owned(),
-        ),
-    ];
-    for (index, draft) in source.listed_drafts().iter().enumerate() {
-        rows.push(RenderRow::Button(
-            AddControlId::Draft(index),
-            draft
-                .path
-                .file_name()
-                .map_or_else(String::new, |value| value.to_string_lossy().into_owned()),
-        ));
-    }
-    if let Some(overflow) = NonZeroUsize::new(source.draft_overflow()) {
-        rows.push(RenderRow::Note(
-            format_text(locale, "…and {} more", &[&overflow.get()]),
-            theme::muted(),
-        ));
-    }
-    rows.extend([
-        RenderRow::Button(
-            AddControlId::NewScript,
-            text(locale, "Write a script…").into_owned(),
-        ),
-        RenderRow::Button(
-            AddControlId::NewPrompt,
-            text(locale, "Draft a prompt…").into_owned(),
+            AddTextField::CommandName,
+            text(locale, "Name for the command").into_owned(),
+            None,
         ),
     ]);
-    if !source.listed_drafts().is_empty() {
-        rows.push(RenderRow::Button(
-            AddControlId::DeleteDraft,
-            text(locale, "Delete draft…").into_owned(),
+    if let Some(AddProblem::MissingCommandName) = state.problem() {
+        rows.push(RenderRow::Status(
+            format!("✗ {}", text(locale, "A name is required.")),
+            Status::Danger,
         ));
     }
+    rows.push(RenderRow::Input(
+        AddTextField::CommandDescription,
+        text(locale, "Description (optional)").into_owned(),
+        None,
+    ));
+    if !source.listed_drafts().is_empty() {
+        rows.push(RenderRow::Note(
+            text(locale, "…or resume a kept draft:").into_owned(),
+            theme::muted(),
+        ));
+        for (index, draft) in source.listed_drafts().iter().enumerate() {
+            rows.push(RenderRow::Item(
+                AddControlId::Draft(index),
+                draft_display_name(draft),
+            ));
+        }
+        if let Some(overflow) = NonZeroUsize::new(source.draft_overflow()) {
+            rows.push(RenderRow::Note(
+                format_text(locale, "…and {} more", &[&overflow.get()]),
+                theme::muted(),
+            ));
+        }
+        rows.push(RenderRow::Buttons(vec![RowButton::new(
+            AddControlId::DeleteDraft,
+            text(locale, "Delete draft…").into_owned(),
+        )]));
+    }
     rows.extend([
-        RenderRow::Button(
-            AddControlId::Continue,
-            text(locale, "Continue").into_owned(),
+        RenderRow::Note(
+            text(locale, "…or start from a blank page:").into_owned(),
+            theme::muted(),
         ),
-        RenderRow::Button(AddControlId::Cancel, text(locale, "Cancel").into_owned()),
+        RenderRow::Buttons(vec![
+            RowButton::new(
+                AddControlId::NewScript,
+                text(locale, "Write a script…").into_owned(),
+            ),
+            RowButton::new(
+                AddControlId::NewPrompt,
+                text(locale, "Draft a prompt…").into_owned(),
+            ),
+        ]),
+        RenderRow::Buttons(vec![
+            RowButton::new(
+                AddControlId::Continue,
+                text(locale, "Continue").into_owned(),
+            ),
+            RowButton::new(AddControlId::Cancel, text(locale, "Cancel").into_owned()),
+        ]),
     ]);
     rows
 }
@@ -1833,16 +2110,25 @@ fn kind_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         theme::notice(),
     )];
     rows.extend(picker.choices().iter().enumerate().map(|(index, kind)| {
-        RenderRow::Button(
+        RenderRow::Item(
             AddControlId::Kind(index),
             kind_choice_label(locale, kind.as_str()).into_owned(),
         )
     }));
-    rows.push(RenderRow::Button(
+    rows.push(RenderRow::Buttons(vec![RowButton::new(
         AddControlId::Cancel,
         text(locale, "Cancel").into_owned(),
-    ));
+    )]));
     rows
+}
+
+/// Whether the path box holds the kept draft at `index`, as a pick of that draft puts it there.
+fn draft_in_path_box(state: &AddWorkflowState, index: usize) -> bool {
+    let source = state.source();
+    source
+        .listed_drafts()
+        .get(index)
+        .is_some_and(|draft| source.path == draft.path.display().to_string())
 }
 
 /// Name one kept draft the way its row in the list names it.
@@ -1878,14 +2164,16 @@ fn confirm_draft_delete_rows(state: &AddWorkflowState, locale: Locale) -> Vec<Re
             ),
             theme::status(Status::Danger),
         ));
-        rows.push(RenderRow::Button(
-            AddControlId::DeleteDraft,
-            text(locale, "Remove").into_owned(),
-        ));
-        rows.push(RenderRow::Button(
-            AddControlId::Cancel,
-            text(locale, "Cancel").into_owned(),
-        ));
+        // A kept draft is a file, so the verb is Delete, as the question says. Remove is the
+        // verb for an entry. Version 0.4 offers `y Delete` and `Esc Keep`
+        // (`src/skit/tui_add.py:178-184`).
+        rows.push(RenderRow::Buttons(vec![
+            RowButton::new(
+                AddControlId::DeleteDraft,
+                text(locale, "Delete").into_owned(),
+            ),
+            RowButton::new(AddControlId::Cancel, text(locale, "Keep").into_owned()),
+        ]));
     }
     rows
 }
@@ -1895,10 +2183,15 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         .review()
         .expect("the typed Review stage owns its review state");
     let mut rows = vec![
-        RenderRow::Input(AddTextField::ReviewName, text(locale, "Name").into_owned()),
+        RenderRow::Input(
+            AddTextField::ReviewName,
+            text(locale, "Name").into_owned(),
+            None,
+        ),
         RenderRow::Input(
             AddTextField::ReviewDescription,
             text(locale, "Description").into_owned(),
+            None,
         ),
     ];
     if let (false, ReviewLane::Script | ReviewLane::Prompt) = (review.is_fresh(), review.lane()) {
@@ -1912,6 +2205,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
             rows.push(RenderRow::Input(
                 AddTextField::Dependencies,
                 text(locale, "Package dependencies").into_owned(),
+                None,
             ));
             rows.push(hint(
                 text(locale, "detected from the script's imports — edit freely").into_owned(),
@@ -1919,6 +2213,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
             rows.push(RenderRow::Input(
                 AddTextField::PythonConstraint,
                 text(locale, "Python constraint").into_owned(),
+                None,
             ));
             rows.push(hint(
                 text(
@@ -1960,6 +2255,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
             rows.push(RenderRow::Input(
                 AddTextField::Dependencies,
                 text(locale, "Package dependencies").into_owned(),
+                None,
             ));
             rows.push(hint(
                 text(locale, "detected from the script's imports — edit freely").into_owned(),
@@ -1973,9 +2269,9 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
             format_text(
                 locale,
                 if count.get() == 1 {
-                    "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize."
+                    "✓ skit read this script's own arguments ({} field). Running it opens the launch menu — nothing to memorize."
                 } else {
-                    "✓ skit read this script's own arguments ({} fields). Running it opens a form — nothing to memorize."
+                    "✓ skit read this script's own arguments ({} fields). Running it opens the launch menu — nothing to memorize."
                 },
                 &[&count.get()],
             ),
@@ -1989,7 +2285,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         rows.push(RenderRow::Note(
             format_text(
                 locale,
-                "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+                "This script parses its own arguments ({}); skit could not model them statically, so the launch menu offers an extra-arguments field.",
                 &[&review.onboarding().frameworks.join(", ")],
             ),
             theme::muted(),
@@ -1997,11 +2293,11 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     }
     if review.storage() == StorageMode::Copy && !review.candidates().is_empty() {
         rows.push(RenderRow::Note(
-            text(locale, "Tick the ones the run form should ask for:").into_owned(),
+            text(locale, "Tick the ones the launch menu should ask for:").into_owned(),
             theme::muted(),
         ));
         for candidate in review.candidates() {
-            let mut label = candidate.declaration.name.clone();
+            let mut label = candidate_label(&candidate.declaration, locale);
             if let skit_domain::parameters::ParameterBinding::Input = candidate.declaration.binding
             {
                 label = format!(
@@ -2040,7 +2336,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         rows.push(RenderRow::Note(
             format_text(
                 locale,
-                "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
+                "💡 {} are written directly inside the code, so skit cannot turn them into launch menu fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
                 &[&literals],
             ),
             theme::muted(),
@@ -2078,16 +2374,21 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         rows.push(RenderRow::Note(
             text(
                 locale,
-                "This script reads command-line arguments; the run form has an extra-arguments field for them.",
+                "This script reads command-line arguments; the launch menu has an extra-arguments field for them.",
             )
             .into_owned(),
             theme::muted(),
         ));
     }
     if review.lane() == ReviewLane::Prompt {
+        // Say what the switch does, as version 0.4 does (`src/skit/tui_add.py:1343`).
         rows.push(RenderRow::Check(
             AddControlId::Interpolate,
-            text(locale, "Prompt interpolation (true or false)").into_owned(),
+            text(
+                locale,
+                "Fill {{name}} placeholders from the launch menu before each run",
+            )
+            .into_owned(),
         ));
         if review.interpolate() {
             if review.prompt_candidates().is_empty() {
@@ -2110,7 +2411,7 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 ));
             } else {
                 rows.push(RenderRow::Note(
-                    text(locale, "Tick the ones the run form should ask for:").into_owned(),
+                    text(locale, "Tick the ones the launch menu should ask for:").into_owned(),
                     theme::muted(),
                 ));
             }
@@ -2125,34 +2426,103 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 ));
             }
             if has_more_prompt_candidates(review) {
-                rows.push(RenderRow::Button(
+                rows.push(RenderRow::Buttons(vec![RowButton::new(
                     AddControlId::Continue,
                     text(locale, "Choose variables…").into_owned(),
-                ));
+                )]));
             }
         }
         rows.push(RenderRow::Select(
             AddSelectControl::Runner,
             text(locale, "Prompt runner").into_owned(),
         ));
-        rows.push(RenderRow::Button(
+        // The run form and Entry settings name the same runner editor `New agent…`.
+        rows.push(RenderRow::Buttons(vec![RowButton::new(
             AddControlId::NewRunner,
-            format!("{} {}", text(locale, "Add"), text(locale, "Runner")),
-        ));
+            text(locale, "New agent…").into_owned(),
+        )]));
     }
-    if matches!(review.lane(), ReviewLane::Script | ReviewLane::Prompt) {
-        rows.push(RenderRow::Button(
+    // The buttons use the words of the footer: `Ctrl+S Add` adds the entry, and `Ctrl+E` edits
+    // the script or the prompt (C3 of the 2026-11 audit).
+    let mut actions = Vec::new();
+    if let Some(edit) = edit_source_label(review.lane()) {
+        actions.push(RowButton::new(
             AddControlId::EditSource,
-            text(locale, "Edit").into_owned(),
+            text(locale, edit).into_owned(),
         ));
     }
-    rows.extend([
-        RenderRow::Button(AddControlId::Save, text(locale, "Save").into_owned()),
-        RenderRow::Button(AddControlId::Cancel, text(locale, "Cancel").into_owned()),
+    actions.extend([
+        RowButton::new(AddControlId::Save, text(locale, "Add").into_owned()),
+        RowButton::new(AddControlId::Cancel, text(locale, "Cancel").into_owned()),
     ]);
+    rows.push(RenderRow::Buttons(actions));
     rows
 }
 
+/// The label of the source editor action, or `None` when the lane has no editable source.
+const fn edit_source_label(lane: ReviewLane) -> Option<&'static str> {
+    match lane {
+        ReviewLane::Script => Some("Edit script"),
+        ReviewLane::Prompt => Some("Edit prompt"),
+        ReviewLane::Executable => None,
+    }
+}
+
+/// The most characters of a text value that a candidate label shows.
+const CANDIDATE_VALUE_LIMIT: usize = 40;
+
+/// Name one parser candidate with the kind of its run form field and its current value, for
+/// example `MESSAGE  text · default "Hello from skit"`.
+///
+/// Version 0.4 shows `MESSAGE  (str = 'Hello from skit')` (`src/skit/tui_add.py:1006-1011`). The
+/// kinds use the words of the run form, so the review says what the run form will ask for
+/// (C3 of the 2026-11 audit). A secret value shows as dots.
+fn candidate_label(declaration: &ParamDecl, locale: Locale) -> String {
+    let kind = text(
+        locale,
+        match declaration.parameter_type {
+            ParameterType::Int => "whole number",
+            ParameterType::Float => "number",
+            ParameterType::Bool => "on/off",
+            ParameterType::Path => "path",
+            ParameterType::Str | ParameterType::Choice => "text",
+        },
+    );
+    let Some(default) = &declaration.default else {
+        return format!("{}  {kind}", declaration.name);
+    };
+    let value = if declaration.secret {
+        text(locale, "•••").into_owned()
+    } else {
+        match default {
+            ParameterValue::String(value) => {
+                let shown = if value.chars().count() > CANDIDATE_VALUE_LIMIT {
+                    let mut cut = value
+                        .chars()
+                        .take(CANDIDATE_VALUE_LIMIT - 1)
+                        .collect::<String>();
+                    cut.push('\u{2026}');
+                    cut
+                } else {
+                    value.clone()
+                };
+                format!("{shown:?}")
+            }
+            ParameterValue::Integer(value) => value.to_string(),
+            ParameterValue::Float(value) => format!("{value:?}"),
+            ParameterValue::Bool(value) => {
+                text(locale, if *value { "on" } else { "off" }).into_owned()
+            }
+        }
+    };
+    format!(
+        "{}  {kind} · {}",
+        declaration.name,
+        format_text(locale, "default {}", &[&value])
+    )
+}
+
+/// Paint one row band and return the mouse regions of its controls.
 fn render_row(
     frame: &mut Frame,
     clip: RowClip,
@@ -2160,11 +2530,12 @@ fn render_row(
     state: &AddWorkflowState,
     session: &mut AddScreenSession,
     locale: Locale,
-) {
+) -> Vec<AddHitRegion> {
     let area = clip.area();
     match row {
-        RenderRow::Input(field, label) => {
-            if let Some(input) = session.inputs.get(field)
+        RenderRow::Input(field, label, example) => {
+            let input = session.inputs.get(field);
+            if let Some(input) = input
                 && let Some(editable) = render_line_input_band(
                     frame,
                     clip,
@@ -2177,8 +2548,23 @@ fn render_row(
             {
                 session.editables.insert(*field, editable);
             }
+            // An empty box shows an example of what it takes, as version 0.4 does with its
+            // placeholders (`src/skit/tui_add.py:235`, `:241`).
+            if let (Some(example), Some(content)) = (example, clip.row(1))
+                && input.is_some_and(|input| input.value().is_empty())
+            {
+                frame.render_widget(
+                    Paragraph::new(example.as_str()).style(theme::hint()),
+                    Rect::new(
+                        content.x.saturating_add(1),
+                        content.y,
+                        content.width.saturating_sub(2),
+                        1,
+                    ),
+                );
+            }
         }
-        RenderRow::Button(id, label) => {
+        RenderRow::Item(id, label) => {
             let focused = session.focus.is_focused(id);
             clip.paint_paragraph(
                 frame.buffer_mut(),
@@ -2194,6 +2580,9 @@ fn render_row(
                     ),
                 ])),
             );
+        }
+        RenderRow::Buttons(buttons) => {
+            return render_buttons(frame, clip, buttons, session);
         }
         RenderRow::Check(id, label) => {
             if let Some(check) = session.checks.get(id) {
@@ -2250,7 +2639,81 @@ fn render_row(
                     .style(*style),
             );
         }
+        RenderRow::Status(message, status) => {
+            clip.paint_paragraph(
+                frame.buffer_mut(),
+                Paragraph::new(theme::status_line(message.clone(), *status))
+                    .wrap(Wrap { trim: false }),
+            );
+        }
     }
+    row.id()
+        .map(|id| AddHitRegion {
+            area,
+            target: id.clone(),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Paint the visible lines of one button row and return one mouse region per painted button.
+///
+/// The buttons are the widget and the colors of the Preferences actions, so an action looks
+/// like an action on every screen. A key that the footer does not name follows its button.
+fn render_buttons(
+    frame: &mut Frame,
+    clip: RowClip,
+    buttons: &[RowButton],
+    session: &AddScreenSession,
+) -> Vec<AddHitRegion> {
+    let mut hits = Vec::new();
+    for slot in button_slots(buttons, clip.area().width) {
+        let Some(line) = clip.row(slot.line) else {
+            continue;
+        };
+        let area = Rect::new(
+            line.x.saturating_add(slot.x),
+            line.y,
+            slot.width.min(line.width.saturating_sub(slot.x)),
+            1,
+        );
+        if area.is_empty() {
+            continue;
+        }
+        let button = &buttons[slot.index];
+        let focused = session.focus.is_focused(&button.id);
+        let painted = Rect {
+            width: u16::try_from(button.label.width().saturating_add(2))
+                .unwrap_or(u16::MAX)
+                .min(area.width),
+            ..area
+        };
+        let state = ButtonState {
+            focused,
+            ..ButtonState::enabled()
+        };
+        Button::new(&button.label, &state)
+            .variant(ButtonVariant::SingleLine)
+            .alignment(Alignment::Left)
+            .style(theme::action_button_style())
+            .render_stateful(painted, frame.buffer_mut());
+        theme::patch_button(frame.buffer_mut(), painted, focused);
+        if let Some(key) = button.key {
+            frame.render_widget(
+                Paragraph::new(format!(" {}", key.hint())).style(theme::key_hint()),
+                Rect {
+                    x: painted.right(),
+                    width: area.width.saturating_sub(painted.width),
+                    ..area
+                },
+            );
+        }
+        hits.push(AddHitRegion {
+            area,
+            target: button.id.clone(),
+        });
+    }
+    hits
 }
 
 fn select_options(
@@ -2261,7 +2724,7 @@ fn select_options(
     match select {
         AddSelectControl::Storage => storage_options(state, locale),
         AddSelectControl::Runner => {
-            let mut options = vec![text(locale, "ask on the run form").into_owned()];
+            let mut options = vec![text(locale, "ask in the launch menu").into_owned()];
             options.extend(
                 state
                     .review()
@@ -2495,9 +2958,18 @@ fn footer_chips(
     match state.stage() {
         AddStage::Source => {
             let (enter_target, enter_label) = match session.focused() {
-                Some(target @ AddControlId::Draft(_)) => {
-                    (target.clone(), text(locale, "Select").into_owned())
-                }
+                Some(target @ AddControlId::Draft(index)) => (
+                    target.clone(),
+                    text(
+                        locale,
+                        if draft_in_path_box(state, *index) {
+                            "Continue"
+                        } else {
+                            "Select"
+                        },
+                    )
+                    .into_owned(),
+                ),
                 Some(AddControlId::NewScript) => (
                     AddControlId::NewScript,
                     text(locale, "Write a script…").into_owned(),
@@ -2545,9 +3017,18 @@ fn footer_chips(
                     AddControlId::DeleteDraft,
                 ));
             }
+            // The navigation chips name what they do, as every shared footer names them.
             chips.extend([
-                chip(next_key, String::new(), AddControlId::NextField),
-                chip(previous_key, String::new(), AddControlId::PreviousField),
+                chip(
+                    next_key,
+                    text(locale, "Next field").into_owned(),
+                    AddControlId::NextField,
+                ),
+                chip(
+                    previous_key,
+                    text(locale, "Previous field").into_owned(),
+                    AddControlId::PreviousField,
+                ),
             ]);
             chips
         }
@@ -2594,9 +3075,18 @@ fn footer_chips(
                     AddControlId::EditSource,
                 ));
             }
+            // The navigation chips name what they do, as every shared footer names them.
             chips.extend([
-                chip(next_key, String::new(), AddControlId::NextField),
-                chip(previous_key, String::new(), AddControlId::PreviousField),
+                chip(
+                    next_key,
+                    text(locale, "Next field").into_owned(),
+                    AddControlId::NextField,
+                ),
+                chip(
+                    previous_key,
+                    text(locale, "Previous field").into_owned(),
+                    AddControlId::PreviousField,
+                ),
             ]);
             chips
         }
@@ -2615,12 +3105,12 @@ fn footer_chips(
         AddStage::ConfirmDraftDelete => vec![
             chip(
                 LocalKey::Enter,
-                text(locale, "Remove").into_owned(),
+                text(locale, "Delete").into_owned(),
                 AddControlId::DeleteDraft,
             ),
             chip(
                 LocalKey::Escape,
-                text(locale, "Cancel").into_owned(),
+                text(locale, "Keep").into_owned(),
                 AddControlId::Cancel,
             ),
         ],
@@ -2756,16 +3246,9 @@ fn storage_options(state: &AddWorkflowState, locale: Locale) -> Vec<String> {
 
 fn problem_text(problem: &AddProblem, locale: Locale) -> String {
     match problem {
-        AddProblem::SourceUnavailable { path, reason } => {
-            format!(
-                "{}: {} ({reason})",
-                text(locale, "Source path"),
-                path.display()
-            )
-        }
-        AddProblem::MissingCommandName => {
-            format!("{}: {}", text(locale, "error"), text(locale, "Name"))
-        }
+        // The host reason already names the path, for example `File not found: /tmp/x.py`.
+        AddProblem::SourceUnavailable { reason, .. } => reason.clone(),
+        AddProblem::MissingCommandName => text(locale, "A name is required.").into_owned(),
         AddProblem::InvalidKind => {
             format!("{}: {}", text(locale, "error"), text(locale, "Kind"))
         }
@@ -3112,19 +3595,59 @@ mod tests {
         let rendered = text_of(&terminal);
 
         assert!(
-            rendered.contains("ask on the run form"),
+            rendered.contains("ask in the launch menu"),
             "the surviving select value is missing: {rendered}"
         );
+    }
+
+    /// A button keeps a mouse region while one of its columns shows. A panel with no column in
+    /// its border shows no button, so it gives no button region.
+    ///
+    /// Failure modes: a button in a panel with no column gives an empty region that no click can
+    /// hit; the drawing of that button panics; a panel with one column loses the region of a
+    /// button that shows.
+    #[test]
+    fn a_button_with_no_column_gives_no_mouse_region() {
+        let state = AddWorkflowState::new(Vec::new());
+        let buttons = [
+            AddControlId::BrowseSource,
+            AddControlId::NewScript,
+            AddControlId::NewPrompt,
+            AddControlId::Continue,
+            AddControlId::Cancel,
+        ];
+        let button_regions = |width: u16| {
+            let (_, geometry) = draw(&state, &mut AddScreenSession::default(), width, 300);
+            geometry
+                .hits
+                .into_iter()
+                .filter(|hit| buttons.contains(&hit.target))
+                .map(|hit| (hit.target, hit.area.width))
+                .collect::<Vec<_>>()
+        };
+
+        // Three terminal columns leave one column in the panel border.
+        assert_eq!(
+            button_regions(3),
+            buttons
+                .iter()
+                .map(|button| (button.clone(), 1))
+                .collect::<Vec<_>>()
+        );
+        // Two terminal columns leave no column in the panel border.
+        let no_column = button_regions(2);
+        assert!(no_column.is_empty(), "{no_column:?}");
     }
 
     #[test]
     fn source_keyboard_and_browse_mouse_have_positive_typed_paths() {
         let localized = AddWorkflowState::new(Vec::new());
+        // The button names its own key, because the footer does not. Ratatui's TestBackend
+        // exposes the continuation cell of each wide glyph as a space, so blanks are not compared.
         for (locale, expected) in [
-            (Locale::En, "[Ctrl+O] Select"),
-            // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
-            (Locale::ZhCn, "[Ctrl+O] 选 择"),
-            (Locale::ZhTw, "[Ctrl+O] 選 擇"),
+            (Locale::En, "Browse…Ctrl+O"),
+            (Locale::ZhCn, "浏览…Ctrl+O"),
+            (Locale::ZhTw, "瀏覽…Ctrl+O"),
         ] {
             let mut localized_session = AddScreenSession::default();
             let (terminal, geometry) =
@@ -3134,7 +3657,7 @@ mod tests {
                 .iter()
                 .find(|hit| hit.target == AddControlId::BrowseSource)
                 .expect("the visible Browse button is a typed mouse hit");
-            assert_eq!(hit_text(&terminal, browse.area).trim(), expected);
+            assert_eq!(hit_text(&terminal, browse.area).replace(' ', ""), expected);
         }
 
         let mut state = AddWorkflowState::new(Vec::new());
@@ -3440,7 +3963,7 @@ mod tests {
         let mut session = AddScreenSession::default();
         let (terminal, _) = draw(&state, &mut session, 90, 22);
 
-        assert!(text_of(&terminal).contains("Prompt interpolation"));
+        assert!(text_of(&terminal).contains("Fill {{name}} placeholders"));
         assert!(
             !session
                 .focus
@@ -3499,7 +4022,7 @@ mod tests {
         let mut session = AddScreenSession::default();
         let (terminal, geometry) = draw(&state, &mut session, 90, 18);
         let rendered = text_of(&terminal);
-        assert!(rendered.contains("Prompt interpolation"));
+        assert!(rendered.contains("Fill {{name}} placeholders"));
         assert!(session.focus.elements().contains(&AddControlId::Runner));
         assert_eq!(
             session.handle_event(
@@ -4232,7 +4755,7 @@ mod tests {
         let _ = command.reduce(AddAction::SetCommandTemplate("echo {name}".to_owned()));
         let _ = command.reduce(AddAction::Continue);
         let mut command_session = AddScreenSession::default();
-        let (terminal, command_geometry) = draw(&command, &mut command_session, 64, 18);
+        let (terminal, command_geometry) = draw(&command, &mut command_session, 64, 24);
         assert!(text_of(&terminal).contains("Name"));
         for field in [
             AddTextField::CommandTemplate,
@@ -4979,6 +5502,260 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("Remove this entry:"), "{rendered}");
+        // A kept draft is a file, so the answer is Delete or Keep, as in version 0.4.
+        assert!(rendered.contains("[Enter] Delete"), "{rendered}");
+        assert!(rendered.contains("[Esc] Keep"), "{rendered}");
+        assert!(rendered.contains("Delete draft…"), "{rendered}");
+        assert!(!rendered.contains("Remove"), "{rendered}");
+        assert!(!rendered.contains("removal"), "{rendered}");
+    }
+
+    /// The rows of the rendered buffer, without the body border.
+    fn screen_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|row| {
+                (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// C2 of the 2026-11 audit: the source screen names each way to add an entry, shows an
+    /// example in each empty box, keeps the Name and Description boxes in the template part, and
+    /// draws its actions as buttons. The keyboard visits the controls in their screen order.
+    #[test]
+    fn the_source_screen_names_each_way_to_add_an_entry() {
+        let mut state = AddWorkflowState::new(vec![skit_ui::DraftSummary {
+            path: PathBuf::from("/data/drafts/skit-new-a1.prompt.md"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        }]);
+        let mut session = AddScreenSession::default();
+        let (terminal, geometry) = draw(&state, &mut session, 100, 40);
+        let lines = screen_lines(&terminal);
+        let row_of = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?}:\n{lines:#?}"))
+        };
+        let order = [
+            "Path to a script, executable, or prompt:",
+            "~/scripts/tool.py",
+            "Browse…",
+            "…or register a command template below (e.g. ffmpeg -i {input}):",
+            "ffmpeg -i {input} {output}",
+            "Name for the command",
+            "Description (optional)",
+            "…or resume a kept draft:",
+            "skit-new-a1.prompt.md",
+            "Delete draft…",
+            "…or start from a blank page:",
+            "Write a script…",
+            "Continue",
+        ];
+        for (&above, &below) in order.iter().zip(&order[1..]) {
+            assert!(
+                row_of(above) < row_of(below),
+                "{above:?} is not above {below:?}:\n{lines:#?}"
+            );
+        }
+        let hit = |target: AddControlId| {
+            geometry
+                .hits
+                .iter()
+                .find(|hit| hit.target == target)
+                .unwrap_or_else(|| panic!("{target:?} is not a mouse target"))
+                .area
+        };
+        // A button is as wide as its label, not as wide as the panel, and it has a color.
+        for (target, label) in [
+            (AddControlId::NewScript, "Write a script…"),
+            (AddControlId::NewPrompt, "Draft a prompt…"),
+            (AddControlId::Continue, "Continue"),
+            (AddControlId::Cancel, "Cancel"),
+            (AddControlId::DeleteDraft, "Delete draft…"),
+        ] {
+            let area = hit(target.clone());
+            assert_eq!(
+                usize::from(area.width),
+                label.chars().count() + 2,
+                "{target:?}"
+            );
+            assert_eq!(hit_text(&terminal, area), format!(" {label} "));
+            let cell = &terminal.backend().buffer()[(area.x, area.y)];
+            assert_ne!(cell.bg, ratatui_core::style::Color::Reset, "{target:?}");
+        }
+        assert_eq!(
+            hit(AddControlId::NewScript).y,
+            hit(AddControlId::NewPrompt).y
+        );
+        assert_eq!(hit(AddControlId::Continue).y, hit(AddControlId::Cancel).y);
+
+        // The keyboard order is the screen order.
+        let mut visited = Vec::new();
+        for _ in 0..session.focus.elements().len() {
+            visited.push(
+                session
+                    .focused()
+                    .cloned()
+                    .expect("one control has the focus"),
+            );
+            if let Some(AddScreenEvent::Action(action)) =
+                session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &state, &geometry)
+            {
+                let _ = state.reduce(action);
+            }
+        }
+        let mut on_screen = visited
+            .iter()
+            .map(|target| (hit(target.clone()).y, hit(target.clone()).x, target.clone()))
+            .collect::<Vec<_>>();
+        on_screen.sort();
+        assert_eq!(
+            on_screen
+                .into_iter()
+                .map(|(_, _, target)| target)
+                .collect::<Vec<_>>(),
+            visited
+        );
+
+        // An example shows only while its box is empty.
+        let _ = state.reduce(AddAction::SetSourcePath("/work/tool.py".to_owned()));
+        let (terminal, _) = draw(&state, &mut session, 100, 40);
+        let rendered = text_of(&terminal);
+        assert!(!rendered.contains("~/scripts/tool.py"), "{rendered}");
+        assert!(
+            rendered.contains("ffmpeg -i {input} {output}"),
+            "{rendered}"
+        );
+    }
+
+    /// A missing command name is reported under the name box, in words.
+    #[test]
+    fn a_missing_command_name_is_reported_under_its_box() {
+        let mut state = AddWorkflowState::new(Vec::new());
+        let _ = state.reduce(AddAction::SetCommandTemplate("echo {name}".to_owned()));
+        let _ = state.reduce(AddAction::Continue);
+        let mut session = AddScreenSession::default();
+        let (terminal, _) = draw(&state, &mut session, 100, 40);
+        let lines = screen_lines(&terminal);
+        let report = lines
+            .iter()
+            .position(|line| line.contains("✗ A name is required."))
+            .unwrap_or_else(|| panic!("missing report:\n{lines:#?}"));
+        assert!(lines[report - 2].contains('│') && lines[report - 3].contains("Name for"));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("A name is required."))
+                .count(),
+            1
+        );
+    }
+
+    /// C3 of the 2026-11 audit: the review shows each candidate with the kind of its run form
+    /// field and its value, and the buttons use the words of the footer.
+    #[test]
+    fn the_review_names_each_candidate_with_its_kind_and_value() {
+        let state = source(
+            "hello.py",
+            b"MESSAGE = \"Hello from skit\"\nCOUNT = 3\nRATIO = 0.5\nLOUD = False\nprint(MESSAGE, COUNT, RATIO, LOUD)\n",
+            KnownEntryKind::Python,
+        );
+        let mut session = AddScreenSession::default();
+        let (terminal, geometry) = draw(&state, &mut session, 100, 40);
+        let rendered = text_of(&terminal);
+        for expected in [
+            "MESSAGE  text · default \"Hello from skit\"",
+            "COUNT  whole number · default 3",
+            "RATIO  number · default 0.5",
+            "LOUD  on/off · default off",
+            "[Ctrl+S] Add",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?}:\n{rendered}"
+            );
+        }
+        for (target, label) in [
+            (AddControlId::EditSource, "Edit script"),
+            (AddControlId::Save, "Add"),
+            (AddControlId::Cancel, "Cancel"),
+        ] {
+            let area = geometry
+                .hits
+                .iter()
+                .find(|hit| hit.target == target)
+                .unwrap_or_else(|| panic!("{target:?} is not a mouse target"))
+                .area;
+            assert_eq!(hit_text(&terminal, area), format!(" {label} "));
+        }
+
+        let mut zh_session = AddScreenSession::default();
+        let (terminal, _) = draw_locale(&state, &mut zh_session, 100, 40, Locale::ZhCn);
+        let zh_rendered = text_of(&terminal);
+        assert!(
+            // TestBackend shows the second cell of each wide glyph as a blank.
+            zh_rendered.contains("COUNT  整 数  · 默 认  3"),
+            "{zh_rendered}"
+        );
+
+        let mut long = ParamDecl::new("TEMPLATE");
+        long.default = Some(ParameterValue::String("x".repeat(60)));
+        assert_eq!(
+            candidate_label(&long, Locale::En),
+            format!("TEMPLATE  text · default \"{}…\"", "x".repeat(39))
+        );
+        long.secret = true;
+        assert_eq!(
+            candidate_label(&long, Locale::En),
+            "TEMPLATE  text · default •••"
+        );
+        long.default = None;
+        assert_eq!(candidate_label(&long, Locale::En), "TEMPLATE  text");
+        for (parameter_type, kind) in [
+            (ParameterType::Path, "path"),
+            (ParameterType::Choice, "text"),
+        ] {
+            let mut declaration = ParamDecl::new("OUTPUT");
+            declaration.parameter_type = parameter_type;
+            declaration.default = Some(ParameterValue::String("out.txt".to_owned()));
+            assert_eq!(
+                candidate_label(&declaration, Locale::En),
+                format!("OUTPUT  {kind} · default \"out.txt\"")
+            );
+        }
+    }
+
+    /// The prompt review says what the switch does, edits the prompt, and opens the runner editor
+    /// with the words that the run form uses.
+    #[test]
+    fn the_prompt_review_says_what_its_switch_and_buttons_do() {
+        let state = source(
+            "task.prompt.md",
+            b"Review {{topic}}\n",
+            KnownEntryKind::Prompt,
+        );
+        let mut session = AddScreenSession::default();
+        let (terminal, _) = draw(&state, &mut session, 100, 40);
+        let rendered = text_of(&terminal);
+        for expected in [
+            "Fill {{name}} placeholders from the launch menu before each run",
+            " New agent… ",
+            " Edit prompt ",
+            " Add ",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?}:\n{rendered}"
+            );
+        }
+        assert!(!rendered.contains("true or false"), "{rendered}");
     }
 
     /// A script that carries its own PEP 723 fence is read-only at add time, so the review has to

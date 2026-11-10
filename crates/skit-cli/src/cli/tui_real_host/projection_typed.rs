@@ -53,6 +53,8 @@ enum AddActionProjection<'a> {
     Unit(&'static str),
     Payload(&'static str),
     PickedSourcePath(&'a str),
+    SourcePath(&'a str),
+    ReviewName(&'a str),
     SourceResult(&'static str),
     DraftEdited,
     DraftDeleted,
@@ -171,7 +173,7 @@ impl PathMap {
             Action::AddCompleted { .. } => TypedActionProjection::AddCompleted,
             Action::AddCancelled => TypedActionProjection::Unit("add_cancelled"),
             Action::Complete { .. } => TypedActionProjection::Complete,
-            Action::SetStatus(_) => TypedActionProjection::Status,
+            Action::SetStatus { .. } => TypedActionProjection::Status,
             Action::ClearStatus => TypedActionProjection::Unit("clear_status"),
             Action::Quit => TypedActionProjection::Unit("quit"),
         };
@@ -256,6 +258,9 @@ impl PathMap {
             Effect::SaveRunPreset { .. } => TypedEffectProjection::Payload("save_run_preset"),
             Effect::Add(nested) => TypedEffectProjection::Add(nested),
             Effect::HealthRebuild => TypedEffectProjection::Unit("health_rebuild"),
+            Effect::PreviewSettingsResync { .. } => {
+                TypedEffectProjection::Payload("preview_settings_resync")
+            }
             Effect::SaveRunner { .. } => TypedEffectProjection::Payload("save_runner"),
             Effect::Preferences(nested) => TypedEffectProjection::Preferences(nested),
             Effect::Edit { .. } => TypedEffectProjection::Payload("edit"),
@@ -341,7 +346,7 @@ impl PathMap {
         value: &mut Value,
     ) -> Result<(), String> {
         let projection = match action {
-            AddAction::SetSourcePath(_) => AddActionProjection::Payload("set_source_path"),
+            AddAction::SetSourcePath(path) => AddActionProjection::SourcePath(path),
             AddAction::PickedSourcePath(raw) => AddActionProjection::PickedSourcePath(raw),
             AddAction::SetCommandTemplate(_) => {
                 AddActionProjection::Payload("set_command_template")
@@ -364,7 +369,7 @@ impl PathMap {
                 AddActionProjection::Payload("confirm_draft_delete")
             }
             AddAction::DraftDeleted { .. } => AddActionProjection::DraftDeleted,
-            AddAction::SetReviewName(_) => AddActionProjection::Payload("set_review_name"),
+            AddAction::SetReviewName(name) => AddActionProjection::ReviewName(name),
             AddAction::SetReviewDescription(_) => {
                 AddActionProjection::Payload("set_review_description")
             }
@@ -406,6 +411,36 @@ impl PathMap {
                 }
                 let path = self.require_exact_picker_file(raw)?;
                 *payload = Value::String(self.normalize_path(path));
+                Ok(())
+            }
+            AddActionProjection::SourcePath(path) => {
+                let payload = external_payload_mut(value, "set_source_path")?;
+                // The action can send the derived path again, and undo or redo can bring back
+                // the derived path that an edit took away. Both are the host value.
+                if let Some((_, stable)) = self
+                    .add_source_path_projection()?
+                    .into_iter()
+                    .chain(self.source_path_yank_projection()?)
+                    .find(|(raw, _)| raw == path)
+                {
+                    *payload = Value::String(stable);
+                }
+                Ok(())
+            }
+            AddActionProjection::ReviewName(name) => {
+                let payload = external_payload_mut(value, "set_review_name")?;
+                // The action can send the derived name again, and undo or redo can bring back
+                // the derived name that an edit took away. Both are the host value.
+                if let Some(projection) = [
+                    self.add_provenance.review_name.as_ref(),
+                    self.add_provenance.review_name_yank.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|projection| projection.raw_name == name)
+                {
+                    *payload = Value::String(projection.stable_name.clone());
+                }
                 Ok(())
             }
             AddActionProjection::SourceResult(tag) => {
@@ -752,6 +787,7 @@ impl PathMap {
             SettingsAction::FocusNext => "focus_next",
             SettingsAction::FocusPrevious => "focus_previous",
             SettingsAction::Resync => "resync",
+            SettingsAction::ResyncPreviewed { .. } => "resync_previewed",
             SettingsAction::SetPromptCandidates { .. } => "set_prompt_candidates",
             SettingsAction::Save => "save",
             SettingsAction::Close => "close",

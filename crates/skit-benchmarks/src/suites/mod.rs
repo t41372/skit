@@ -204,14 +204,15 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --export-json) out=$2; shift 2 ;;
     --command-name)
-      rows="${rows}${separator}{\"command\":\"$2\",\"times\":[0.001,0.002],\"exit_codes\":[0,0]}"
+      runs='{"time_wall_clock":{"value":0.001,"unit":"second"},"exit_code":0},{"time_wall_clock":{"value":0.002,"unit":"second"},"exit_code":0}'
+      rows="${rows}${separator}{\"command\":\"fake\",\"name\":\"$2\",\"measurements\":[$runs]}"
       separator=,
       shift 3
       ;;
     *) shift ;;
   esac
 done
-printf '{"results":[%s]}\n' "$rows" > "$out"
+printf '{"schema_version":2,"results":[%s]}\n' "$rows" > "$out"
 "#,
             );
             let uv = executable(

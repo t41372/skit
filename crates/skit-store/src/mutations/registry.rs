@@ -445,6 +445,8 @@ where
     (parsed.to_string() == value).then_some(parsed)
 }
 
+// Only the Unix fingerprint reads a time as seconds and nanoseconds.
+#[cfg(unix)]
 fn seconds_and_nanos(seconds: i64, nanos: i64) -> i128 {
     i128::from(seconds) * 1_000_000_000 + i128::from(nanos)
 }

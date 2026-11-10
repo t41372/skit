@@ -379,11 +379,11 @@ fn preference_refusals_are_complete_in_both_chinese_locales() {
     };
     assert_eq!(
         custom.message().localize(Locale::ZhCn),
-        "自定义选项需要 URL。"
+        "选了“自定义”就需要填 URL。"
     );
     assert_eq!(
         custom.message().localize(Locale::ZhTw),
-        "自訂選項需要 URL。"
+        "選了「自訂」就需要填 URL。"
     );
 
     let https = PreferencesError::GithubHttpsRequired {

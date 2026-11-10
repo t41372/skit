@@ -1,7 +1,7 @@
 //! Exact-name completeness guard for Python v0.4 `tests/test_fish_cli_reader_mut.py`.
 //!
 //! The eight behavioral tests live in skit-form. This manifest freezes their Python order so no
-//! broader Fish onboarding test can silently substitute for a mutation oracle.
+//! broader Fish onboarding test can silently substitute for an exact oracle.
 
 use std::{fs, path::Path};
 
@@ -17,15 +17,14 @@ const EXPECTED: &[&str] = &[
 ];
 
 #[test]
-fn fish_cli_reader_mutation_oracles_match_the_frozen_python_module_exactly() {
+fn fish_cli_reader_oracles_match_the_frozen_python_module_exactly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(
-        repo.join("crates/skit-form/tests/port_test_fish_cli_reader_mut_exact.rs"),
-    )
-    .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_fish_cli_reader_exact.rs"))
+            .unwrap();
     let names = syn::parse_file(&source)
         .unwrap()
         .items

@@ -25,21 +25,21 @@ fn current_uv_assets_cover_the_supported_v040_platforms_and_mirrors() {
     assert!(UvTarget::from_parts("riscv64", "linux", false).is_err());
 
     let official = uv_asset(&linux, None).unwrap();
-    assert_eq!(official.version, "0.12.3");
+    assert_eq!(official.version, "0.13.7");
     assert_eq!(
         official.url,
-        "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz"
+        "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-unknown-linux-gnu.tar.gz"
     );
     assert_eq!(
         official.checksum,
-        "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
+        "c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83"
     );
     assert!(uv_asset(&windows, None).unwrap().filename.ends_with(".zip"));
     assert!(
         uv_asset(&linux, Some("https://mirror.example/astral-sh/uv"))
             .unwrap()
             .url
-            .starts_with("https://mirror.example/astral-sh/uv/0.12.3/")
+            .starts_with("https://mirror.example/astral-sh/uv/0.13.7/")
     );
 }
 

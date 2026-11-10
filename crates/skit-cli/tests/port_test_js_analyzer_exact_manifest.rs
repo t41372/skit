@@ -14,13 +14,13 @@ const EXPECTED: &[&str] = &[
 ];
 
 #[test]
-fn javascript_analyzer_mutation_oracles_match_the_frozen_python_module_exactly() {
+fn javascript_analyzer_oracles_match_the_frozen_python_module_exactly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap();
     let source =
-        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_js_analyzer_mut_exact.rs"))
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_js_analyzer_exact.rs"))
             .unwrap();
     let names = syn::parse_file(&source)
         .unwrap()

@@ -522,7 +522,7 @@ mod tests {
                 r#"#!/bin/sh
 printf '%s|%s|%s\n' "$PWD" "$*" "${{SKIT_DATA_DIR-}}" >> '{}'
 case "$*" in
-  --version) printf 'skit 0.5.0\n' ;;
+  --version) printf 'skit 0.5.0 (1a2b3c4d5)\n' ;;
   'list --json') printf '[]\n' ;;
   *) printf 'unexpected skit argv: %s\n' "$*" >&2; exit 64 ;;
 esac
@@ -549,6 +549,9 @@ esac
         .unwrap();
 
         assert_eq!(results.meta.profile, BenchmarkProfile::Compare);
+        // `skit --version` names the build commit after the version. The manifest keeps the
+        // version alone.
+        assert_eq!(results.meta.skit_version, "0.5.0");
         assert!(results.metrics.contains_key("imports.version.modules"));
         assert!(bench.join("datasets/n0/manifest.json").is_file());
         assert!(bench.join("suites/imports.json").is_file());

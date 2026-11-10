@@ -154,7 +154,7 @@ fn test_workflows_install_hyperfine_via_the_action() {
             workflow
                 .actions
                 .iter()
-                .filter(|action| action.as_str() == "./.github/actions/install-hyperfine")
+                .filter(|action| action.as_str() == "$/.github/actions/install-hyperfine")
                 .count(),
             1,
             "{name} must use the repository action exactly once"

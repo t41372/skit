@@ -323,7 +323,8 @@ fn every_published_hit_reaches_its_advertised_endpoint() {
         ("prompt run", prompt_run_state(), 19),
         ("long form", long_form_state(), 9),
         ("preferences", preferences_state(), 4),
-        ("rename form", rename_form_state(), 5),
+        // The Rename dialog publishes its name box and two chips, `Enter Rename` and `Esc Cancel`.
+        ("rename form", rename_form_state(), 3),
     ];
     for (name, state, published) in &states {
         for size in [TINY, COMPACT, NORMAL, WIDE] {

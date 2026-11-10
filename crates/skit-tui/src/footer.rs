@@ -1,5 +1,7 @@
 //! Responsive command footer with persistent mature scrolling state.
 
+use std::borrow::Cow;
+
 use ratatui_core::{layout::Rect, terminal::Frame};
 use ratatui_crossterm::crossterm::event::{KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui_interact::components::{
@@ -8,7 +10,7 @@ use ratatui_interact::components::{
 use ratatui_widgets::{
     block::Block,
     borders::{BorderType, Borders},
-    paragraph::Paragraph,
+    paragraph::{Paragraph, Wrap},
 };
 use skit_i18n::{Locale, catalog, format_text, text};
 use skit_ui::{
@@ -254,6 +256,14 @@ impl<A: Clone + Eq> ActionFooterSession<A> {
     pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, A)] {
         &self.advertised
     }
+
+    /// Each visible chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.advertised
+            .iter()
+            .map(|(area, _, action)| (*area, self.click.pressed() == Some(action)))
+            .collect()
+    }
 }
 
 impl<A> ActionFooterSession<A>
@@ -444,7 +454,7 @@ pub(crate) fn required_height(
     let visible_rows = rows.min(profile.footer_row_budget(library));
     u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
-        .saturating_add(u16::from(has_note(state, inner_width)))
+        .saturating_add(note_rows(state, locale, inner_width))
         .saturating_add(if decorated { 2 } else { 0 })
         .max(1)
 }
@@ -487,7 +497,79 @@ fn minimum_content_height(
     ownership: FooterInputOwnership,
 ) -> u16 {
     let (_, rows) = chips(state, locale, inner_width, ownership);
-    u16::from(rows > 0).saturating_add(u16::from(has_note(state, inner_width)))
+    u16::from(rows > 0).saturating_add(note_rows(state, locale, inner_width))
+}
+
+/// Report whether a screen that hides the shared footer must still show the status.
+///
+/// Health, Add, the dialogs, and the agent editor draw their own keys, so they hide the shared
+/// footer, and the status line goes with it. A warning or an error stays until the next key, and
+/// that key clears it, so the user must see it on the screen where it happened. A receipt or a
+/// note stays hidden there: it clears itself, and the screen shows the result of its own work.
+pub(crate) fn shows_problem(state: &LibraryState) -> bool {
+    state.status().is_some() && state.status_kind().display_time().is_none()
+}
+
+/// Return the preferred, smallest, and smallest bordered height of the footer that shows only a
+/// problem under a screen that hides the shared footer.
+///
+/// All three are zero when no problem shows. The border follows the rule of the shared footer.
+pub(crate) fn problem_heights(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+) -> (u16, u16, u16) {
+    if !shows_problem(state) || profile.width() == 0 || profile.height() == 0 {
+        return (0, 0, 0);
+    }
+    let bare = note_rows(state, locale, profile.width());
+    if profile.is_short_or_tiny() || profile.width() <= 2 {
+        return (bare, bare, 0);
+    }
+    let bordered = note_rows(state, locale, profile.width() - 2).saturating_add(2);
+    (bordered, bare, bordered)
+}
+
+/// Draw the footer of a screen that hides the shared footer: the problem status and no keys.
+pub(crate) fn render_problem(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+    decorated: bool,
+) {
+    let block = Block::default()
+        .borders(if decorated {
+            Borders::ALL
+        } else {
+            Borders::NONE
+        })
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_status(frame, inner, state, locale);
+}
+
+/// Draw the status at the bottom of `inner`, and report whether a status shows.
+fn render_status(frame: &mut Frame, inner: Rect, state: &LibraryState, locale: Locale) -> bool {
+    let Some(status) = shown_status(state, locale) else {
+        return false;
+    };
+    let rows = note_rows(state, locale, inner.width).min(inner.height);
+    let status_area = Rect::new(
+        inner.x,
+        inner.bottom().saturating_sub(rows),
+        inner.width,
+        rows,
+    );
+    // The glyph and the color say what kind of news this is before the words do. A long status
+    // wraps onto a second row rather than losing its end.
+    frame.render_widget(
+        Paragraph::new(theme::status_kind_line(&status, state.status_kind()))
+            .wrap(Wrap { trim: false }),
+        status_area,
+    );
+    true
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
@@ -559,8 +641,9 @@ impl FooterSession {
             .borders(if compact { Borders::NONE } else { Borders::ALL })
             .border_type(BorderType::Rounded);
         let inner = base_block.inner(area);
-        let note_rows = usize::from(has_note(state, inner.width));
-        self.visible_height = usize::from(inner.height).saturating_sub(note_rows);
+        let note_rows = note_rows(state, locale, inner.width);
+        let note_height = usize::from(note_rows);
+        self.visible_height = usize::from(inner.height).saturating_sub(note_height);
         let mut content_width = inner.width;
         let (mut positioned, mut rows) = chips(state, locale, content_width, ownership);
         if compact && rows > self.visible_height && content_width > 1 {
@@ -632,17 +715,8 @@ impl FooterSession {
             });
         }
 
-        if let Some(status) = state.status() {
-            let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-            // Reducer refusals are complete catalog keys. Host receipts already contain
-            // localized text and user values; do not translate their fragments again.
-            let status = if catalog().iter().any(|row| row.english == status) {
-                text(locale, status)
-            } else {
-                std::borrow::Cow::Borrowed(status)
-            };
-            frame.render_widget(Paragraph::new(status), status_area);
-        } else if matches!(state.screen(), Screen::Library) {
+        if !render_status(frame, inner, state, locale) && matches!(state.screen(), Screen::Library)
+        {
             let status = default_library_status(state, locale);
             let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
             frame.render_widget(Paragraph::new(status), status_area);
@@ -745,10 +819,11 @@ fn footer_groups(
         .filter_map(|spec| {
             let bindings = displayed_bindings(*spec, ownership);
             let binding = bindings.first()?;
-            // Version 0.4's shared navigation hint is two key-only pills that name BOTH keys for
-            // each direction (`src/skit/tui_footer.py:82-94`): the arrows already say which way,
-            // and a footer that advertises only Tab strands anyone who tabs one field too far. The
-            // full words stay on the binding, so the help screen still shows them.
+            // Version 0.4's shared navigation hint is two pills that name BOTH keys for each
+            // direction (`src/skit/tui_footer.py:82-94`): a footer that advertises only Tab
+            // strands anyone who tabs one field too far. Version 0.4 left the pills without
+            // words; every footer here names them, as the runner editor always did, so the same
+            // chip reads the same on every screen.
             if matches!(
                 spec.command,
                 UiCommand::FocusNext | UiCommand::FocusPrevious
@@ -763,7 +838,16 @@ fn footer_groups(
                     })
                     .collect::<Vec<_>>()
                     .join("/");
-                return Some((keys, String::new(), spec.command));
+                return Some((keys, text(locale, spec.label).into_owned(), spec.command));
+            }
+            // The footer and the help screen name the same quit keys: every chord of the command.
+            if spec.command == UiCommand::Quit {
+                let keys = bindings
+                    .iter()
+                    .map(|binding| binding.hint)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                return Some((keys, text(locale, spec.label).into_owned(), spec.command));
             }
             // Enter reads as the verb of the control that owns it, never as a bare "Submit".
             let label = match (spec.command, state.form(), state.preferences()) {
@@ -847,11 +931,44 @@ fn displayed_bindings(spec: UiCommandSpec, ownership: FooterInputOwnership) -> V
             .filter(|binding| !matches!(binding.key, UiKey::Enter))
             .collect();
     }
+    // Quit has two plain keys, `q` and Esc, and the help screen lists both.
+    if spec.command == UiCommand::Quit {
+        return spec.bindings.to_vec();
+    }
     spec.bindings.first().copied().into_iter().collect()
 }
 
-fn has_note(state: &LibraryState, _inner_width: u16) -> bool {
-    matches!(state.screen(), Screen::Library) || state.status().is_some()
+/// The most rows that one status takes under the chips.
+const STATUS_ROWS: u16 = 2;
+
+/// The status line as the footer shows it.
+///
+/// Reducer refusals are complete catalog keys. Host receipts already contain localized text and
+/// user values; do not translate their fragments again.
+fn shown_status<'a>(state: &'a LibraryState, locale: Locale) -> Option<Cow<'a, str>> {
+    let status = state.status()?;
+    Some(if catalog().iter().any(|row| row.english == status) {
+        text(locale, status)
+    } else {
+        Cow::Borrowed(status)
+    })
+}
+
+/// The rows of the note under the chips: the entry count of the Library, or a status.
+///
+/// A status wider than the footer wraps onto a second row and stops there.
+fn note_rows(state: &LibraryState, locale: Locale, inner_width: u16) -> u16 {
+    let Some(status) = shown_status(state, locale) else {
+        return u16::from(matches!(state.screen(), Screen::Library));
+    };
+    let glyph =
+        theme::status_of_kind(state.status_kind()).map_or(0, |(glyph, _)| glyph.width() + 1);
+    let width = status.width().saturating_add(glyph);
+    if inner_width == 0 || width <= usize::from(inner_width) {
+        1
+    } else {
+        STATUS_ROWS
+    }
 }
 
 fn default_library_status(state: &LibraryState, locale: Locale) -> String {
@@ -1607,7 +1724,10 @@ mod tests {
             minimum_content_height(&suppressed, Locale::En, 80, ownership),
             0
         );
-        suppressed.update(Action::SetStatus("Saved".to_owned()));
+        suppressed.update(Action::SetStatus {
+            kind: skit_ui::StatusKind::Info,
+            message: "Saved".to_owned(),
+        });
         assert_eq!(
             minimum_content_height(&suppressed, Locale::En, 80, ownership),
             1
@@ -1672,7 +1792,10 @@ mod tests {
                 ),
             ] {
                 let mut state = LibraryState::default();
-                state.update(skit_ui::Action::SetStatus(status));
+                state.update(skit_ui::Action::SetStatus {
+                    kind: skit_ui::StatusKind::Info,
+                    message: status,
+                });
                 let mut session = FooterSession::default();
                 let mut terminal = Terminal::new(TestBackend::new(120, 8)).unwrap();
                 terminal
@@ -1713,17 +1836,20 @@ mod tests {
             ),
             (
                 Locale::ZhCn,
-                "设置已保存 — 已移除 GONE：它已不存在于脚本中。",
-                "已移除 GONE",
+                "设置已保存 — 已剔除 GONE:脚本中已找不到。",
+                "已剔除 GONE",
             ),
             (
                 Locale::ZhTw,
-                "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。",
-                "已移除 GONE",
+                "設定已儲存 — 已剔除 GONE:腳本中已找不到。",
+                "已剔除 GONE",
             ),
         ] {
             let mut state = LibraryState::default();
-            state.update(skit_ui::Action::SetStatus(status.to_owned()));
+            state.update(skit_ui::Action::SetStatus {
+                kind: skit_ui::StatusKind::Info,
+                message: status.to_owned(),
+            });
             let mut session = FooterSession::default();
             let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
             terminal

@@ -18,6 +18,10 @@
 //!    waits; Windows asks the console API and never sends the escape
 //!    (`crossterm/src/cursor/sys/{unix,windows}.rs`). Count the questions in the stream and
 //!    answer each exactly once — a one-shot flag cannot answer a second question (waves 4 and 14).
+//!    The Windows pseudo-console asks one question itself when it opens: portable-pty creates it
+//!    with `PSEUDOCONSOLE_INHERIT_CURSOR` (`portable-pty-0.9.0/src/win/psuedocon.rs:83-90`). It
+//!    does nothing more until the answer comes, so a Windows test with no answer reads only
+//!    `\x1b[6n` and its child never ends (CI run 42693074001).
 //! 4. **End on the child, never on the terminal saying its output is over.** A pseudo-console
 //!    does not reliably deliver the reader's end-of-input, so a teardown that joins the drain
 //!    thread can never return; wait for the child under a deadline, then read what is buffered
@@ -50,6 +54,7 @@
 use std::{
     collections::BTreeSet,
     io::{Read as _, Write as _},
+    num::NonZeroU16,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver},
@@ -662,12 +667,27 @@ pub(crate) fn strip_terminal_control(input: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
+/// Make an emulated terminal of `rows` by `columns` cells with no scrollback.
+///
+/// A terminal grid has at least one row and one column.
+pub(crate) fn terminal_parser(rows: u16, columns: u16) -> vt100::Parser {
+    let rows = NonZeroU16::new(rows).expect("a terminal has at least one row");
+    let columns = NonZeroU16::new(columns).expect("a terminal has at least one column");
+    vt100::Parser::new(rows, columns, 0)
+}
+
+/// The rows and columns of an emulated terminal grid.
+pub(crate) fn screen_size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, columns) = screen.size();
+    (rows.get(), columns.get())
+}
+
 /// Replay terminal output and return only the current terminal grid.
 ///
 /// This applies cursor movement, erase commands, and alternate-screen changes. Use it for a
 /// full-screen assertion. [`strip_terminal_control`] is only a history view.
 pub(crate) fn final_terminal_screen(input: &[u8], rows: u16, columns: u16) -> String {
-    let mut terminal = vt100::Parser::new(rows, columns, 0);
+    let mut terminal = terminal_parser(rows, columns);
     terminal.process(input);
     terminal.screen().contents()
 }

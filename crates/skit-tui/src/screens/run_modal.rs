@@ -22,7 +22,6 @@ use skit_ui::{
     Action, ModalState, PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose,
     RunPathContext, RunPathInsertMode, RunTokenOption,
 };
-use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
     EventHandling, ViewGeometry,
@@ -30,7 +29,8 @@ use crate::{
         AgentReviewNode, AgentReviewSnapshotError, list_picker as snapshot_list_picker,
         node as snapshot_node, rect as snapshot_rect, value as snapshot_value,
     },
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry},
+    editor::{EditResponse, TextEditor},
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_drag},
     screens::picker::{
         FilePickerEvent, FilePickerGeometry, FilePickerSession, MemoryFilePickerSource,
         render_file_picker,
@@ -83,11 +83,11 @@ enum ModalHit {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunModalSession {
     signature: Option<ModalSignature>,
-    preset: LineInput,
+    preset: TextEditor,
     token: ListPickerState,
     token_view_height: usize,
     token_area: Rect,
-    environment: LineInput,
+    environment: TextEditor,
     preset_editable: Option<EditableGeometry>,
     environment_editable: Option<EditableGeometry>,
     environment_list: ListPickerState,
@@ -108,6 +108,13 @@ impl RunModalSession {
         if let Some(file) = self.file.as_mut() {
             file.cancel_click();
         }
+    }
+
+    /// Each footer chip of the open file picker, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.file
+            .as_ref()
+            .map_or_else(Vec::new, |file| file.pointer_targets(&self.file_geometry))
     }
 
     #[cfg(test)]
@@ -158,14 +165,11 @@ impl RunModalSession {
                         .transpose()?
                         .unwrap_or(serde_json::Value::Null),
                 ),
-                ("preset", snapshot_value("run_modal.preset", preset)?),
+                ("preset", preset.agent_review_snapshot()),
                 ("token", snapshot_list_picker(token)),
                 ("token_view_height", serde_json::json!(token_view_height)),
                 ("token_area", snapshot_rect(*token_area)),
-                (
-                    "environment",
-                    snapshot_value("run_modal.environment", environment)?,
-                ),
+                ("environment", environment.agent_review_snapshot()),
                 (
                     "preset_editable",
                     preset_editable
@@ -212,6 +216,40 @@ impl RunModalSession {
         ))
     }
 
+    /// Report whether the cell shows the text of the preset-name box.
+    pub(crate) fn preset_box_at(&self, column: u16, row: u16) -> bool {
+        self.preset_editable
+            .is_some_and(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// Report whether the cell shows the text of the environment box.
+    pub(crate) fn environment_box_at(&self, column: u16, row: u16) -> bool {
+        self.environment_editable
+            .is_some_and(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The box of the preset-name dialog.
+    pub(crate) const fn preset_editor(&self) -> &TextEditor {
+        &self.preset
+    }
+
+    /// The box of the environment dialog.
+    pub(crate) const fn environment_editor(&self) -> &TextEditor {
+        &self.environment
+    }
+
+    /// The Search box of the file picker, when the picker is open.
+    pub(crate) fn file_query_editor(&self) -> Option<&TextEditor> {
+        self.file.as_ref().map(FilePickerSession::query_editor)
+    }
+
+    /// Report whether the cell shows the text of the file picker's Search box.
+    pub(crate) fn file_box_at(&self, column: u16, row: u16) -> bool {
+        self.file
+            .as_ref()
+            .is_some_and(|file| file.query_box_at(column, row))
+    }
+
     pub(crate) fn set_file_picker_source(&mut self, source: MemoryFilePickerSource) {
         self.file_picker_source = Some(source);
         self.signature = None;
@@ -246,12 +284,12 @@ impl RunModalSession {
         if self.signature.as_ref() != Some(&signature) {
             self.click.cancel();
             match &signature {
-                ModalSignature::Preset => self.preset = LineInput::default(),
+                ModalSignature::Preset => self.preset = TextEditor::default(),
                 ModalSignature::Token { options, .. } => {
                     self.token = ListPickerState::new(options.len());
                 }
                 ModalSignature::Environment { .. } => {
-                    self.environment = LineInput::default();
+                    self.environment = TextEditor::default();
                     self.environment_list = ListPickerState::default();
                 }
                 ModalSignature::File { context, .. } => {
@@ -271,7 +309,7 @@ impl RunModalSession {
         if let ModalState::RunPresetName { value, .. } = modal
             && self.preset.value() != value
         {
-            self.preset = LineInput::new(value.clone());
+            self.preset.replace_text(value);
         }
         if let ModalState::RunEnvironmentPicker { query, visible, .. } = modal {
             if self.environment_click_values != *visible {
@@ -279,7 +317,7 @@ impl RunModalSession {
                 self.environment_click_values.clone_from(visible);
             }
             if self.environment.value() != query {
-                self.environment = LineInput::new(query.clone());
+                self.environment.replace_text(query);
             }
             self.environment_list.set_total(visible.len());
         } else {
@@ -378,6 +416,14 @@ impl RunModalSession {
                 })
             }),
             None => ignored(),
+        }
+    }
+
+    /// Make the next file picker start again in its first folder with an empty Search box, as the
+    /// Add picker and version 0.4 do. Call this only while no file picker is open.
+    pub(crate) fn forget_file_picker(&mut self) {
+        if matches!(self.signature, Some(ModalSignature::File { .. })) {
+            self.signature = None;
         }
     }
 
@@ -534,30 +580,36 @@ impl RunModalSession {
                 if key.code == KeyCode::Enter {
                     return action(Action::Submit);
                 }
-                let before = self.preset.value().to_owned();
-                if self.preset.handle_event(&Event::Key(key)).is_some() {
-                    if before == self.preset.value() {
-                        consumed()
-                    } else {
+                match self.preset.handle_key(&key) {
+                    EditResponse::Changed => {
                         action(Action::SetModalInput(self.preset.value().to_owned()))
                     }
-                } else {
-                    ignored()
+                    EditResponse::Consumed => consumed(),
+                    EditResponse::Ignored | EditResponse::Boundary => ignored(),
                 }
             }
-            Event::Paste(value) => {
-                for character in value.chars() {
-                    let _ = self.preset.handle(InputRequest::InsertChar(character));
+            Event::Paste(value) => match self.preset.paste(&value) {
+                EditResponse::Changed => {
+                    action(Action::SetModalInput(self.preset.value().to_owned()))
                 }
-                action(Action::SetModalInput(self.preset.value().to_owned()))
-            }
+                EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                    consumed()
+                }
+            },
             Event::Mouse(mouse) => {
+                if is_primary_drag(&mouse)
+                    && matches!(self.click.pressed(), Some(ModalHit::PresetInput))
+                    && let Some(editable) = self.preset_editable
+                {
+                    let _ = editable.pointer(&mut self.preset, &mouse);
+                    return consumed();
+                }
                 let target = self.clicks.handle_click(mouse.column, mouse.row);
                 if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
                     && matches!(target, Some(ModalHit::PresetInput))
                     && let Some(editable) = self.preset_editable
                 {
-                    let _ = editable.place_cursor(&mut self.preset, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.preset, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Armed | ClickOutcome::Activated(ModalHit::PresetInput) => {
@@ -607,27 +659,22 @@ impl RunModalSession {
                     KeyCode::Enter => return self.accept_environment(field, visible),
                     _ => {}
                 }
-                let before = self.environment.value().to_owned();
-                if self.environment.handle_event(&Event::Key(key)).is_some() {
-                    if before == self.environment.value() {
-                        consumed()
-                    } else {
-                        action(Action::SetRunEnvironmentQuery(
-                            self.environment.value().to_owned(),
-                        ))
-                    }
-                } else {
-                    ignored()
+                match self.environment.handle_key(&key) {
+                    EditResponse::Changed => action(Action::SetRunEnvironmentQuery(
+                        self.environment.value().to_owned(),
+                    )),
+                    EditResponse::Consumed => consumed(),
+                    EditResponse::Ignored | EditResponse::Boundary => ignored(),
                 }
             }
-            Event::Paste(value) => {
-                for character in value.chars() {
-                    let _ = self.environment.handle(InputRequest::InsertChar(character));
-                }
-                action(Action::SetRunEnvironmentQuery(
+            Event::Paste(value) => match self.environment.paste(&value) {
+                EditResponse::Changed => action(Action::SetRunEnvironmentQuery(
                     self.environment.value().to_owned(),
-                ))
-            }
+                )),
+                EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                    consumed()
+                }
+            },
             Event::Mouse(mouse) => {
                 if self
                     .environment_area
@@ -644,12 +691,19 @@ impl RunModalSession {
                         u8::from(mouse.kind == MouseEventKind::ScrollDown),
                     );
                 }
+                if is_primary_drag(&mouse)
+                    && matches!(self.click.pressed(), Some(ModalHit::EnvironmentInput))
+                    && let Some(editable) = self.environment_editable
+                {
+                    let _ = editable.pointer(&mut self.environment, &mouse);
+                    return consumed();
+                }
                 let target = self.clicks.handle_click(mouse.column, mouse.row);
                 if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
                     && matches!(target, Some(ModalHit::EnvironmentInput))
                     && let Some(editable) = self.environment_editable
                 {
-                    let _ = editable.place_cursor(&mut self.environment, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.environment, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Activated(ModalHit::EnvironmentOption(index)) => visible
@@ -1466,7 +1520,7 @@ mod tests {
             );
         }
         assert_eq!(
-            session.environment.cursor(),
+            session.environment.cursor().column,
             2,
             "Left did not move the cursor"
         );

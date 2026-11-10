@@ -54,8 +54,7 @@ use skit_ui::{
 use skit_ui::KnownEntryKind;
 
 use crate::cli::tui_host::{
-    FileAllocator as _, PrivateDirectoryPurpose, SYSTEM_FILE_ALLOCATOR, TempLocation,
-    TemporaryFilePurpose,
+    FileAllocator as _, PrivateDirectoryPurpose, TempLocation, TemporaryFilePurpose,
 };
 use crate::run::{StageWriteFaultGuard, new_injected_file_with_allocator};
 
@@ -63,6 +62,8 @@ use crate::run::{StageWriteFaultGuard, new_injected_file_with_allocator};
 use super::host::SeededTuiHost;
 #[cfg(windows)]
 use super::observation::escaped_os;
+#[cfg(target_os = "linux")]
+use super::stable_namespace::initialize_namespace_retained;
 use super::{
     adapters::{
         AllocationFailure, AllocationLocation, AllocationMaximums, AllocationOutcome,
@@ -80,8 +81,8 @@ use super::{
         StatusProjectionCause, ambient_path_spellings,
     },
     projection_cause::{
-        add_projection_cause, deserialize_canonical, external_payload_mut, external_tag,
-        require_external_unit, require_internal_tag, review_default_name, screen_tag,
+        add_projection_cause, derived_cursor, deserialize_canonical, external_payload_mut,
+        external_tag, require_external_unit, require_internal_tag, review_default_name, screen_tag,
     },
     seed::{
         DirectorySeedIo, WalkerDirectoryRoot, WalkerDirectorySeed, WalkerExternalReferenceSeed,
@@ -124,8 +125,7 @@ use super::{
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::{
     stable_namespace::{
-        SandboxFaults, StableSandboxPaths, default_stable_namespace_root,
-        initialize_namespace_retained, map_profile_lock_result,
+        SandboxFaults, StableSandboxPaths, default_stable_namespace_root, map_profile_lock_result,
     },
     stable_sandbox::StableSandbox,
 };
@@ -146,7 +146,8 @@ mod projection_session;
 mod seeding;
 mod stable_host;
 mod stable_namespace;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// Every contract in it is Linux-only.
+#[cfg(target_os = "linux")]
 mod stable_sandbox;
 
 /// Name one test of `module` for the `--exact` filter of the test harness.
@@ -210,13 +211,19 @@ fn expect_add_action(action: Action) -> AddAction {
 #[test]
 #[should_panic(expected = "the writing editor must retain the authored draft")]
 fn authored_draft_source_extraction_refuses_other_actions() {
-    let _ = expect_authored_draft_source(Action::SetStatus("not a draft".to_owned()));
+    let _ = expect_authored_draft_source(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "not a draft".to_owned(),
+    });
 }
 
 #[test]
 #[should_panic(expected = "the response must be an Add action")]
 fn c2_add_action_extraction_refuses_other_actions() {
-    let _ = expect_add_action(Action::SetStatus("not Add".to_owned()));
+    let _ = expect_add_action(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "not Add".to_owned(),
+    });
 }
 
 fn safe_profile(value: &str) -> SafeProfileId {
@@ -234,18 +241,14 @@ fn stable_paths(
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn create_private_test_directory(path: &Path) {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
-    }
-    builder.create(path).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        fs::DirBuilder::new().mode(0o700).create(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
+    #[cfg(not(unix))]
+    fs::DirBuilder::new().create(path).unwrap();
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -636,8 +639,10 @@ fn c2_memory_picker(root: &Path, draft: Option<&Path>) -> Value {
             "query": {
                 "value": format!("{}-widget", root.display()),
                 "cursor": root.display().to_string().chars().count() + 7,
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
             "current_directory_focused": false,
             "visible_height": 1,
@@ -667,7 +672,7 @@ fn c2_session(root: &Path, draft: Option<&Path>, inputs: Vec<Value>) -> Value {
         "source"
     };
     json!({
-        "schema_version": 1,
+        "schema_version": skit_tui::AGENT_REVIEW_SNAPSHOT_VERSION,
         "preferences": {
             "kind": "preferences",
             "fields": {
@@ -738,6 +743,10 @@ fn c2_session(root: &Path, draft: Option<&Path>, inputs: Vec<Value>) -> Value {
             "fields": {"session": picker.clone(), "geometry": null},
         },
         "file_picker_source": picker["fields"]["memory_source"].clone(),
+        "clipboard": {
+            "kind": "clipboard",
+            "fields": {"state": {"text": "", "pending_export": null}},
+        },
     })
 }
 
@@ -762,14 +771,19 @@ enum G2DirectorySeedFault {
 struct G2DirectorySeedIo {
     fault: Cell<Option<G2DirectorySeedFault>>,
     attempts: RefCell<Vec<PathBuf>>,
+    // Only a Unix seed makes a symlink conflict.
+    #[cfg(unix)]
     symlink_target: PathBuf,
 }
 
 impl G2DirectorySeedIo {
     fn new(fault: G2DirectorySeedFault, symlink_target: PathBuf) -> Self {
+        #[cfg(not(unix))]
+        let _ = symlink_target;
         Self {
             fault: Cell::new(Some(fault)),
             attempts: RefCell::new(Vec::new()),
+            #[cfg(unix)]
             symlink_target,
         }
     }

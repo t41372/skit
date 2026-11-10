@@ -13,11 +13,11 @@
     [{"text": "│┌ Storage mode ──────────────────────────────────────────────────────────────────────────────────┐│", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "││Keep a copy — skit stores it; your original file is never modified ▼                            ││", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│└────────────────────────────────────────────────────────────────────────────────────────────────┘│", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│", "fg": "default", "bg": "default", "attrs": []}, {"text": "Tick the ones the run form should ask for:                                                        ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "│", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│[x] NAME                                                                                          │", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│  Edit                                                                                            │", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│  Save                                                                                            │", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "│  Cancel                                                                                          │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│", "fg": "default", "bg": "default", "attrs": []}, {"text": "Tick the ones the launch menu should ask for:                                                     ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "│", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│[x] NAME  text · default \"world\"                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│ Edit script    Add    Cancel                                                                     │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
@@ -31,7 +31,7 @@
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "│                                                                                                  │", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "╰──────────────────────────────────────────────────────────────────────────────────────────────────╯", "fg": "default", "bg": "default", "attrs": []}],
-    [{"text": "[Ctrl+S] Add ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Esc] Cancel ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Tab/↓]  ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Shift+Tab/↑]  ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "                                               ", "fg": "default", "bg": "default", "attrs": []}],
+    [{"text": "[Ctrl+S] Add ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Esc] Cancel ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Tab/↓] Next field ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": " ", "fg": "default", "bg": "default", "attrs": []}, {"text": "[Shift+Tab/↑] Previous field ", "fg": "default", "bg": "default", "attrs": ["dim"]}, {"text": "                       ", "fg": "default", "bg": "default", "attrs": []}],
     [{"text": "                                                                                                    ", "fg": "default", "bg": "default", "attrs": []}]
   ]
 }

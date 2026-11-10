@@ -221,7 +221,7 @@ fn test_from_meta_dict_repeat_defaults_false_when_absent() {
 #[test]
 fn test_from_meta_dict_repeat_coerces_truthy_to_bool() {
     // A hand-edited meta.toml may carry a non-bool truthy scalar; from_meta_dict normalizes it to
-    // a real bool (kills the bool()-wrapper drop mutant, which would leave repeat as the raw int).
+    // a real bool (pins the bool() wrapper: without it, repeat would stay the raw int).
     assert!(
         ParamDecl::from_meta_map(&map(json!({"name": "x", "delivery": "flag", "repeat": 1})))
             .repeat

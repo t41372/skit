@@ -416,8 +416,10 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
             "state": {
                 "value": raw,
                 "cursor": draft.display().to_string().chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -449,7 +451,51 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
         expected.chars().count()
     );
 
-    let user_action = Action::Add(AddAction::SetSourcePath(draft.display().to_string()));
+    // A cursor key in the path field sends the unchanged draft path. The product sends it only
+    // when the cursor moves and the value stays, so the path keeps its projection.
+    let mut moved_action = Action::Add(AddAction::SetSourcePath(raw.clone()));
+    let mut moved_emitted = state.update(moved_action.clone());
+    let mut moved_state = state.clone();
+    let mut moved_session = c2_session(
+        host._sandbox.path(),
+        Some(&draft),
+        vec![json!({
+            "id": "SourcePath",
+            "state": {
+                "value": raw,
+                "cursor": 0,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
+            },
+        })],
+    );
+    host.capture_checkpoint_parts(
+        &mut moved_state,
+        &mut moved_session,
+        CheckpointCauseProjection::Reducer {
+            action: &mut moved_action,
+            emitted: &mut moved_emitted,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&moved_action).unwrap()["add"]["set_source_path"],
+        expected
+    );
+    assert_eq!(
+        serde_json::to_value(moved_state).unwrap()["workflow"]["active"]["add"]["source"]["path"],
+        expected
+    );
+    assert_eq!(
+        moved_session["add"]["fields"]["inputs"][0]["state"],
+        json!({"value": expected, "cursor": 0, "anchor": null, "undo": [], "redo": [], "group": null})
+    );
+
+    // A typed character changes the path, so the path is user text from then on.
+    let edited = format!("{raw}x");
+    let user_action = Action::Add(AddAction::SetSourcePath(edited.clone()));
     let user_emitted = state.update(user_action.clone());
     let mut user_state = state.clone();
     let mut user_session = c2_session(
@@ -458,10 +504,12 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
         vec![json!({
             "id": "SourcePath",
             "state": {
-                "value": draft.display().to_string(),
-                "cursor": draft.display().to_string().chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "value": edited,
+                "cursor": edited.chars().count(),
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -477,13 +525,18 @@ fn c2_select_draft_provenance_projects_state_and_untouched_input_mirror() {
     )
     .unwrap();
     assert_eq!(
+        serde_json::to_value(&recorded_user_action).unwrap()["add"]["set_source_path"],
+        edited
+    );
+    assert_eq!(
         serde_json::to_value(user_state).unwrap()["workflow"]["active"]["add"]["source"]["path"],
-        draft.display().to_string()
+        edited
     );
     assert_eq!(
         user_session["add"]["fields"]["inputs"][0]["state"]["value"],
-        draft.display().to_string()
+        edited
     );
+    assert!(host.path_map.add_provenance.selected_source_path.is_none());
 }
 
 #[test]
@@ -691,6 +744,85 @@ fn g2c_picked_source_refuses_without_an_active_add_and_cleans_the_checkpoint() {
     }
 }
 
+/// A picked path keeps its stable spelling while the editor moves it into the undo history and
+/// back.
+///
+/// The keys go through the real session, so the box keeps a real history. The ways it can fail:
+/// `Ctrl+U` leaves the raw path in the undo history of the box; `Ctrl+Z` brings the raw path back
+/// into the value and into the action that sets it; `Ctrl+Y` loses the proof of the path in the
+/// history.
+#[test]
+fn g2c_a_picked_path_keeps_its_projection_through_undo_and_redo() {
+    use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut host = RealWalkerHost::spawn(picker_provenance_profile()).unwrap();
+    let raw = host
+        .external_root
+        .join("nested/picked.py")
+        .display()
+        .to_string();
+    let stable = "<profile:fixture>/external/nested/picked.py";
+    let mut state = picker_add_state(&host);
+    let mut session = picker_tui_session(&host);
+    let picked = Action::Add(AddAction::PickedSourcePath(raw.clone()));
+    let picked_effect = state.update(picked.clone());
+    let _ = capture_real_reducer_checkpoint(&mut host, &state, &mut session, picked, picked_effect);
+
+    let mut control = |character| {
+        let _ = render_real_session_snapshot(&state, &mut session);
+        let EventHandling::Action(action) = session.handle_event(
+            Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::CONTROL,
+            )),
+            &state,
+            &ViewGeometry::default(),
+        ) else {
+            panic!("Ctrl+{character} did not edit the source path");
+        };
+        let effect = state.update(action.clone());
+        let (_, recorded, _, projected) =
+            capture_real_reducer_checkpoint(&mut host, &state, &mut session, action, effect);
+        let source = projected
+            .pointer("/add/fields/inputs")
+            .and_then(Value::as_array)
+            .and_then(|inputs| inputs.iter().find(|input| input["id"] == "SourcePath"))
+            .expect("the source stage owns one source-path input")["state"]
+            .clone();
+        (
+            serde_json::to_value(recorded).unwrap()["add"]["set_source_path"].clone(),
+            source,
+        )
+    };
+
+    let (cut, source) = control('u');
+    assert_eq!(cut, "");
+    assert_eq!(source["value"], "");
+    assert_eq!(source["undo"][0]["value"], stable);
+    let (restored, source) = control('z');
+    assert_eq!(restored, stable);
+    assert_eq!(source["value"], stable);
+    assert_eq!(source["redo"][0]["value"], "");
+    let (deleted, source) = control('y');
+    assert_eq!(deleted, "");
+    assert_eq!(source["undo"][0]["value"], stable);
+    assert!(!projected_text_contains(&source, &raw));
+}
+
+/// Report whether any text in `value` holds `raw`.
+fn projected_text_contains(value: &Value, raw: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(raw),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| projected_text_contains(value, raw)),
+        Value::Object(object) => object
+            .values()
+            .any(|value| projected_text_contains(value, raw)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
 #[test]
 fn g2c_manual_draft_new_add_and_exit_keep_picker_provenance_disjoint() {
     let mut host = RealWalkerHost::spawn(picker_provenance_profile()).unwrap();
@@ -712,22 +844,27 @@ fn g2c_manual_draft_new_add_and_exit_keep_picker_provenance_disjoint() {
     );
     assert!(host.path_map.add_provenance.selected_source_path.is_none());
 
-    let manual = Action::Add(AddAction::SetSourcePath(raw.clone()));
-    let manual_effect = state.update(manual.clone());
-    let (manual_checkpoint, recorded_manual, _, manual_session) =
-        capture_real_reducer_checkpoint(&mut host, &state, &mut session, manual, manual_effect);
+    // An action that sends the picked path again is no edit, so the path keeps its projection.
+    let stable = "<profile:fixture>/external/nested/picked.py";
+    let moved = Action::Add(AddAction::SetSourcePath(raw.clone()));
+    let moved_effect = state.update(moved.clone());
+    let (moved_checkpoint, recorded_moved, _, moved_session) =
+        capture_real_reducer_checkpoint(&mut host, &state, &mut session, moved, moved_effect);
     assert_eq!(
-        serde_json::to_value(recorded_manual).unwrap()["add"]["set_source_path"],
-        raw
+        serde_json::to_value(recorded_moved).unwrap()["add"]["set_source_path"],
+        stable
     );
     assert_eq!(
-        manual_checkpoint
+        moved_checkpoint
             .state
             .pointer("/workflow/active/add/source/path"),
-        Some(&json!(raw))
+        Some(&json!(stable))
     );
-    assert_eq!(source_input_value(&manual_session), raw);
-    assert!(host.path_map.add_provenance.picked_source_path.is_none());
+    assert_eq!(source_input_value(&moved_session), stable);
+    assert_eq!(
+        host.path_map.add_provenance.picked_source_path,
+        Some(raw.clone())
+    );
 
     let lookalike = format!("{raw}-user-text");
     let manual = Action::Add(AddAction::SetSourcePath(lookalike.clone()));
@@ -745,6 +882,7 @@ fn g2c_manual_draft_new_add_and_exit_keep_picker_provenance_disjoint() {
         Some(&json!(lookalike))
     );
     assert_eq!(source_input_value(&lookalike_session), lookalike);
+    assert!(host.path_map.add_provenance.picked_source_path.is_none());
 
     let picked = Action::Add(AddAction::PickedSourcePath(raw.clone()));
     let picked_effect = state.update(picked.clone());
@@ -1034,9 +1172,11 @@ fn c2_real_prompt_suffixes_preserve_kind_and_reducer_replay() {
             .strip_suffix(".prompt.md")
             .or_else(|| name.strip_suffix(".prompt"))
             .unwrap();
+        // A new prompt draft takes its name from its first words. A body with no word keeps
+        // the name that the file stem gives, so the projection of a derived name stays tested.
         assert_real_draft_transition_projects_and_replays(
             name,
-            b"Hello {{name}}\n",
+            b"---\n",
             "review",
             "/workflow/active/add/review/name",
             raw_name,

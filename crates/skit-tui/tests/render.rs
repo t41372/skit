@@ -399,8 +399,8 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .collect::<String>();
     assert!(text.contains("工 具 庫"));
     assert!(text.contains("項 目"));
-    assert!(text.contains("詳 細 資 料"));
-    assert!(text.contains("結 束"));
+    assert!(text.contains("詳 情"));
+    assert!(text.contains("離 開"));
     assert!(text.contains("副 本 由  skit"), "{text:?}");
     assert!(!text.contains("Library"));
 
@@ -432,7 +432,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("新 增 項 目"));
+    assert!(text.contains("加 入 項 目"));
     assert!(text.contains("來 源 路 徑"), "{text:?}");
     assert!(text.contains("Library"), "{text:?}");
     assert!(!text.contains("程 式 庫 種 類"), "{text:?}");
@@ -459,7 +459,10 @@ fn renderer_handles_narrow_empty_search_status_and_diagnostics_views() {
     searching.update(Action::Input('x'));
     states.push(searching);
     let mut status = state();
-    status.update(Action::SetStatus("reload failed".to_owned()));
+    status.update(Action::SetStatus {
+        kind: skit_ui::StatusKind::Error,
+        message: "reload failed".to_owned(),
+    });
     states.push(status);
 
     for state in states {
@@ -897,7 +900,7 @@ fn form_keys_preserve_text_editing_and_advertised_screen_chords() {
         (KeyCode::BackTab, KeyModifiers::SHIFT, Action::FocusPrevious),
         (KeyCode::Char('s'), KeyModifiers::CONTROL, Action::Submit),
         (KeyCode::Esc, KeyModifiers::NONE, Action::Back),
-        (KeyCode::Enter, KeyModifiers::NONE, Action::FocusNext),
+        (KeyCode::Enter, KeyModifiers::NONE, Action::Submit),
     ];
     for (code, modifiers, action) in cases {
         assert_eq!(
@@ -921,6 +924,110 @@ fn form_keys_preserve_text_editing_and_advertised_screen_chords() {
         None,
         "Ctrl+E must remain available to the input"
     );
+}
+
+fn rename_state() -> LibraryState {
+    let mut state = state();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Rename,
+        title: "Rename {}".to_owned(),
+        title_arguments: vec!["Hello".to_owned()],
+        translate_title: true,
+        selector: Some("hello".to_owned()),
+        fields: vec![FormField::text("name", "Name", "Hello")],
+        focused: 0,
+        submit_label: "Rename".to_owned(),
+    })));
+    state
+}
+
+fn rendered_lines(buffer: &ratatui_core::buffer::Buffer) -> Vec<String> {
+    (0..buffer.area.height)
+        .map(|row| {
+            (0..buffer.area.width)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// Rename is a small dialog: one name box in the middle of the screen, Enter renames, and Esc
+/// cancels. Both keys are footer chips, and each chip is a click target (C8 and A11 of the
+/// 2026-11 audit).
+#[test]
+fn rename_is_a_small_dialog_where_enter_renames_and_esc_cancels() {
+    let state = rename_state();
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let lines = rendered_lines(&buffer);
+    let (title_x, title_y) = buffer_position(&buffer, "Rename Hello");
+    assert!(
+        title_x > 1 && title_y > 1,
+        "the dialog is not centered:\n{lines:#?}"
+    );
+    let top = &lines[usize::from(title_y)];
+    assert!(
+        top.trim().chars().count() < 70,
+        "the dialog fills the screen:\n{lines:#?}"
+    );
+    let text = lines.join("\n");
+    for expected in ["Renaming keeps everything", "Enter Rename", "Esc Cancel"] {
+        assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+    }
+    assert!(
+        !text.contains("Tab/↓"),
+        "one field has nowhere to tab:\n{text}"
+    );
+    assert!(
+        !text.contains("Ctrl+S"),
+        "Enter is the advertised key:\n{text}"
+    );
+
+    assert!(matches!(
+        session.handle_event(
+            key(KeyCode::Char('!'), KeyModifiers::NONE),
+            &state,
+            &geometry
+        ),
+        EventHandling::Action(Action::SetFieldValue { field: 0, .. })
+    ));
+    assert_eq!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Action(Action::Submit)
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Action(Action::Back)
+    );
+    for (command, action) in [
+        (UiCommand::Submit, Action::Submit),
+        (UiCommand::Back, Action::Back),
+    ] {
+        let mut session = TuiSession::default();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        let chip = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.action == HitTarget::Command(command))
+            .unwrap_or_else(|| panic!("{command:?} has no footer chip"))
+            .rect;
+        assert_eq!(
+            session_click(&mut session, &state, &geometry, chip.x, chip.y),
+            EventHandling::Action(action)
+        );
+    }
 }
 
 #[test]
@@ -1243,8 +1350,9 @@ fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("Ctrl+C Ctrl+C / Esc"), "{text}");
-    assert!(text.contains("Quit"), "{text}");
+    // The editing keys come after the commands, so the last row is Redo.
+    assert!(text.contains("Ctrl+Y"), "{text}");
+    assert!(text.contains("Redo"), "{text}");
     assert_ne!(before, at_bottom);
 
     assert_eq!(
@@ -1257,7 +1365,10 @@ fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
 #[test]
 fn narrow_library_footer_scroll_reaches_every_action_and_reserves_the_status_row() {
     let mut view = state();
-    view.update(Action::SetStatus("Entry added".to_owned()));
+    view.update(Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: "Entry added".to_owned(),
+    });
     let (commands, frames) = scroll_footer_commands(&view, Locale::En, 38, 16);
 
     for command in [

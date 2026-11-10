@@ -11,8 +11,8 @@ fn c2_session_schema_node_and_nested_picker_corruption_refusals() {
     for mut invalid in [
         Value::Null,
         json!({}),
-        json!({"schema_version": 2}),
-        json!({"schema_version": "1"}),
+        json!({"schema_version": 1}),
+        json!({"schema_version": "2"}),
     ] {
         assert!(host.path_map.project_session_value(&mut invalid).is_err());
     }
@@ -23,6 +23,7 @@ fn c2_session_schema_node_and_nested_picker_corruption_refusals() {
         "run_modal",
         "add_overlay",
         "file_picker_source",
+        "clipboard",
     ] {
         let mut invalid = valid.clone();
         invalid.as_object_mut().unwrap().remove(owner);
@@ -556,8 +557,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -595,8 +598,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -622,7 +627,53 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
     )
     .unwrap();
 
-    let action = Action::Add(AddAction::SetReviewName(raw_name.to_owned()));
+    // A cursor key in the name field sends the unchanged derived name. The product sends it only
+    // when the cursor moves and the value stays, so the name keeps its projection: in the action,
+    // in the state, and in the input together with the moved cursor.
+    let mut moved_action = Action::Add(AddAction::SetReviewName(raw_name.to_owned()));
+    let mut moved_emitted = state.update(moved_action.clone());
+    let mut moved_state = state.clone();
+    let mut moved_session = c2_session(
+        Path::new("/unregistered/session"),
+        None,
+        vec![json!({
+            "id": "ReviewName",
+            "state": {
+                "value": raw_name,
+                "cursor": 3,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
+            },
+        })],
+    );
+    host.capture_checkpoint_parts(
+        &mut moved_state,
+        &mut moved_session,
+        CheckpointCauseProjection::Reducer {
+            action: &mut moved_action,
+            emitted: &mut moved_emitted,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&moved_action).unwrap()["add"]["set_review_name"],
+        "<draft:0>"
+    );
+    assert_eq!(
+        serde_json::to_value(moved_state).unwrap()["workflow"]["active"]["add"]["review"]["name"],
+        "<draft:0>"
+    );
+    assert_eq!(
+        moved_session["add"]["fields"]["inputs"][0]["state"],
+        json!({"value": "<draft:0>", "cursor": 1, "anchor": null, "undo": [], "redo": [], "group": null})
+    );
+
+    // A typed character changes the name, so the name is user text from then on and keeps its
+    // exact bytes.
+    let edited = format!("{raw_name}x");
+    let action = Action::Add(AddAction::SetReviewName(edited.clone()));
     let emitted = state.update(action.clone());
     let mut user_state = state.clone();
     let mut user_session = c2_session(
@@ -631,10 +682,12 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
         vec![json!({
             "id": "ReviewName",
             "state": {
-                "value": raw_name,
-                "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "value": edited,
+                "cursor": edited.chars().count(),
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -651,12 +704,16 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
         )
         .unwrap();
     assert_eq!(
+        serde_json::to_value(&recorded_action).unwrap()["add"]["set_review_name"],
+        edited
+    );
+    assert_eq!(
         serde_json::to_value(user_state).unwrap()["workflow"]["active"]["add"]["review"]["name"],
-        raw_name
+        edited
     );
     assert_eq!(
         user_session["add"]["fields"]["inputs"][0]["state"]["value"],
-        raw_name
+        edited
     );
 
     let mut manual_save_state = state.clone();
@@ -675,7 +732,7 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(&manual_save_effect).unwrap()["add"][0]["commit"]["entry"]["name"],
-        raw_name
+        edited
     );
     crate::cli::tui_real_walker::validate_reducer_action(
         &user_observation.state,
@@ -717,8 +774,10 @@ fn c2_review_name_and_kind_filename_require_draft_provenance() {
             "state": {
                 "value": raw_name,
                 "cursor": raw_name.chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );

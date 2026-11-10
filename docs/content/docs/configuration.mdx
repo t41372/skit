@@ -12,8 +12,8 @@ for machines. Everything lands in `config.toml` in skit's config directory
 | --- | --- | --- |
 | `lang` | a language tag, or `auto` | UI language |
 | `editor` | a command (arguments allowed) | editor used by `skit edit` and `Ctrl+E` |
-| `form` | `tui` / `plain` | interactive style: inline mini-form, or plain line prompts |
-| `after_run` | `exit` / `stay` | after a menu-launched run finishes: exit skit (default), or return to the menu as a workbench |
+| `form` | `tui` / `plain` | launch menu style: the inline launch menu, or plain line prompts |
+| `after_run` | `exit` / `stay` | after a menu-launched run prints its result line (`✓ <name> finished` or `✗ <name> exited with code N`): exit skit with the exit code of the run (default), or return to the menu as a workbench, with the result as a status |
 | `shell.bash_path` | a path | Windows: the bash to run shell entries with when none is on `PATH` (validated to exist when set) |
 | `js.runner` | `deno` / `bun` / `node`, empty = auto | force the JS runtime instead of first-found |
 | `mirror` | `on` / `off` | master mirror switch — `off` keeps the saved URLs |

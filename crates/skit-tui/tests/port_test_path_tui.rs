@@ -1077,6 +1077,105 @@ fn test_picker_esc_cancels_and_up_chip_is_clickable() {
     );
 }
 
+// Ways this can fail when the picker goes into a folder that it cannot read:
+// - The list keeps the entries of the folder that the user left, under the name of the new
+//   folder. Then Enter or a click opens a path in the old folder.
+// - The `..` row is missing, so a click cannot go back.
+// - The error line is missing, so the folder looks empty.
+// - A search or Ctrl+H in that folder shows the old entries again.
+// - The error line stays after the user goes back to a folder that the picker can read.
+// - A picker that opens in that folder shows a different list from a picker that goes into it.
+// - The in-memory source changes. It has no unreadable folder and builds a new list on each
+//   read, so its own tests must keep passing.
+// Only Unix runs this test: mode 000 makes a folder unreadable there. On Windows, only an access
+// control entry stops a listing, and the Rust standard library cannot set one.
+#[cfg(unix)]
+#[test]
+fn test_picker_shows_only_the_parent_row_in_a_folder_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// Give the folder its permissions back when the test ends, also after a failed assertion.
+    struct Restore<'a>(&'a Path);
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    let (_tmp, root) = tree();
+    let locked = root.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("inside.txt"), "x").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = Restore(&locked);
+    assert!(
+        fs::read_dir(&locked).is_err(),
+        "mode 000 must stop this user from reading the folder"
+    );
+    // What the user must see in the folder: its name, the `..` row, the error, and nothing else.
+    let only_parent = |session: &mut FilePickerSession| {
+        assert_eq!(session.current_dir(), &locked);
+        assert!(session.io_error().is_some());
+        assert_eq!(listing(session), Vec::<(String, bool)>::new());
+        let (buffer, geometry) = render_localized(session, 100, 30, Locale::En);
+        let rows = region_text(&buffer, geometry.rows);
+        assert!(rows.contains(".."), "{rows}");
+        assert!(rows.contains(session.io_error().unwrap()), "{rows}");
+        for other in ["data.csv", "draft.txt", "sub", "inside.txt"] {
+            assert!(!rows.contains(other), "{other} in {rows}");
+        }
+        geometry
+    };
+
+    let mut session = picker(&root);
+    typed(&mut session, "locked");
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Enter)),
+        Some(FilePickerEvent::Changed)
+    );
+    only_parent(&mut session);
+
+    typed(&mut session, "d");
+    assert_eq!(listing(&session), Vec::<(String, bool)>::new());
+    let clear = Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(feed(&mut session, clear), Some(FilePickerEvent::Changed));
+    only_parent(&mut session);
+
+    let hidden = Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    assert_eq!(feed(&mut session, hidden), Some(FilePickerEvent::Changed));
+    let geometry = only_parent(&mut session);
+
+    // A click on the `..` row goes back, and the readable folder shows no error.
+    let parent = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == FilePickerHit::Entry(0))
+        .expect("a clickable `..` row");
+    let (column, row) = (parent.area.x + 2, parent.area.y);
+    assert_eq!(
+        session.handle_event(click(column, row), &geometry),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Up(MouseButton::Left), column, row),
+            &geometry,
+        ),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.current_dir(), &root);
+    assert_eq!(session.io_error(), None);
+    let names = listing(&session);
+    for expected in [("locked", true), ("sub", true), ("data.csv", false)] {
+        assert!(
+            names.contains(&(expected.0.to_owned(), expected.1)),
+            "{expected:?} in {names:?}"
+        );
+    }
+
+    only_parent(&mut picker(&locked));
+}
+
 #[test]
 fn test_picker_missing_workdir_opens_at_ancestor_with_notice() {
     // The picker opens at the nearest existing ancestor of a gone workdir.

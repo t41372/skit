@@ -20,7 +20,12 @@ use ratatui_interact::{
     state::FocusManager,
     traits::{ClickRegion, ClickRegionRegistry},
 };
-use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
+use ratatui_widgets::{
+    clear::Clear,
+    paragraph::Paragraph,
+    paragraph::Wrap,
+    scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
 use skit_application::preferences::{
     AccentChoice, AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice,
     PreferencesField, RunnerDraftMarker, RunnerDraftRow, RunnerDraftState, ThemeChoice,
@@ -34,7 +39,6 @@ use skit_ui::{
     PreferencesControlKind, PreferencesDisplayText, PreferencesRunnerListControl,
     PreferencesTextPlacement, PreferencesView,
 };
-use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -48,8 +52,9 @@ use crate::{
         path_value as snapshot_path, rect as snapshot_rect, scroll as snapshot_scroll,
         select as snapshot_select, value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor},
     footer::ActionFooterStyle,
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down},
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_down, is_primary_drag},
     rowclip::RowClip,
     session::{radio_option_width, render_line_input_band, render_radio_option},
     theme::{self, Panel, Status, padded_panel},
@@ -92,7 +97,7 @@ mod agent_review_tests {
         );
         first.widgets.insert(
             PreferencesControlId::Editor,
-            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+            PreferencesWidget::Input(TextEditor::single_line("editor")),
         );
         first.editables.insert(
             PreferencesControlId::Language,
@@ -106,7 +111,7 @@ mod agent_review_tests {
         let mut second = PreferencesWidgetSession::default();
         second.widgets.insert(
             PreferencesControlId::Editor,
-            PreferencesWidget::Input(LineInput::new("editor".to_owned())),
+            PreferencesWidget::Input(TextEditor::single_line("editor")),
         );
         second.widgets.insert(
             PreferencesControlId::Language,
@@ -287,7 +292,7 @@ enum PreferencesControlShape {
 
 #[derive(Clone, Debug)]
 enum PreferencesWidget {
-    Input(LineInput),
+    Input(TextEditor),
     RunnerList(PreferencesRunnerListControl),
     Choice {
         state: SelectState,
@@ -521,6 +526,49 @@ impl PreferencesWidgetSession {
         self.agent_click.cancel();
     }
 
+    /// Each visible button and chip, and whether a primary press holds it.
+    ///
+    /// The agent-skill picker covers the screen while it shows, so then only its Cancel button
+    /// counts.
+    pub(crate) fn pointer_targets(&self, view: &PreferencesView) -> Vec<(Rect, bool)> {
+        if view.agent_skill_install().is_some() {
+            return self
+                .agent_cancel_area
+                .into_iter()
+                .map(|area| {
+                    (
+                        area,
+                        self.agent_click.pressed() == Some(&AgentSkillHit::Cancel),
+                    )
+                })
+                .collect();
+        }
+        let buttons = self
+            .control_areas
+            .iter()
+            .filter(|(id, area)| {
+                !area.is_empty()
+                    && matches!(self.widgets.get(id), Some(PreferencesWidget::Button(_)))
+            })
+            .map(|(id, area)| {
+                (
+                    *area,
+                    self.click.pressed() == Some(&PreferencesHit::Control(*id)),
+                )
+            });
+        let chips = self.runner_chip_areas.iter().map(|(index, chip, area)| {
+            (
+                *area,
+                self.click.pressed()
+                    == Some(&PreferencesHit::RunnerChip {
+                        index: *index,
+                        chip: *chip,
+                    }),
+            )
+        });
+        buttons.chain(chips).collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn perturb_agent_review_state(&mut self) {
         self.visible_height = self.visible_height.saturating_add(1);
@@ -562,7 +610,7 @@ impl PreferencesWidgetSession {
                 let state = match widget {
                     PreferencesWidget::Input(input) => serde_json::json!({
                         "kind": "input",
-                        "state": snapshot_value("preferences.widget.input", input)?,
+                        "state": input.agent_review_snapshot(),
                     }),
                     PreferencesWidget::Choice {
                         state,
@@ -851,6 +899,19 @@ impl PreferencesWidgetSession {
                 }
             }
         }
+        // The scrollbar on the right border says the screen continues, as Entry settings shows
+        // it. Without it the Colors section below the fold has nothing that points at it.
+        let overflow = self.maximum_scroll_offset();
+        if overflow > 0 {
+            let mut scrollbar = ScrollbarState::new(overflow)
+                .position(self.scroll.scroll_offset())
+                .viewport_content_length(self.visible_height);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight).style(theme::scrollbar()),
+                area,
+                &mut scrollbar,
+            );
+        }
         self.render_open_dropdowns(frame);
         if let Some(picker) = view.agent_skill_install() {
             self.render_agent_skill_picker(frame, area, picker, locale);
@@ -935,6 +996,16 @@ impl PreferencesWidgetSession {
             {
                 return PreferencesEventHandling::Consumed;
             }
+            // A drag that started in a text box selects in that box and keeps the press armed.
+            if is_primary_drag(mouse)
+                && let Some(PreferencesHit::Control(id)) = self.click.pressed().cloned()
+                && let Some(editable) = self.editables.get(&id).copied()
+                && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(&id)
+            {
+                let _ = editable.pointer(input, mouse);
+                self.pending_ensure_focus = true;
+                return PreferencesEventHandling::Consumed;
+            }
             let dropdown = self.widgets.iter().find_map(|(id, widget)| {
                 let PreferencesWidget::Choice {
                     state,
@@ -971,7 +1042,7 @@ impl PreferencesWidgetSession {
                 && let Some(editable) = self.editables.get(id).copied()
                 && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(id)
             {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                let _ = editable.pointer(input, mouse);
             }
             return match self.click.update(mouse, target.as_ref()) {
                 ClickOutcome::Armed => PreferencesEventHandling::Consumed,
@@ -1005,13 +1076,17 @@ impl PreferencesWidgetSession {
         }
 
         if let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) {
-            let before = state.value().to_owned();
-            if state.handle_event(&Event::Key(key)).is_some() {
-                return if before == state.value() {
-                    PreferencesEventHandling::Consumed
-                } else {
-                    input_action(focused, state.value().to_owned())
-                };
+            match state.handle_key(&key) {
+                EditResponse::Changed => {
+                    let value = state.value().to_owned();
+                    self.pending_ensure_focus = true;
+                    return input_action(focused, value);
+                }
+                EditResponse::Consumed => {
+                    self.pending_ensure_focus = true;
+                    return PreferencesEventHandling::Consumed;
+                }
+                EditResponse::Ignored | EditResponse::Boundary => {}
             }
         }
 
@@ -1401,11 +1476,16 @@ impl PreferencesWidgetSession {
             } => {
                 let placeholder = text(locale, "Select");
                 if clip.is_full() {
-                    let region = Select::new(labels, state)
-                        .label(&label)
+                    let select = Select::new(labels, state)
                         .placeholder(&placeholder)
-                        .style(theme::select_style())
-                        .render_stateful(frame, area);
+                        .style(theme::select_style());
+                    // The widget pads its label with a space on each side, also an empty one.
+                    let select = if label.is_empty() {
+                        select
+                    } else {
+                        select.label(&label)
+                    };
+                    let region = select.render_stateful(frame, area);
                     theme::patch_idle_border(frame.buffer_mut(), region.area, state.focused);
                     // The widget draws its label in the border color, which is the accent when
                     // the select has the focus.
@@ -1436,7 +1516,7 @@ impl PreferencesWidgetSession {
                             Span::styled(display, display_style),
                             Span::styled(format!(" {}", style.dropdown_indicator), border),
                         ])),
-                        Line::from(format!(" {label} ")),
+                        Line::from(theme::padded_title(&label).unwrap_or_default()),
                         border,
                         0,
                     );
@@ -1587,10 +1667,33 @@ impl PreferencesWidgetSession {
         let Some(PreferencesWidget::Input(state)) = self.widgets.get_mut(&focused) else {
             return PreferencesEventHandling::Ignored;
         };
-        for character in value.chars() {
-            let _ = state.handle(tui_input::InputRequest::InsertChar(character));
+        match state.paste(value) {
+            EditResponse::Changed => {
+                let value = state.value().to_owned();
+                self.pending_ensure_focus = true;
+                input_action(focused, value)
+            }
+            EditResponse::Consumed | EditResponse::Ignored | EditResponse::Boundary => {
+                PreferencesEventHandling::Consumed
+            }
         }
-        input_action(focused, state.value().to_owned())
+    }
+
+    /// Report whether the cell shows the text of one box of this screen.
+    pub(crate) fn text_box_at(&self, column: u16, row: u16) -> bool {
+        self.editables
+            .values()
+            .any(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// The text box that has the keyboard, when the focused control is one.
+    pub(crate) fn focused_editor(&self, view: &PreferencesView) -> Option<&TextEditor> {
+        match self.widgets.get(&view.focused())? {
+            PreferencesWidget::Input(input) => Some(input),
+            PreferencesWidget::Choice { .. }
+            | PreferencesWidget::Button(_)
+            | PreferencesWidget::RunnerList(_) => None,
+        }
     }
 
     fn activate_hit(
@@ -2716,7 +2819,7 @@ fn control_shape(control: &PreferencesControl) -> PreferencesControlShape {
 fn widget(control: &PreferencesControl, locale: Locale) -> PreferencesWidget {
     match &control.kind {
         PreferencesControlKind::Text(model) => {
-            PreferencesWidget::Input(LineInput::new(model.value.clone()))
+            PreferencesWidget::Input(TextEditor::single_line(&model.value))
         }
         PreferencesControlKind::Choice(choice) => {
             let selected = choice
@@ -2759,7 +2862,7 @@ fn sync_widget(widget: &mut PreferencesWidget, control: &PreferencesControl, loc
         (PreferencesWidget::Input(state), PreferencesControlKind::Text(model))
             if state.value() != model.value =>
         {
-            *state = LineInput::new(model.value.clone());
+            state.replace_text(&model.value);
         }
         (
             PreferencesWidget::Choice {
@@ -4737,7 +4840,7 @@ mod tests {
             "Interface language",
             "Currently in effect: en",
             "Empty means: vim (from $VISUAL / $EDITOR)",
-            "Mini form — opens in place, fully clickable",
+            "Inline launch menu — opens in place, fully clickable",
             "Quit skit — leave the run's output in the terminal",
             "Agents (prompt runners)",
             "The AI agents that run prompt entries.",
@@ -4774,7 +4877,7 @@ mod tests {
 
         for heading in [
             "Editor",
-            "Interactive form",
+            "Launch menu",
             "After a run (from this menu)",
             "JavaScript runtime",
             "Shell on Windows",
@@ -4791,7 +4894,7 @@ mod tests {
             );
         }
 
-        let interactive_control = find_row("Mini form — opens in place, fully clickable");
+        let interactive_control = find_row("Inline launch menu — opens in place, fully clickable");
         let interactive_help = find_row(
             "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel.",
         );

@@ -38,6 +38,8 @@ use tempfile::Builder;
 
 use skit_ui::{AddEffect, Effect, FormPurpose, HostRequest, PreferencesEffect};
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use super::tui_real_host::derived_cursor;
 use super::tui_real_host::{
     ArtifactLeakOracleFact, LeakOracleFacts, ModifiedLeakOraclePair, RendererDraftFact,
     RendererReviewNameFact, SourceIdentityLeakOraclePair, StableSandboxNamespace,
@@ -53,9 +55,13 @@ use super::tui_real_walker::{
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::tui_real_walker::{
-    draft_quarantine_corpus_operations, invalid_corpus_operation,
+    MISSING_PROGRAM, UNBALANCED_ARGUMENTS, draft_quarantine_corpus_operations,
+    invalid_corpus_operation, refused_run_corpus_operations,
     rendered_sandbox_root_corpus_operations, review_corpus_contract_operations,
-    review_name_cut_corpus_operations,
+    review_name_clipboard_corpus_operations, review_name_cursor_corpus_operations,
+    review_name_cut_corpus_operations, review_name_same_text_corpus_operations,
+    review_name_undo_corpus_operations, source_path_cursor_corpus_operations,
+    source_path_undo_corpus_operations,
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use skit_tui_walker_support::{ChunkDescriptor, ReviewVerdict};
@@ -195,6 +201,7 @@ impl EffectCoverageTally {
             | Effect::CountRunGlob { .. }
             | Effect::SaveRunPreset { .. }
             | Effect::HealthRebuild
+            | Effect::PreviewSettingsResync { .. }
             | Effect::SaveRunner { .. }
             | Effect::Edit { .. }
             | Effect::Remove { .. } => {}
@@ -396,6 +403,7 @@ fn served_effect_name(effect: &Effect) -> &'static str {
         Effect::SaveRunPreset { .. } => "save_run_preset",
         Effect::Add(_) => "add",
         Effect::HealthRebuild => "health_rebuild",
+        Effect::PreviewSettingsResync { .. } => "preview_settings_resync",
         Effect::SaveRunner { .. } => "save_runner",
         Effect::Preferences(_) => "preferences",
         Effect::Edit { .. } => "edit",
@@ -506,6 +514,10 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (json!({"add": []}), "add"),
         (json!("health_rebuild"), "health_rebuild"),
         (
+            json!({"preview_settings_resync": {"selector": "entry"}}),
+            "preview_settings_resync",
+        ),
+        (
             json!({"save_runner": {"request": {"name": "runner", "argv": ["runner"], "target": "new"}, "owner": {"editor": "add"}}}),
             "save_runner",
         ),
@@ -516,7 +528,7 @@ fn effect_coverage_classifier_covers_all_outer_request_and_form_variants() {
         (json!({"edit": {"selector": "entry"}}), "edit"),
         (json!({"remove": {"selector": "entry"}}), "remove"),
     ];
-    assert_eq!(outer.len(), 14);
+    assert_eq!(outer.len(), 15);
     for (value, expected) in outer {
         assert_eq!(served_effect_name(&effect_fixture(value)), expected);
     }
@@ -3326,6 +3338,32 @@ pub(super) fn validate_completed_review_corpus(
         )?;
     }
     Ok(corpus)
+}
+
+/// Return the cursor index inside `text` when a recorded frame shows its cursor in `text`.
+///
+/// A frame keeps the raw value that the product draws. The cursor row holds `text` from one start
+/// column, so the column of the cursor less that start is the cursor index. A copy of `text`
+/// with a dot after it, for example inside a file path, is not the value.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn frame_cursor_in(frame: &Value, text: &str) -> Option<usize> {
+    if frame["cursor_visible"] != true {
+        return None;
+    }
+    let column = usize::try_from(frame["cursor_position"]["x"].as_u64()?).ok()?;
+    let row = frame["cells"]
+        .as_array()?
+        .iter()
+        .filter(|cell| cell["y"] == frame["cursor_position"]["y"])
+        .map(|cell| cell["symbol"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    let symbols = text.chars().map(String::from).collect::<Vec<_>>();
+    let start = row
+        .windows(symbols.len())
+        .position(|window| window == symbols.as_slice())?;
+    let cursor = column.checked_sub(start)?;
+    let next = row.get(start + symbols.len()).map(String::as_str);
+    (cursor <= symbols.len() && next != Some(".")).then_some(cursor)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -6621,8 +6659,9 @@ fn c3_facts_never_change_stored_files_or_bundle_digest_inputs() {
 /// The cut derived review name reaches the recorded corpus as its typed sentinel.
 ///
 /// The operations author one prompt draft and cut its derived review name with `Control+U`.
-/// The name stays in the serialized input cut buffer after the paste replaces the value, so
-/// the mirror must own that buffer. A raw allocator stem there refuses the whole bundle.
+/// The name stays in the undo history of the input after the paste replaces the value, because
+/// undo can bring it back, so the mirror must own that history entry. A raw allocator stem there
+/// refuses the whole bundle.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
@@ -6642,20 +6681,405 @@ fn the_recorded_review_corpus_projects_a_cut_derived_review_name() {
                 continue;
             }
             let value: Value = serde_json::from_slice(bytes).unwrap();
-            let Some(yank) = value.pointer("/value/add/fields/inputs/0/state/yank") else {
+            let Some(state) = value.pointer("/value/add/fields/inputs/0/state") else {
                 continue;
             };
-            let yank = yank.as_str().unwrap();
-            assert!(
-                !yank.contains("skit-new-"),
-                "{profile} {digest} holds a raw allocator cut buffer {yank}"
-            );
-            if yank.starts_with("<draft:") {
-                projected += 1;
+            for list in ["undo", "redo"] {
+                for entry in state[list].as_array().into_iter().flatten() {
+                    let text = entry["value"].as_str().unwrap();
+                    assert!(
+                        !text.contains("skit-new-"),
+                        "{profile} {digest} holds a raw allocator name in its history: {text}"
+                    );
+                    if text.starts_with("<draft:") {
+                        projected += 1;
+                    }
+                }
             }
         }
     }
-    assert!(projected > 0, "no profile recorded a projected cut buffer");
+    assert!(
+        projected > 0,
+        "no profile recorded a projected history entry"
+    );
+}
+
+/// A moved cursor in the derived review name reaches the recorded corpus through the projection.
+///
+/// The operations move the cursor inside the derived name with an arrow key, to its start with
+/// `Home`, inside it again with a click at the field center, and back to its end with `End`. The
+/// value stays the derived name, so every recorded session must hold the typed sentinel. Each
+/// recorded frame keeps the raw name `skit-new-000000` and shows where the cursor is in it. The
+/// projected cursors must be exactly the projections of those raw cursors: the ends keep their
+/// places, and the interior cursors stay interior and keep their order.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_derived_review_name() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_cursor_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    let (raw, stable) = ("skit-new-000000", "<draft:0>");
+    let end = stable.chars().count();
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let mut projected = BTreeSet::new();
+        let mut shown = BTreeSet::new();
+        for ((kind, digest), bytes) in &recorded.objects {
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            match kind {
+                ObjectKind::Session => {
+                    assert!(
+                        !String::from_utf8_lossy(bytes).contains("skit-new-"),
+                        "{profile} {digest} holds a raw allocator name"
+                    );
+                    let inputs = value
+                        .pointer("/value/add/fields/inputs")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten();
+                    for input in inputs {
+                        if input["id"] == "ReviewName" && input["state"]["value"] == stable {
+                            projected.insert(
+                                usize::try_from(input["state"]["cursor"].as_u64().unwrap())
+                                    .unwrap(),
+                            );
+                        }
+                    }
+                }
+                ObjectKind::StyledFrame => {
+                    shown.extend(
+                        frame_cursor_in(&value["value"], raw)
+                            .map(|cursor| derived_cursor(cursor, raw.len(), end)),
+                    );
+                }
+                ObjectKind::Reducer | ObjectKind::Host | ObjectKind::Geometry => {}
+            }
+        }
+        assert_eq!(projected, shown, "{profile}");
+        assert!(
+            shown.contains(&0)
+                && shown.contains(&end)
+                && shown
+                    .iter()
+                    .filter(|cursor| (1..end).contains(*cursor))
+                    .count()
+                    >= 2,
+            "{profile} {shown:?}"
+        );
+    }
+}
+
+/// A moved cursor in a picked source path reaches the recorded corpus through the projection.
+///
+/// The operations pick one seeded file and move the cursor in its path with an arrow key, `Home`,
+/// a click at the field center, and `End`. The value stays the picked path, so every recorded
+/// session must hold its stable spelling, and the leak oracle refuses any raw sandbox path. The
+/// ends keep their places, and the interior cursors stay interior.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_moved_cursor_in_a_picked_source_path() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &source_path_cursor_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    let stable = "<profile:canonical-corpus>/external/picked.sh";
+    let end = u64::try_from(stable.chars().count()).unwrap();
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let mut cursors = BTreeSet::new();
+        for ((kind, _), bytes) in &recorded.objects {
+            if *kind != ObjectKind::Session {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let inputs = value
+                .pointer("/value/add/fields/inputs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            for input in inputs {
+                if input["id"] == "SourcePath" && input["state"]["value"] == stable {
+                    cursors.insert(input["state"]["cursor"].as_u64().unwrap());
+                }
+            }
+        }
+        assert!(
+            cursors.contains(&0) && cursors.contains(&end),
+            "{profile} {cursors:?}"
+        );
+        assert!(
+            cursors.iter().any(|cursor| (1..end).contains(cursor)),
+            "{profile} {cursors:?}"
+        );
+    }
+}
+
+/// Every recorded session of every profile, with the name of its profile.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn recorded_sessions(corpus: &RecordedRealCorpus) -> Vec<(String, Value)> {
+    corpus
+        .profiles
+        .iter()
+        .flat_map(|recorded| {
+            recorded
+                .objects
+                .iter()
+                .filter(|((kind, _), _)| *kind == ObjectKind::Session)
+                .map(|(_, bytes)| {
+                    (
+                        recorded.review_profile.to_string(),
+                        serde_json::from_slice(bytes).unwrap(),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// The editor states of the Add inputs with `id` in one recorded session.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn recorded_input_states<'a>(session: &'a Value, id: &'a str) -> impl Iterator<Item = &'a Value> {
+    session
+        .pointer("/value/add/fields/inputs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(move |input| input["id"] == id)
+        .map(|input| &input["state"])
+}
+
+/// Count the recorded editor states of `id` that hold `stable` as their value after an undo, and
+/// the history entries of `id` that hold `stable`.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn count_restored_and_history(
+    corpus: &RecordedRealCorpus,
+    id: &str,
+    stable: &str,
+) -> (usize, usize) {
+    let (mut restored, mut in_history) = (0, 0);
+    for (_, session) in recorded_sessions(corpus) {
+        for state in recorded_input_states(&session, id) {
+            let redo = state["redo"].as_array().unwrap();
+            if state["value"] == stable && !redo.is_empty() {
+                restored += 1;
+            }
+            for list in ["undo", "redo"] {
+                in_history += state[list]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["value"] == stable)
+                    .count();
+            }
+        }
+    }
+    (restored, in_history)
+}
+
+/// The same text over a selection of the derived review name is no edit.
+///
+/// The operations select the last `0` of the allocator stem and paste a `0` over it. The value
+/// stays the derived name, so every recorded review name holds the typed sentinel and no undo
+/// step. Before the editor treated the same text as no edit, the walker refused this walk: the
+/// derived name had an undo step and a typing group.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_keeps_a_derived_review_name_under_the_same_text() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_same_text_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let mut projected = 0_usize;
+    for (profile, session) in recorded_sessions(&corpus) {
+        for state in recorded_input_states(&session, "ReviewName") {
+            assert_eq!(state["value"], "<draft:0>", "{profile}");
+            assert_eq!(state["undo"], json!([]), "{profile}");
+            assert_eq!(state["group"], Value::Null, "{profile}");
+            projected += 1;
+        }
+    }
+    assert!(projected > 0, "no profile recorded the review name");
+}
+
+/// The derived review name keeps its typed sentinel while undo and redo move it.
+///
+/// `Control+U` deletes the name, `Control+Z` brings it back, `Control+Y` deletes it again, and
+/// `Control+Z` brings it back again. The name moves between the value and the history, so the
+/// value after each undo and each history entry that holds the name must have the sentinel. A
+/// raw allocator stem anywhere refuses the whole bundle.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_derived_review_name_that_undo_brings_back() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_undo_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let (restored, in_history) = count_restored_and_history(&corpus, "ReviewName", "<draft:0>");
+    assert!(
+        restored > 0 && in_history > 0,
+        "restored {restored}, in the history {in_history}"
+    );
+}
+
+/// A picked source path keeps its stable spelling while undo and redo move it.
+///
+/// The operations pick one seeded file, delete the path with `Control+U`, and move it back and
+/// forth with `Control+Z` and `Control+Y`. The leak oracle refuses any raw sandbox path, in the
+/// value and in the history.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_picked_source_path_that_undo_brings_back() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &source_path_undo_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    let (restored, in_history) = count_restored_and_history(
+        &corpus,
+        "SourcePath",
+        "<profile:canonical-corpus>/external/picked.sh",
+    );
+    assert!(
+        restored > 0 && in_history > 0,
+        "restored {restored}, in the history {in_history}"
+    );
+}
+
+/// A cut derived review name keeps its typed sentinel in the clipboard after Add ends.
+///
+/// The operations select the whole derived name, cut it with `Control+X`, and leave the Add
+/// workflow. The session clipboard outlives the workflow, so the last checkpoint, which has no Add
+/// workflow, must still hold the sentinel in its clipboard. A raw allocator stem there refuses
+/// the whole bundle.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_projects_a_cut_derived_review_name_after_add_ends() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &review_name_clipboard_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+    for (profile, session) in recorded_sessions(&corpus) {
+        let clipboard = &session["value"]["clipboard"]["fields"]["state"]["text"];
+        assert!(
+            clipboard == "" || clipboard == "<draft:0>",
+            "{profile} clipboard {clipboard}"
+        );
+    }
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let last = recorded.rows.last().unwrap();
+        let object = |kind, digest: &str| -> Value {
+            serde_json::from_slice(&recorded.objects[&(kind, digest.to_owned())]).unwrap()
+        };
+        let reducer = object(ObjectKind::Reducer, &last.reducer.sha256);
+        assert!(
+            reducer
+                .pointer("/value/workflow/active/add")
+                .is_none_or(Value::is_null),
+            "{profile} still has an Add workflow at its last checkpoint"
+        );
+        let session = object(ObjectKind::Session, &last.session.sha256);
+        assert_eq!(
+            session["value"]["clipboard"]["fields"]["state"]["text"], "<draft:0>",
+            "{profile}"
+        );
+    }
+}
+
+/// A refused run becomes an error status line, and the walk goes on.
+///
+/// The operations run the entry twice. The first run has an interpreter that does not exist, and
+/// the host answers with the status that names the missing program. The second run also has
+/// extra arguments with an open quote, and the host fails that effect. The product keeps the
+/// session and shows each localized error, so the walker host must do the same. The first error
+/// holds a C0 control character, because the user pasted it. No recorded frame cell may hold a
+/// control character: a terminal would act on it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn the_recorded_review_corpus_shows_a_refused_run_as_a_status_line() {
+    let scratch = tempfile::TempDir::new().unwrap();
+    let corpus = record_real_review_corpus_in(
+        review_corpus_namespace(scratch.path()),
+        &refused_run_corpus_operations(),
+        StablePairPhase::Main,
+    )
+    .unwrap();
+
+    assert!(UNBALANCED_ARGUMENTS.contains('"'));
+    let visible = MISSING_PROGRAM
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    for recorded in &corpus.profiles {
+        let profile = recorded.review_profile.to_string();
+        let locale = skit_i18n::detect_locale(Some(&recorded.locale));
+        let missing = skit_i18n::format_text(
+            locale,
+            "{} is not on PATH. Install it, or set the interpreter in Entry settings.",
+            &[&MISSING_PROGRAM],
+        );
+        let quoting = skit_i18n::text(locale, "extra arguments have invalid quoting");
+        let mut errors = BTreeSet::new();
+        let mut shown = false;
+        for ((kind, digest), bytes) in &recorded.objects {
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            match kind {
+                ObjectKind::Reducer => {
+                    if value.pointer("/value/status_kind") == Some(&json!("error")) {
+                        errors.extend(
+                            value
+                                .pointer("/value/status")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        );
+                    }
+                }
+                ObjectKind::StyledFrame => {
+                    let cells = value
+                        .pointer("/value/cells")
+                        .and_then(Value::as_array)
+                        .unwrap();
+                    let mut text = String::new();
+                    for cell in cells {
+                        let symbol = cell["symbol"].as_str().unwrap();
+                        assert!(
+                            !symbol.chars().any(char::is_control),
+                            "{profile} {digest} paints the control symbol {symbol:?}"
+                        );
+                        text.push_str(symbol);
+                    }
+                    shown |= text.contains(&format!("{visible} is not on PATH"));
+                }
+                ObjectKind::Host | ObjectKind::Session | ObjectKind::Geometry => {}
+            }
+        }
+        assert!(errors.contains(&missing), "{profile} {errors:?}");
+        assert!(errors.contains(quoting.as_ref()), "{profile} {errors:?}");
+        // Wide characters leave blank continuation cells, so only the English row reads back
+        // as one string. The terminal drops the control character from the program name.
+        if locale == skit_i18n::Locale::En {
+            assert!(shown, "{profile} never paints the status line");
+        }
+    }
 }
 
 /// Every real allocation path reaches the recorded corpus as its typed sentinel.

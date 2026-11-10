@@ -80,7 +80,7 @@ How the runner is chosen:
 - **Non-interactive runs**: `--runner` beats the entry's pin; with neither, the
   run fails with exit 126. There is deliberately no global default and no
   ranking — the runner changes the *result*. The last pick only ever prefills
-  interactive forms. It never resolves a `--no-input` run.
+  the launch menu. It never resolves a `--no-input` run.
 - Per-run agent flags ride after `--`: `skit run review -- --model opus`. The
   tail is remembered like any entry's — see
   [Parameters & values](/en/docs/parameters#what-gets-remembered).

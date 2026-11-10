@@ -276,7 +276,7 @@ pub struct WalkerEngine<F: FrontendAdapter, H: HostAdapter<F>> {
     host: H,
     effect_limit: usize,
     started: bool,
-    quit: bool,
+    quit: Option<EngineBoundary>,
     poisoned: bool,
     final_liveness_started: bool,
     next_operation_dispatch_sequence: usize,
@@ -295,7 +295,7 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
             host,
             effect_limit,
             started: false,
-            quit: false,
+            quit: None,
             poisoned: false,
             final_liveness_started: false,
             next_operation_dispatch_sequence: 0,
@@ -357,7 +357,7 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
         if !self.started {
             return Err("the walker engine must start before it runs an operation".to_owned());
         }
-        if self.quit {
+        if self.quit.is_some() {
             return Err("the walker engine cannot run an operation after quit".to_owned());
         }
         if self.final_liveness_started {
@@ -404,7 +404,7 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
         if !self.started {
             return Err("the walker engine must start before final liveness".to_owned());
         }
-        if self.quit {
+        if self.quit.is_some() {
             return Err("the walker engine cannot run final liveness after quit".to_owned());
         }
         if self.final_liveness_started {
@@ -491,7 +491,7 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
                             )?;
                         }
                     }
-                    if self.quit {
+                    if self.quit.is_some() {
                         break;
                     }
                 }
@@ -516,7 +516,13 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
             match self.frontend.effect_route(&effect) {
                 EffectRoute::Settled => return Ok(()),
                 EffectRoute::Quit => {
-                    self.quit = true;
+                    // Round zero holds the effect of the input action. A later round holds the
+                    // effect of a host response.
+                    self.quit = Some(if round == 0 {
+                        EngineBoundary::Reducer
+                    } else {
+                        EngineBoundary::Host
+                    });
                     return Ok(());
                 }
                 EffectRoute::Host => {
@@ -544,7 +550,7 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
         match self.frontend.effect_route(&effect) {
             EffectRoute::Settled => Ok(()),
             EffectRoute::Quit => {
-                self.quit = true;
+                self.quit = Some(EngineBoundary::Host);
                 Ok(())
             }
             EffectRoute::Host => Err(format!(
@@ -638,6 +644,14 @@ impl<F: FrontendAdapter, H: HostAdapter<F>> WalkerEngine<F, H> {
 
     /// Return whether a reducer effect requested termination.
     pub const fn is_quit(&self) -> bool {
+        self.quit.is_some()
+    }
+
+    /// Return the boundary whose effect requested termination.
+    ///
+    /// [`EngineBoundary::Reducer`] means that an input action quit. [`EngineBoundary::Host`]
+    /// means that a host response quit, for example a run that the product follows with an exit.
+    pub const fn quit_boundary(&self) -> Option<EngineBoundary> {
         self.quit
     }
 

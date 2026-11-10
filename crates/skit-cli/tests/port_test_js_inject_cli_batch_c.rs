@@ -158,15 +158,15 @@ fn test_execute_maps_a_drifted_js_definition_to_drift() {
     for (locale, expected) in [
         (
             "en",
-            "The script and its form definitions don't match anymore: WIDTH. Run `skit params mismatch --resync` to fix it.",
+            "The script and its parameter definitions no longer match: WIDTH. Run `skit params mismatch --resync` to fix it.",
         ),
         (
             "zh-CN",
-            "脚本内容和表单定义对不上了：WIDTH。运行 `skit params mismatch --resync` 即可修复。",
+            "脚本内容和参数定义对不上了：WIDTH。运行 `skit params mismatch --resync` 即可修复。",
         ),
         (
             "zh-TW",
-            "腳本內容和表單定義對不上了：WIDTH。執行 `skit params mismatch --resync` 即可修復。",
+            "腳本內容和參數定義對不上了：WIDTH。執行 `skit params mismatch --resync` 即可修復。",
         ),
     ] {
         let sandbox = Sandbox::new();
@@ -198,11 +198,11 @@ fn test_execute_syntax_gate_failure_never_launches() {
         ),
         (
             "zh-CN",
-            "skit 拒绝运行自己注入出来的副本:node 拒绝了注入副本：SyntaxError: boom",
+            "skit 拒绝运行自己注入出来的副本:node 拒绝了注入后的副本:SyntaxError: boom",
         ),
         (
             "zh-TW",
-            "skit 拒絕執行自己注入出來的副本:node 拒絕了注入副本：SyntaxError: boom",
+            "skit 拒絕執行自己注入出來的副本:node 拒絕了注入後的副本:SyntaxError: boom",
         ),
     ] {
         let sandbox = Sandbox::new();

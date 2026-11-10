@@ -24,6 +24,7 @@ use ratatui_widgets::{
     block::{Block, Padding},
     borders::{BorderType, Borders},
 };
+use skit_ui::StatusKind;
 
 // Unit tests compare rendered cells with these values. Production code names a role instead.
 pub(crate) const ACCENT: Color = Color::Rgb(0xD9, 0x77, 0x57);
@@ -164,12 +165,22 @@ pub(crate) fn panel_border(panel: Panel) -> Style {
 }
 
 pub(crate) fn panel_block(label: String, panel: Panel) -> Block<'static> {
-    Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(panel_border(panel))
-        .title_style(title())
-        .title(format!(" {label} "))
+        .title_style(title());
+    match padded_title(&label) {
+        Some(title) => block.title(title),
+        None => block,
+    }
+}
+
+/// The title of a box border: the label with one space on each side.
+///
+/// An empty label gives no title. A title of spaces would cut a gap into the top border.
+pub(crate) fn padded_title(label: &str) -> Option<String> {
+    (!label.is_empty()).then(|| format!(" {label} "))
 }
 
 pub(crate) fn padded_panel(label: String, panel: Panel) -> Block<'static> {
@@ -331,15 +342,13 @@ pub(crate) fn status_color(status: Status) -> Color {
     }
 }
 
-/// Status text. The terminal theme keeps the text in the default foreground, because green and
-/// yellow are unreadable on light backgrounds; a danger line is bold instead.
+/// Status text. Success text is green and warning text is yellow, as in version 0.4. The
+/// terminal theme keeps danger text in the default foreground and makes it bold; only its glyph
+/// is red.
 pub(crate) fn status(status: Status) -> Style {
     match current() {
-        Theme::Skit(_) => Style::default().fg(status_color(status)),
-        Theme::Terminal(_) => match status {
-            Status::Danger => bold_text(),
-            Status::Success | Status::Warning => Style::default().fg(Color::Reset),
-        },
+        Theme::Terminal(_) if status == Status::Danger => bold_text(),
+        Theme::Skit(_) | Theme::Terminal(_) => Style::default().fg(status_color(status)),
     }
 }
 
@@ -348,8 +357,8 @@ pub(crate) fn status_glyph(status: Status) -> Style {
     Style::default().fg(status_color(status))
 }
 
-/// The spans of a status line. The terminal theme colors only a leading glyph and keeps the
-/// text in the status text style.
+/// The spans of a status line. The terminal theme gives a leading glyph the status color and
+/// the text the status text style.
 pub(crate) fn status_spans(line: String, status: Status) -> Vec<Span<'static>> {
     if matches!(current(), Theme::Terminal(_))
         && let Some(rest) = ["✓ ", "✗ ", "⚠ ", "→ "]
@@ -371,6 +380,25 @@ pub(crate) fn status_line(line: String, status: Status) -> Line<'static> {
         Theme::Skit(_) => Line::styled(line, self::status(status)),
         Theme::Terminal(_) => Line::from(status_spans(line, status)),
     }
+}
+
+/// The glyph and the style of one reported outcome, or `None` for neutral information.
+pub(crate) const fn status_of_kind(kind: StatusKind) -> Option<(&'static str, Status)> {
+    match kind {
+        StatusKind::Info => None,
+        StatusKind::Success => Some(("✓", Status::Success)),
+        StatusKind::Warning => Some(("⚠", Status::Warning)),
+        StatusKind::Error => Some(("✗", Status::Danger)),
+    }
+}
+
+/// The footer line of a status: the glyph of its outcome, then its text, in the outcome's
+/// colors. Information has no glyph and keeps the default text style.
+pub(crate) fn status_kind_line(text: &str, kind: StatusKind) -> Line<'static> {
+    status_of_kind(kind).map_or_else(
+        || Line::from(text.to_owned()),
+        |(glyph, status)| status_line(format!("{glyph} {text}"), status),
+    )
 }
 
 /// The border color of an input, a text area, or a select.
@@ -408,23 +436,17 @@ pub(crate) fn selection() -> Style {
     }
 }
 
-/// The cursor cell of a text area.
-pub(crate) fn caret(focused: bool) -> Style {
+/// Selected text in a text box.
+///
+/// The skit theme shows the colors of a selected row. It gives them in swapped order with reverse
+/// video, so a color terminal shows the row colors and `NO_COLOR` still shows the selection.
+pub(crate) fn text_selection() -> Style {
     match current() {
-        Theme::Skit(_) => {
-            if focused {
-                Style::default().fg(Color::Black).bg(fixed(ACCENT))
-            } else {
-                text()
-            }
-        }
-        Theme::Terminal(_) => {
-            if focused {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                text()
-            }
-        }
+        Theme::Skit(_) => Style::default()
+            .fg(fixed(SELECT_BG))
+            .bg(fixed(SELECT_FG))
+            .add_modifier(Modifier::REVERSED),
+        Theme::Terminal(_) => Style::default().add_modifier(Modifier::REVERSED),
     }
 }
 
@@ -542,16 +564,6 @@ pub(crate) fn focused_radio_style() -> ButtonStyle {
     }
 }
 
-/// A button in a confirmation dialog.
-pub(crate) fn dialog_button_style() -> ButtonStyle {
-    match current() {
-        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
-            .focused(Color::Black, fixed(ACCENT))
-            .unfocused(Color::White, fixed(BOX_DIM)),
-        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
-    }
-}
-
 /// An action button inside a panel, such as a Preferences action.
 pub(crate) fn action_button_style() -> ButtonStyle {
     match current() {
@@ -577,6 +589,17 @@ pub(crate) fn footer_chip_style() -> ButtonStyle {
     match current() {
         Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
             .focused(fixed(ACCENT), fixed(PILL_BACKGROUND))
+            .unfocused(fixed(ACCENT), fixed(PILL_BACKGROUND)),
+        Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
+    }
+}
+
+/// An action chip of a confirmation dialog: a footer chip when idle, filled with the accent when
+/// it has the focus.
+pub(crate) fn dialog_chip_style() -> ButtonStyle {
+    match current() {
+        Theme::Skit(_) => ButtonStyle::new(ButtonVariant::SingleLine)
+            .focused(Color::Black, fixed(ACCENT))
             .unfocused(fixed(ACCENT), fixed(PILL_BACKGROUND)),
         Theme::Terminal(_) => plain_button(ButtonVariant::SingleLine),
     }
@@ -652,6 +675,53 @@ pub(crate) fn patch_button(buffer: &mut Buffer, area: Rect, focused: bool) {
 pub(crate) fn patch_focus(buffer: &mut Buffer, area: Rect, focused: bool) {
     if focused && matches!(current(), Theme::Terminal(_)) {
         buffer.set_style(area, Style::default().add_modifier(Modifier::REVERSED));
+    }
+}
+
+/// Mark the border of a field whose value the form refuses: red and bold, never dim.
+///
+/// `area` is the visible part of the field's box. `top` and `bottom` say whether the box's top
+/// and bottom rows are inside it. A border is not text, so the hue keeps the census rule that
+/// only status text takes a color on a letter.
+pub(crate) fn patch_invalid_border(buffer: &mut Buffer, area: Rect, top: bool, bottom: bool) {
+    let area = area.intersection(buffer.area);
+    if area.is_empty() {
+        return;
+    }
+    let style = Style::default()
+        .fg(Color::Red)
+        .add_modifier(Modifier::BOLD)
+        .remove_modifier(Modifier::DIM);
+    let right = area.right().saturating_sub(1);
+    for y in area.top()..area.bottom() {
+        let edge = (y == area.top() && top) || (y == area.bottom().saturating_sub(1) && bottom);
+        if edge {
+            buffer.set_style(Rect::new(area.x, y, area.width, 1), style);
+        } else {
+            buffer.set_style(Rect::new(area.x, y, 1, 1), style);
+            buffer.set_style(Rect::new(right, y, 1, 1), style);
+        }
+    }
+}
+
+/// Show that the pointer rests on a chip or a button: underline it and make it bold.
+///
+/// Attributes, not colors, carry the look, so it shows in both themes and under `NO_COLOR`.
+pub(crate) fn patch_hover(buffer: &mut Buffer, area: Rect) {
+    buffer.set_style(
+        area,
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    );
+}
+
+/// Show that a primary press holds a chip or a button: invert every cell until the release.
+pub(crate) fn patch_pressed(buffer: &mut Buffer, area: Rect) {
+    let area = area.intersection(buffer.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            cell.modifier.toggle(Modifier::REVERSED);
+        }
     }
 }
 

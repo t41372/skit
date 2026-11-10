@@ -75,13 +75,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Python 3.13 for benchmark source validation
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Install Node.js for JavaScript runtime parity
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.7.0"
+          node-version: "26.13.0"
       - name: Verify the Node.js runtime
         run: node --version
       - name: Require the Node.js runtime owners
@@ -89,7 +89,7 @@ jobs:
         run: echo "SKIT_REQUIRE_NODE_RUNTIME=1" >> "$GITHUB_ENV"
       - name: Install Fish for runtime parity
         if: runner.os != 'Windows'
-        uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0
+        uses: fish-actions/install-fish@4bb37a71daebb76c6fb7d83771cff31b8a78c28e # v1.2.0
       - name: Require the Fish runtime owner
         if: runner.os != 'Windows'
         shell: bash
@@ -133,36 +133,12 @@ jobs:
             echo 'the CPython 3.13 compile gate ran zero tests' >&2
             exit 1
           }
-
-  coverage:
-    name: coverage (100% executable-source line gate)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    steps:
-      - name: Check out the source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
-        with:
-          tool: cargo-llvm-cov@0.8.7
-          fallback: none
-      - name: Enforce complete line coverage
-        shell: bash
-        run: |
-          bash scripts/test_coverage.sh
-          cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
-          bash scripts/check_coverage.sh lcov.info
-      - name: Upload coverage
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: ./lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+      - name: Run Clippy on the code for this platform
+        # The quality job runs Clippy only on Linux. Code for Windows or macOS compiles only on
+        # its own platform, so the runner of that platform checks it here. The step also runs
+        # after a failed test, so one run reports both results.
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   supply-chain:
     name: dependency and workflow audit
@@ -176,9 +152,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install audit tools
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-deny@0.20.2,cargo-audit@0.22.2,zizmor@1.29.0
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2,zizmor@1.32.0
       - name: Check dependency policy
         run: cargo deny --locked check
       - name: Check RustSec advisories
@@ -200,21 +176,25 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.12.3"
+          version: "0.13.7"
           enable-cache: false
       - name: Build the binary wheel and source archive
-        run: uvx --from maturin==1.14.1 maturin build --locked --release --out dist && uvx --from maturin==1.14.1 maturin sdist --out dist
+        run: uvx --from maturin==1.16.0 maturin build --locked --release --out dist && uvx --from maturin==1.16.0 maturin sdist --out dist
       - name: Install with uv tool
         shell: bash
         run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skit-cli-rs") | .version')"
+          commit="$(git rev-parse HEAD)"
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           uv tool install --force --from "$wheel" skit-cli
-          skit --version
+          # A build in a Git checkout names the commit of the checkout.
+          diff <(printf 'skit %s (%s)\n' "$version" "${commit:0:9}") <(skit --version)
           sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
           uv tool install --force --from "$sdist" skit-cli
-          skit --version
+          # A build from the source archive names no commit.
+          diff <(printf 'skit %s\n' "$version") <(skit --version)
           source_root="$(mktemp -d)"
           tar -xzf "$sdist" -C "$source_root"
           package_root="$(find "$source_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"

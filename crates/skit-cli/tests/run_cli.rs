@@ -197,6 +197,67 @@ params = []
     assert!(saved.contains("exit = 7"));
 }
 
+/// Write one command entry `Demo` that runs `template` and has no parameters.
+fn plain_command(data: &TempDir, template: &str) {
+    fs::write(
+        data.path().join("scripts/demo/meta.toml"),
+        format!(
+            r#"
+schema = 1
+name = "Demo"
+kind = "command"
+mode = "copy"
+source = ""
+source_hash = ""
+added_at = "2026-08-07T00:00:00Z"
+id = "0123456789abcdef0123456789abcdef"
+workdir = "invoke"
+description = ""
+template = {template:?}
+params = []
+"#
+        ),
+    )
+    .unwrap();
+}
+
+// Ways this can fail: a failed run says nothing, so the person sees only the output of the
+// script; the line goes to stdout, where a pipe takes it as output of the script; the line is in
+// English in every locale; a successful run or a dry run also prints it; or the exit code of the
+// run changes. Version 0.4 prints `Run exited with code N` on stderr (`src/skit/cli.py:3244-3248`).
+#[test]
+fn a_failed_run_reports_its_exit_code_on_stderr_in_every_locale() {
+    let template = if cfg!(windows) { "exit /b 7" } else { "exit 7" };
+    let (data, state) = command_library(template, "");
+    plain_command(&data, template);
+    for (locale, line) in [
+        ("en", "Run exited with code 7"),
+        ("zh-CN", "本次运行以退出码 7 结束"),
+        ("zh-TW", "本次執行以結束碼 7 結束"),
+    ] {
+        skit(&data, &state)
+            .env("SKIT_LANG", locale)
+            .args(["run", "demo", "--no-input"])
+            .assert()
+            .code(7)
+            .stderr(predicate::str::contains(line))
+            .stdout(predicate::str::contains(line).not());
+    }
+    skit(&data, &state)
+        .args(["run", "demo", "--no-input", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("exited with code").not());
+
+    plain_command(&data, "echo done");
+    skit(&data, &state)
+        .args(["run", "demo", "--no-input"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("exited with code").not())
+        .stdout(predicate::str::contains("exited with code").not());
+}
+
 #[test]
 fn malformed_set_and_unknown_preset_are_usage_errors() {
     let (data, state) = command_library("echo {name}", "");

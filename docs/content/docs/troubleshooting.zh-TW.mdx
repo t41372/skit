@@ -19,7 +19,7 @@ PowerShell 項目需要 `pwsh`（或 `powershell.exe`）。
 ## 常見問題 [#faq]
 
 **skit 會修改我的程式嗎？**
-只會修改 `[tool.skit]` 註解區塊，而且只在 skit 儲存的副本中（參照項目根本不會被寫入）。
+只會修改 `[tool.skit]` 註解區塊，而且只在 skit 儲存的副本中（reference 模式的項目根本不會被寫入）。
 編輯會保留檔案自身的行尾 —— 包括 CRLF —— 以及非 UTF-8 位元組。唯一的例外是需要
 主動開啟的 `skit params --normalize NAME`（僅 shell），它在你同意後把儲存副本中的
 一處 `NAME=value` 改寫為 `${NAME:-value}`。
@@ -35,7 +35,7 @@ PowerShell 項目需要 `pwsh`（或 `powershell.exe`）。
 [空就是空](/zh-TW/docs/parameters#empty-means-empty)。
 
 **我設定過一次 `-- --model opus` —— 它會一直保留嗎？**
-會：每個項目都記住它上次的 `--` 尾端引數，並在不帶引數的執行中重播
+會：每個項目都記住它上次的 `--` 尾端參數，並在不帶參數的執行中重播
 （並在標準錯誤上給出說明）。`--forget-args` 清除它；`--raw` 乾淨地執行。
 
 **deno 會給我的程式加沙箱嗎？**
@@ -44,12 +44,12 @@ PowerShell 項目需要 `pwsh`（或 `powershell.exe`）。
 不是沙箱。
 
 **提示詞裡放機密值安全嗎？**
-不安全 —— 提示詞不是機密值通道。把預留位置標示為機密可以阻止 skit 保存它，
-並在真正執行前給你一個警告，但算繪後的文字仍會進入接收代理自己的工作階段記錄。
+不安全 —— 提示詞不是機密值通道。把佔位符標示為機密可以阻止 skit 保存它，
+並在真正執行前給你一個警告，但算繪後的文字仍會進入接收它的 agent 自己的工作階段記錄。
 
 **我的資料在哪裡，解除安裝會移除什麼？**
-`skit doctor` 會印出解析後的程式庫路徑。`uv tool uninstall skit-cli`
-會移除 skit 及其 `PATH` 墊片，但刻意保留你的程式庫、組態與預設 ——
+`skit doctor` 會印出解析後的工具庫路徑。`uv tool uninstall skit-cli`
+會移除 skit 及其 `PATH` 墊片，但刻意保留你的工具庫、組態與參數組合 ——
 重新安裝就回來了。skit 從不寫入你的 `PATH`、shell 設定檔或全域 uv 組態。
 
 **skit 需要哪些執行環境？**

@@ -159,10 +159,24 @@ pub fn parameter_section(
                 .collect(),
         };
     }
+    let (rows, followup) = source_managed_section(managed, candidates, context.reader_fields);
+    ParameterSection::SourceManaged { rows, followup }
+}
+
+/// Build the rows and the follow-up of a section whose schema the stored source owns.
+///
+/// The settings screen builds this section again when a resync reports new definitions, so the
+/// rule has one home for both the first build and the rebuild.
+#[must_use]
+pub fn source_managed_section(
+    managed: &[ParamDecl],
+    candidates: &[String],
+    reader_fields: usize,
+) -> (Vec<ParameterRow>, SourceFollowup) {
     let rows = managed.iter().map(source_managed_row).collect();
     // The reader trap only exists while nothing is managed: once a block exists it already serves
     // the form, so managing another constant is additive (`src/skit/tui_settings.py:787-798`).
-    let followup = if managed.is_empty() && context.reader_fields > 0 {
+    let followup = if managed.is_empty() && reader_fields > 0 {
         SourceFollowup::ReaderDriven
     } else if candidates.is_empty() {
         SourceFollowup::None
@@ -171,7 +185,7 @@ pub fn parameter_section(
             candidates: candidates.to_vec(),
         }
     };
-    ParameterSection::SourceManaged { rows, followup }
+    (rows, followup)
 }
 
 /// Build one row for a parameter the source's skit block declares.
@@ -310,7 +324,7 @@ fn shared_editable_axes(prefix: &str, declaration: &ParamDecl, owner: FieldOwner
     vec![
         Field::new(
             format!("{prefix}:prompt"),
-            "Form label:",
+            "Label in the launch menu:",
             FieldKind::Text,
             owner,
             FieldValue::text(&declaration.prompt),

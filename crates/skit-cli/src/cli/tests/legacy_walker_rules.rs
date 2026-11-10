@@ -1064,15 +1064,20 @@ fn protocol_only_effects_stay_inert_and_a_rerun_honors_after_run_exit() {
         &BTreeMap::new(),
         Locale::En,
         &crate::run::RunServices::system(),
+        &std::cell::Cell::new(None),
     )
     .unwrap();
-    let UiAction::Complete { ref message, .. } = ran else {
+    let UiAction::Complete {
+        ref message, kind, ..
+    } = ran
+    else {
         panic!("a run that stays must report its result: {ran:?}");
     };
     assert_eq!(
         message,
-        &format_text(Locale::En, "Run finished with exit status {}", &[&0])
+        &format_text(Locale::En, "{} finished", &[&"Inert"])
     );
+    assert_eq!(kind, skit_ui::StatusKind::Success);
     FileConfigStore::new(&library.config_dir)
         .set("after_run", "exit")
         .unwrap();
@@ -1143,6 +1148,7 @@ fn protocol_only_effects_stay_inert_and_a_rerun_honors_after_run_exit() {
         &BTreeMap::new(),
         Locale::ZhTw,
         &crate::run::RunServices::system(),
+        &std::cell::Cell::new(None),
     )
     .unwrap();
     let UiAction::Complete {
@@ -1154,7 +1160,7 @@ fn protocol_only_effects_stay_inert_and_a_rerun_honors_after_run_exit() {
     };
     assert_eq!(
         localized_message,
-        &format_text(Locale::ZhTw, "Run finished with exit status {}", &[&0])
+        &format_text(Locale::ZhTw, "{} finished", &[&"Inert"])
     );
 }
 

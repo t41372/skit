@@ -1,6 +1,7 @@
 //! Help and confirmation overlays.
 
 use ratatui_core::{
+    buffer::Buffer,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     terminal::Frame,
@@ -25,11 +26,12 @@ use skit_ui::{CommandContext, UiCommand, command_specs};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, ViewGeometry,
+    EventHandling, HitRegion, HitTarget, ViewGeometry,
     agent_review::{
         AgentReviewNode, color as snapshot_color, node as snapshot_node, rect as snapshot_rect,
         scroll as snapshot_scroll,
     },
+    editor::EDITING_HELP,
     pointer::{ClickOutcome, ClickTracker},
     theme::{self, Panel, padded_panel},
 };
@@ -47,27 +49,37 @@ fn compact_dialog_button_areas(
     inner: Rect,
     buttons: &[(String, ContainerAction)],
 ) -> Vec<(usize, Rect)> {
-    if inner.is_empty() || buttons.is_empty() {
-        return Vec::new();
-    }
     let widths = buttons
         .iter()
-        .map(|(label, _)| {
-            u16::try_from(label.width().saturating_add(2))
-                .unwrap_or(u16::MAX)
-                .min(inner.width)
-        })
+        .map(|(label, _)| u16::try_from(label.width().saturating_add(2)).unwrap_or(u16::MAX))
         .collect::<Vec<_>>();
-    let gaps = u16::try_from(buttons.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    dialog_button_areas(inner, &widths, true)
+}
+
+/// Lay out one row of dialog buttons at the bottom of `inner`, or stack them when the row does
+/// not fit. A row is centered or starts at the left edge.
+fn dialog_button_areas(inner: Rect, widths: &[u16], centered: bool) -> Vec<(usize, Rect)> {
+    if inner.is_empty() || widths.is_empty() {
+        return Vec::new();
+    }
+    let widths = widths
+        .iter()
+        .map(|width| (*width).min(inner.width))
+        .collect::<Vec<_>>();
+    let gaps = u16::try_from(widths.len().saturating_sub(1)).unwrap_or(u16::MAX);
     let horizontal_width = widths
         .iter()
         .copied()
         .fold(0_u16, u16::saturating_add)
         .saturating_add(gaps);
     if horizontal_width <= inner.width {
-        let mut x = inner
-            .x
-            .saturating_add(inner.width.saturating_sub(horizontal_width) / 2);
+        let mut x = if centered {
+            inner
+                .x
+                .saturating_add(inner.width.saturating_sub(horizontal_width) / 2)
+        } else {
+            inner.x
+        };
         let y = inner.bottom().saturating_sub(1);
         return widths
             .into_iter()
@@ -79,7 +91,7 @@ fn compact_dialog_button_areas(
             })
             .collect();
     }
-    let needed_height = u16::try_from(buttons.len()).unwrap_or(u16::MAX);
+    let needed_height = u16::try_from(widths.len()).unwrap_or(u16::MAX);
     if needed_height > inner.height {
         return Vec::new();
     }
@@ -95,6 +107,60 @@ fn compact_dialog_button_areas(
             (index, Rect::new(x, y, width, 1))
         })
         .collect()
+}
+
+/// One action of a confirmation dialog, drawn as a footer chip: its key, then its label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DialogChip {
+    pub(crate) key: &'static str,
+    pub(crate) label: String,
+    pub(crate) command: UiCommand,
+}
+
+impl DialogChip {
+    /// The painted text without its padding: `y Remove`.
+    fn text(&self) -> String {
+        format!("{} {}", self.key, self.label)
+    }
+
+    /// The cells the chip paints, padding included: ` y Remove `.
+    fn width(&self) -> u16 {
+        u16::try_from(self.text().width().saturating_add(2)).unwrap_or(u16::MAX)
+    }
+}
+
+/// The actions of one confirmation dialog, in their visible order.
+///
+/// The command registry is the one source of each key and label, so a chip always names a key
+/// that does what the chip says. Version 0.4 draws the same chips (`src/skit/tui.py:160-165`,
+/// `src/skit/tui_settings.py:58-63`).
+pub(crate) fn dialog_chips(context: CommandContext, locale: Locale) -> Vec<DialogChip> {
+    command_specs(context)
+        .filter(|spec| spec.footer)
+        .filter_map(|spec| {
+            spec.bindings.first().map(|binding| DialogChip {
+                key: binding.hint,
+                label: text(locale, spec.label).into_owned(),
+                command: spec.command,
+            })
+        })
+        .collect()
+}
+
+/// Draw one dialog action as a chip: the key as a keycap, then the label.
+///
+/// The focused chip is the focus ring: it is reversed in the terminal theme and filled with the
+/// accent in the `skit` theme, so the ring shows without a color too.
+fn render_dialog_chip(buffer: &mut Buffer, area: Rect, chip: &DialogChip, focused: bool) {
+    let mut state = ButtonState::enabled();
+    state.set_focused(focused);
+    let region = Button::new(&chip.label, &state)
+        .icon(chip.key)
+        .variant(ButtonVariant::SingleLine)
+        .style(theme::dialog_chip_style())
+        .render_stateful(area, buffer);
+    theme::patch_chip_key(buffer, area, chip.key);
+    theme::patch_focus(buffer, region.area, focused);
 }
 
 /// Persistent mature dialog state for entry removal.
@@ -178,6 +244,21 @@ impl ConfirmRemoveSession {
         )
     }
 
+    /// Put the focus back on the safe button for the next time the dialog opens.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Each visible chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self) -> Vec<(Rect, bool)> {
+        self.dialog
+            .click_regions
+            .regions()
+            .iter()
+            .map(|region| (region.area, self.click.pressed() == Some(&region.data)))
+            .collect()
+    }
+
     pub(crate) fn render(
         &mut self,
         frame: &mut Frame,
@@ -191,13 +272,16 @@ impl ConfirmRemoveSession {
             self.click.cancel();
             self.identity = Some(identity);
         }
+        // The safe button registers first, so the dialog opens with the focus on Keep.
         if self.dialog.focus.is_empty() {
             self.dialog.register_button(1);
             self.dialog.register_button(0);
         }
         self.dialog.show();
         self.screen = frame.area();
-        let config = DialogConfig::new(text(locale, "Confirm removal"))
+        let chips = dialog_chips(CommandContext::ConfirmRemove, locale);
+        let title = text(locale, "Confirm removal");
+        let config = DialogConfig::new(title.as_ref())
             .width_percent(72)
             .height_percent(38)
             .min_size(34, 7)
@@ -205,102 +289,86 @@ impl ConfirmRemoveSession {
             .border_color(theme::panel_color(Panel::Dialog))
             .focused_border_color(theme::panel_color(Panel::Dialog))
             .close_on_outside_click(false)
-            .buttons(vec![
-                (text(locale, "Remove").into_owned(), ContainerAction::Submit),
-                (text(locale, "Keep").into_owned(), ContainerAction::Close),
-            ]);
+            .buttons(
+                chips
+                    .iter()
+                    .map(|chip| {
+                        let action = if chip.command == UiCommand::Submit {
+                            ContainerAction::Submit
+                        } else {
+                            ContainerAction::Close
+                        };
+                        (chip.text(), action)
+                    })
+                    .collect(),
+            );
         let popup_area =
             PopupDialog::new(&config, &mut self.dialog, |_, _, ()| {}).calculate_area(frame.area());
-        let dependency_button_width = config
-            .buttons
+        let chips_width = chips
             .iter()
-            .map(|(label, _)| {
-                u16::try_from(label.len())
-                    .unwrap_or(u16::MAX)
-                    .saturating_add(4)
-            })
-            .fold(0_u16, u16::saturating_add)
-            .saturating_add(
-                u16::try_from(config.buttons.len().saturating_sub(1))
-                    .unwrap_or(u16::MAX)
-                    .saturating_mul(2),
-            );
-        if popup_area.width < 30
-            || popup_area.height < 5
-            || dependency_button_width > popup_area.width.saturating_sub(2)
-        {
-            self.dialog.click_regions.clear();
-            frame.render_widget(Clear, area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::panel_border(Panel::Dialog))
-                .title(format!(" {} ", text(locale, "Confirm removal")));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            let button_areas = compact_dialog_button_areas(inner, &config.buttons);
-            let message_bottom = button_areas
-                .iter()
-                .map(|(_, area)| area.y)
-                .min()
-                .unwrap_or_else(|| inner.bottom());
-            let message_area = Rect::new(
-                inner.x,
-                inner.y,
-                inner.width,
-                message_bottom.saturating_sub(inner.y),
-            );
-            frame.render_widget(
-                Paragraph::new(format!("{} {name}?", text(locale, "Remove this entry:")))
-                    .wrap(Wrap { trim: false }),
-                message_area,
-            );
-            let style = theme::dialog_button_style();
-            for (index, button_area) in button_areas {
-                let mut state = ButtonState::enabled();
-                state.set_focused(self.dialog.is_button_focused(index));
-                let _ = Button::new(&config.buttons[index].0, &state)
-                    .variant(ButtonVariant::SingleLine)
-                    .style(style.clone())
-                    .render_stateful(button_area, frame.buffer_mut());
-                theme::patch_button(frame.buffer_mut(), button_area, state.focused);
-                self.dialog
-                    .click_regions
-                    .register(button_area, DialogFocusTarget::Button(index));
+            .map(|chip| chip.width().saturating_add(1))
+            .fold(0_u16, u16::saturating_add);
+        // A dialog too small for its message and one row of chips takes the whole body and
+        // stacks the chips when they do not fit side by side.
+        let roomy = popup_area.width >= 30
+            && popup_area.height >= 5
+            && chips_width <= popup_area.width.saturating_sub(2);
+        let dialog_area = if roomy { popup_area } else { area };
+        self.dialog.click_regions.clear();
+        frame.render_widget(Clear, dialog_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border(Panel::Dialog))
+            .title(Line::from(format!(" {title} ")).centered())
+            .title_style(theme::border_title());
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+        // A roomy dialog keeps one blank row under its chips, as the dialog widget lays it out.
+        let band = if roomy {
+            Rect {
+                height: inner.height.saturating_sub(1),
+                ..inner
             }
         } else {
-            let mut popup = PopupDialog::new(&config, &mut self.dialog, |frame, area, ()| {
-                let mut lines = vec![Line::from(format!(
-                    "{} {name}?",
-                    text(locale, "Remove this entry:")
-                ))];
-                if original_file_preserved {
-                    lines.push(Line::default());
-                    lines.push(Line::from(Span::styled(
-                        text(locale, "Your original file will not be deleted."),
-                        theme::muted(),
-                    )));
-                }
-                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-            });
-            popup.render(frame);
-            theme::patch_border_title(frame.buffer_mut(), popup_area);
-            // The dialog paints its buttons in fixed colors. The terminal theme keeps the
-            // terminal's colors and marks the state with attributes. The dialog sizes a click
-            // region as the label's bytes plus four cells but paints ` label ` from its left
-            // edge, so the mark covers the painted cells only.
-            for region in self.dialog.click_regions.regions() {
-                if let DialogFocusTarget::Button(index) = region.data {
-                    theme::patch_plain(frame.buffer_mut(), region.area);
-                    let painted = u16::try_from(config.buttons[index].0.width().saturating_add(2))
-                        .unwrap_or(u16::MAX)
-                        .min(region.area.width);
-                    theme::patch_button(
-                        frame.buffer_mut(),
-                        Rect::new(region.area.x, region.area.y, painted, 1),
-                        self.dialog.is_button_focused(index),
-                    );
-                }
-            }
+            inner
+        };
+        let button_areas = compact_dialog_button_areas(band, &config.buttons);
+        let message_bottom = button_areas
+            .iter()
+            .map(|(_, area)| area.y)
+            .min()
+            .unwrap_or_else(|| inner.bottom());
+        let message_area = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            message_bottom.saturating_sub(inner.y),
+        );
+        let mut lines = vec![Line::from(format!(
+            "{} {name}?",
+            text(locale, "Remove this entry:")
+        ))];
+        if original_file_preserved && roomy {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                text(locale, "Your original file will not be deleted."),
+                theme::muted(),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            message_area,
+        );
+        for (index, button_area) in button_areas {
+            render_dialog_chip(
+                frame.buffer_mut(),
+                button_area,
+                &chips[index],
+                self.dialog.is_button_focused(index),
+            );
+            self.dialog
+                .click_regions
+                .register(button_area, DialogFocusTarget::Button(index));
         }
         self.config = Some(config);
         ViewGeometry::default()
@@ -328,9 +396,11 @@ impl ConfirmRemoveSession {
             self.click.cancel();
         }
         let result = match event {
+            // Tab and Shift+Tab move the focus ring, and Enter activates the button under it.
             Event::Key(key)
                 if key.kind != KeyEventKind::Release
-                    && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) =>
+                    && (matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                        || (key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE)) =>
             {
                 let mut popup = PopupDialog::new(config, &mut self.dialog, |_, _, ()| {});
                 popup.handle_key(*key)
@@ -399,26 +469,68 @@ impl HelpScreenSession {
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect, locale: Locale) -> ViewGeometry {
-        let lines = command_specs(CommandContext::LibraryBrowse)
+        let rows = command_specs(CommandContext::LibraryBrowse)
             .filter(|spec| spec.help)
             .filter_map(|spec| {
                 spec.bindings.first().map(|binding| {
+                    // Quit names every key that the footer names, then the double interrupt that
+                    // works from any screen.
                     let hint = if spec.command == UiCommand::Quit {
-                        "Ctrl+C Ctrl+C / Esc"
+                        let keys = spec
+                            .bindings
+                            .iter()
+                            .map(|binding| binding.hint)
+                            .collect::<Vec<_>>()
+                            .join(" / ");
+                        format!("{keys} / Ctrl+C Ctrl+C")
                     } else {
-                        binding.hint
+                        binding.hint.to_owned()
                     };
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{hint:>20}"),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw("  "),
-                        Span::raw(text(locale, spec.label)),
-                    ])
+                    (hint, spec.label)
                 })
             })
             .collect::<Vec<_>>();
+        let hint_width = rows
+            .iter()
+            .map(|(hint, _)| hint.width())
+            .max()
+            .unwrap_or_default()
+            .max(20);
+        let mut lines = rows
+            .into_iter()
+            .map(|(hint, label)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{hint:>hint_width$}"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::raw(text(locale, label)),
+                ])
+            })
+            .collect::<Vec<_>>();
+        // The editing keys work in every text box. Help names them, so nobody has to remember
+        // them (AGENTS.md rule 3).
+        let editing_width = EDITING_HELP
+            .iter()
+            .map(|(keys, _)| keys.width())
+            .max()
+            .unwrap_or_default();
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            text(locale, "Editing text"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(EDITING_HELP.iter().map(|(keys, label)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{keys:>editing_width$}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::raw(text(locale, label)),
+            ])
+        }));
         let base_block = Block::default()
             .borders(Borders::ALL)
             .title(text(locale, "Help"));
@@ -565,77 +677,110 @@ mod agent_review_tests {
         );
     }
 }
-pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> ViewGeometry {
-    let [panel] = Layout::vertical([Constraint::Length(7)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::horizontal([Constraint::Length(52)])
-        .flex(Flex::Center)
-        .areas(panel);
-    // Version 0.4 shows the question once, inside an untitled border
-    // (`src/skit/tui_settings.py:42-65`). The header names the surface; the
-    // panel itself must not repeat the body sentence as a title.
-    let block = padded_panel(String::new(), Panel::Dialog);
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+/// The focus ring of the discard guard.
+///
+/// The guard opens with the focus on Keep editing. A guard exists to catch a reflex, so the
+/// answer that a reflexive Enter reaches must keep the work.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConfirmDiscardSession {
+    discard_focused: bool,
+}
 
-    let [message, actions] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-    frame.render_widget(
-        Paragraph::new(text(locale, "Discard unsaved changes?")),
-        message,
-    );
-    let discard = text(locale, "Discard");
-    let keep = text(locale, "Keep editing");
-    let discard_width =
-        u16::try_from(discard.as_ref().width().saturating_add(4)).unwrap_or(u16::MAX);
-    let keep_width = u16::try_from(keep.as_ref().width().saturating_add(4)).unwrap_or(u16::MAX);
-    let [discard_area, keep_area, _] = Layout::horizontal([
-        Constraint::Length(discard_width),
-        Constraint::Length(keep_width),
-        Constraint::Min(0),
-    ])
-    .spacing(1)
-    .areas(actions);
-    let style = theme::dialog_button_style();
-    let discard_region = Button::new(&discard, &ButtonState::default())
-        .variant(ButtonVariant::SingleLine)
-        .style(style.clone())
-        .render_stateful(discard_area, frame.buffer_mut());
-    let keep_region = Button::new(&keep, &ButtonState::default())
-        .variant(ButtonVariant::SingleLine)
-        .style(style)
-        .render_stateful(keep_area, frame.buffer_mut());
-    // Each button paints ` label ` in the middle of an area two cells wider.
-    for (area, label) in [(discard_area, &discard), (keep_area, &keep)] {
-        let painted = u16::try_from(label.as_ref().width().saturating_add(2)).unwrap_or(u16::MAX);
-        let offset = area.width.saturating_sub(painted) / 2;
-        theme::patch_button(
-            frame.buffer_mut(),
-            Rect::new(
-                area.x.saturating_add(offset),
-                area.y,
-                painted.min(area.width),
-                1,
-            ),
-            false,
-        );
+impl ConfirmDiscardSession {
+    #[cfg(test)]
+    pub(crate) fn perturb_agent_review_state(&mut self) {
+        self.discard_focused = !self.discard_focused;
     }
 
-    ViewGeometry {
-        rows: inner,
-        first_visible: 0,
-        detail_pane_visible: false,
-        hits: vec![
-            HitRegion {
-                rect: discard_region.area,
-                action: HitTarget::Command(skit_ui::UiCommand::DiscardChanges),
-            },
-            HitRegion {
-                rect: keep_region.area,
-                action: HitTarget::Command(skit_ui::UiCommand::KeepEditing),
-            },
-        ],
+    pub(crate) fn agent_review_snapshot(&self) -> AgentReviewNode {
+        let Self { discard_focused } = self;
+        snapshot_node(
+            "confirm_discard",
+            [("discard_focused", serde_json::json!(discard_focused))],
+        )
+    }
+
+    /// Put the focus back on Keep editing for the next time the guard opens.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Move the focus ring with Tab and Shift+Tab, and activate the focused chip with Enter.
+    ///
+    /// Every other event belongs to the command registry (`y`, `Esc`, `n`) or to the chips' click
+    /// targets.
+    pub(crate) fn handle_event(&mut self, event: &Event) -> Option<EventHandling> {
+        let Event::Key(key) = event else {
+            return None;
+        };
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
+        match (key.code, key.modifiers) {
+            (KeyCode::Tab, KeyModifiers::NONE)
+            | (KeyCode::BackTab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.discard_focused = !self.discard_focused;
+                Some(EventHandling::Consumed)
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                Some(EventHandling::Action(if self.discard_focused {
+                    skit_ui::Action::DiscardChanges
+                } else {
+                    skit_ui::Action::KeepEditing
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn render(&self, frame: &mut Frame, area: Rect, locale: Locale) -> ViewGeometry {
+        let [panel] = Layout::vertical([Constraint::Length(7)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [panel] = Layout::horizontal([Constraint::Length(52)])
+            .flex(Flex::Center)
+            .areas(panel);
+        // Version 0.4 shows the question once, inside an untitled border
+        // (`src/skit/tui_settings.py:42-65`). The header names the surface; the
+        // panel itself must not repeat the body sentence as a title.
+        let block = padded_panel(String::new(), Panel::Dialog);
+        let inner = block.inner(panel);
+        frame.render_widget(block, panel);
+
+        let chips = dialog_chips(CommandContext::ConfirmDiscard, locale);
+        let widths = chips.iter().map(DialogChip::width).collect::<Vec<_>>();
+        let button_areas = dialog_button_areas(inner, &widths, false);
+        let message_bottom = button_areas
+            .iter()
+            .map(|(_, area)| area.y)
+            .min()
+            .unwrap_or_else(|| inner.bottom());
+        frame.render_widget(
+            Paragraph::new(text(locale, "Discard unsaved changes?")),
+            Rect::new(
+                inner.x,
+                inner.y,
+                inner.width,
+                message_bottom.saturating_sub(inner.y),
+            ),
+        );
+        let mut hits = Vec::with_capacity(button_areas.len());
+        for (index, button_area) in button_areas {
+            let chip = &chips[index];
+            let focused = (chip.command == UiCommand::DiscardChanges) == self.discard_focused;
+            render_dialog_chip(frame.buffer_mut(), button_area, chip, focused);
+            hits.push(HitRegion {
+                rect: button_area,
+                action: HitTarget::Command(chip.command),
+            });
+        }
+
+        ViewGeometry {
+            rows: inner,
+            first_visible: 0,
+            detail_pane_visible: false,
+            hits,
+        }
     }
 }
 
@@ -736,6 +881,68 @@ mod tests {
         assert!(!find_text(terminal.backend().buffer(), "Beta").is_empty());
     }
 
+    // Ways this can fail: Enter does nothing, Enter removes while the focus ring is on Keep, the
+    // ring does not move, or a key release moves it.
+    #[test]
+    fn enter_activates_the_chip_under_the_focus_ring_which_opens_on_keep() {
+        let draw = |session: &mut ConfirmRemoveSession| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
+                })
+                .unwrap();
+        };
+        let mut keep = ConfirmRemoveSession::default();
+        draw(&mut keep);
+        assert_eq!(
+            keep.handle_event(&key(KeyCode::Enter)),
+            ConfirmRemoveEvent::Close,
+            "the dialog opens with the focus ring on Keep",
+        );
+
+        let mut remove = ConfirmRemoveSession::default();
+        draw(&mut remove);
+        assert_eq!(
+            remove.handle_event(&key(KeyCode::Tab)),
+            ConfirmRemoveEvent::Consumed
+        );
+        assert_eq!(
+            remove.handle_event(&key(KeyCode::Enter)),
+            ConfirmRemoveEvent::Submit
+        );
+
+        let mut back = ConfirmRemoveSession::default();
+        draw(&mut back);
+        assert_eq!(
+            back.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT
+            ))),
+            ConfirmRemoveEvent::Consumed
+        );
+        assert_eq!(
+            back.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::CONTROL
+            ))),
+            ConfirmRemoveEvent::Ignored,
+            "a modified Enter is not the activation key",
+        );
+        assert_eq!(
+            back.handle_event(&key(KeyCode::Enter)),
+            ConfirmRemoveEvent::Submit
+        );
+
+        // A focus that moved stays behind the dialog until it opens again.
+        back.reset();
+        draw(&mut back);
+        assert_eq!(
+            back.handle_event(&key(KeyCode::Enter)),
+            ConfirmRemoveEvent::Close
+        );
+    }
+
     #[test]
     fn confirm_remove_leaves_non_navigation_keys_and_releases_to_the_root_owner() {
         let mut session = ConfirmRemoveSession::default();
@@ -746,11 +953,13 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(
-            session.handle_event(&key(KeyCode::Enter)),
-            ConfirmRemoveEvent::Ignored,
-            "Enter belongs to the root confirmation command, not the focus navigator",
-        );
+        for code in [KeyCode::Char('y'), KeyCode::Esc, KeyCode::Char('n')] {
+            assert_eq!(
+                session.handle_event(&key(code)),
+                ConfirmRemoveEvent::Ignored,
+                "{code:?} belongs to the root confirmation command",
+            );
+        }
         assert_eq!(
             session.handle_event(&Event::Key(KeyEvent::new_with_kind(
                 KeyCode::Tab,
@@ -922,8 +1131,8 @@ mod tests {
             .find(|row| row.contains(&other_label))
             .expect("a non-Quit command is visible");
 
-        assert!(quit_row.contains("Ctrl+C Ctrl+C / Esc"), "{quit_row}");
-        assert!(!other_row.contains("Ctrl+C Ctrl+C / Esc"), "{other_row}");
+        assert!(quit_row.contains("q / Esc / Ctrl+C Ctrl+C"), "{quit_row}");
+        assert!(!other_row.contains("Ctrl+C Ctrl+C"), "{other_row}");
     }
 
     #[test]
@@ -934,7 +1143,8 @@ mod tests {
                 let mut geometry = ViewGeometry::default();
                 terminal
                     .draw(|frame| {
-                        geometry = discard_changes(frame, frame.area(), locale);
+                        geometry =
+                            ConfirmDiscardSession::default().render(frame, frame.area(), locale);
                     })
                     .unwrap();
                 assert_eq!(geometry.hits.len(), 2);
@@ -949,6 +1159,116 @@ mod tests {
                 ));
             }
         }
+    }
+
+    fn chip_background(buffer: &Buffer, needle: &str) -> ratatui_core::style::Color {
+        let at = find_text(buffer, needle);
+        buffer[(at.x, at.y)].bg
+    }
+
+    // Ways this can fail: the guard opens on Discard, Tab or Shift+Tab does not move the ring,
+    // Enter activates the chip that is not under the ring, or the chips show no keys.
+    #[test]
+    fn the_discard_guard_shows_key_chips_and_a_focus_ring_that_opens_on_keep_editing() {
+        let draw = |session: &ConfirmDiscardSession| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), Locale::En);
+                })
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let mut session = ConfirmDiscardSession::default();
+        let buffer = draw(&session);
+        assert!(!find_text(&buffer, " y Discard ").is_empty());
+        assert!(!find_text(&buffer, " Esc Keep editing ").is_empty());
+        let accent = theme::panel_color(Panel::Dialog);
+        assert_eq!(chip_background(&buffer, "Keep editing"), accent);
+        assert_ne!(chip_background(&buffer, "Discard"), accent);
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Enter)),
+            Some(EventHandling::Action(skit_ui::Action::KeepEditing))
+        );
+
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Tab)),
+            Some(EventHandling::Consumed)
+        );
+        let buffer = draw(&session);
+        assert_eq!(chip_background(&buffer, "Discard"), accent);
+        assert_ne!(chip_background(&buffer, "Keep editing"), accent);
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Enter)),
+            Some(EventHandling::Action(skit_ui::Action::DiscardChanges))
+        );
+
+        assert_eq!(
+            session.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT
+            ))),
+            Some(EventHandling::Consumed)
+        );
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Enter)),
+            Some(EventHandling::Action(skit_ui::Action::KeepEditing))
+        );
+
+        for event in [
+            key(KeyCode::Char('y')),
+            key(KeyCode::Esc),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            mouse(
+                Rect::new(0, 0, 1, 1),
+                MouseEventKind::Down(MouseButton::Left),
+            ),
+            Event::Paste("y".to_owned()),
+        ] {
+            assert_eq!(session.handle_event(&event), None, "{event:?}");
+        }
+
+        session.perturb_agent_review_state();
+        session.reset();
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Enter)),
+            Some(EventHandling::Action(skit_ui::Action::KeepEditing)),
+            "a guard that opens again starts on Keep editing",
+        );
+        assert!(
+            serde_json::to_string(&session.agent_review_snapshot())
+                .unwrap()
+                .contains("discard_focused")
+        );
+    }
+
+    #[test]
+    fn the_remove_dialog_shows_key_chips_with_the_ring_on_keep() {
+        let mut session = ConfirmRemoveSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), "Alpha", true, Locale::En);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        assert!(!find_text(&buffer, " y Remove ").is_empty());
+        assert!(!find_text(&buffer, " Esc Keep ").is_empty());
+        let accent = theme::panel_color(Panel::Dialog);
+        assert_eq!(chip_background(&buffer, "Esc Keep"), accent);
+        assert_ne!(chip_background(&buffer, "y Remove"), accent);
+        assert_eq!(session.pointer_targets().len(), 2);
+        assert!(
+            session
+                .pointer_targets()
+                .iter()
+                .all(|(_, pressed)| !pressed)
+        );
     }
 
     #[test]
@@ -975,7 +1295,10 @@ mod tests {
                     .iter()
                     .map(|region| (region.area, region.data))
                     .collect::<Vec<_>>();
-                let labels = [text(locale, "Remove"), text(locale, "Keep")];
+                let labels = [
+                    format!("y {}", text(locale, "Remove")),
+                    format!("Esc {}", text(locale, "Keep")),
+                ];
                 assert_eq!(regions.len(), 2, "{locale:?} at 24x{height}");
                 for (index, (area, target)) in regions.iter().enumerate() {
                     assert_eq!(
@@ -1030,8 +1353,8 @@ mod tests {
                 let mut keep = session.clone();
                 assert_eq!(
                     keep.handle_event(&key(KeyCode::Enter)),
-                    ConfirmRemoveEvent::Ignored,
-                    "the shared command registry owns Enter",
+                    ConfirmRemoveEvent::Close,
+                    "Enter activates the focused Keep chip",
                 );
                 let mut remove = session;
                 assert_eq!(
@@ -1044,8 +1367,8 @@ mod tests {
                 );
                 assert_eq!(
                     remove.handle_event(&key(KeyCode::Enter)),
-                    ConfirmRemoveEvent::Ignored,
-                    "the shared command registry owns Enter after focus changes",
+                    ConfirmRemoveEvent::Submit,
+                    "Enter activates the Remove chip after the focus moves",
                 );
             }
         }
@@ -1073,7 +1396,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
             terminal
                 .draw(|frame| {
-                    let _ = discard_changes(frame, frame.area(), locale);
+                    let _ = ConfirmDiscardSession::default().render(frame, frame.area(), locale);
                 })
                 .unwrap();
             // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.

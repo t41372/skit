@@ -451,6 +451,27 @@ fn test_add_missing_path_clean_error_not_traceback() {
     assert!(out.contains("File not found"), "{out}");
 }
 
+/// Version 0.4 refuses a missing source with its own catalog sentence and exit code 1
+/// (`src/skit/cli.py:418-422`). It asks `Path.exists()`, which also answers no for a path
+/// through a regular file, so that path gets the same sentence and no reason from the operating
+/// system.
+#[test]
+fn add_refuses_a_missing_source_with_the_version_0_4_sentence() {
+    let root = sandbox();
+    let file = write_src(&root, "plain.txt", "text\n");
+    for missing in [
+        root.path().join("typo").join("path.py"),
+        file.join("below.py"),
+    ] {
+        let output = skit(&root).arg("add").arg(&missing).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("File not found: {}\n", missing.display())
+        );
+    }
+}
+
 #[test]
 fn test_add_directory_path_clean_error_not_traceback() {
     let root = sandbox();
@@ -1597,7 +1618,7 @@ fn test_command_without_placeholders_has_no_fields() {
     run(skit(&root).args(["add", "--cmd", "echo hi", "--name", "e"]));
     let (code, out) = run(skit(&root).args(["show", "e"]));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("No form fields"), "{out}");
+    assert!(out.contains("No parameters to fill in"), "{out}");
 }
 
 #[test]

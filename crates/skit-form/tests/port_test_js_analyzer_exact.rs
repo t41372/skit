@@ -1,7 +1,7 @@
 //! Exact public-surface ports of Python v0.4 `tests/test_js_analyzer_mut.py`.
 //!
 //! The broader Rust onboarding suite exercises similar facts, but these five tests retain the
-//! frozen Python mutation-suite identities independently so no broad smoke test can substitute for
+//! frozen Python test identities independently so no broad smoke test can substitute for
 //! one missing oracle.
 
 use skit_form::onboarding_plan;

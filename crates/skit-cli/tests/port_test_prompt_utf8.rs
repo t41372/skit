@@ -728,7 +728,10 @@ fn test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly() {
             "{args:?}: {combined}"
         );
         assert!(!combined.contains("fields"), "{args:?}: {combined}");
-        assert!(!combined.contains("No form fields"), "{args:?}: {combined}");
+        assert!(
+            !combined.contains("No parameters to fill in"),
+            "{args:?}: {combined}"
+        );
         assert!(!combined.contains('\u{FFFD}'), "{args:?}: {combined}");
     }
 

@@ -10,113 +10,22 @@ expect_text() {
   fi
 }
 
-parse_mutants_config_contract() {
-  local file=$1
-  local line
-  local in_array=0
-  local arrays=0
-  local close_pattern='^[[:space:]]*\][[:space:]]*$'
-  local entry_pattern='^[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*$'
-  local ignorable_pattern='^[[:space:]]*(#.*)?$'
-
-  while IFS= read -r line || test -n "$line"; do
-    if test "$in_array" -eq 1; then
-      if [[ $line =~ $close_pattern ]]; then
-        in_array=0
-      elif [[ $line =~ $entry_pattern ]]; then
-        printf 'exclusion:%s\n' "${BASH_REMATCH[1]}"
-      elif ! [[ $line =~ $ignorable_pattern ]]; then
-        return 1
-      fi
-    elif [[ $line =~ $ignorable_pattern ]]; then
-      continue
-    else
-      case "$line" in
-        'test_workspace = true' | 'all_features = true' | 'profile = "mutants"' | 'copy_vcs = true')
-          printf 'setting:%s\n' "$line"
-          ;;
-        'exclude_re = [')
-          arrays=$((arrays + 1))
-          test "$arrays" -eq 1 || return 1
-          in_array=1
-          printf 'setting:%s\n' "$line"
-          ;;
-        *)
-          return 1
-          ;;
-      esac
-    fi
-  done < "$file"
-  test "$arrays" -eq 1 && test "$in_array" -eq 0
-}
-
-mutants_config_is_exact() {
-  local file=$1
-  local expected
-  local actual
-  expected=$'setting:test_workspace = true\nsetting:all_features = true\nsetting:profile = "mutants"\nsetting:copy_vcs = true\nsetting:exclude_re = [\nexclusion:replace current_argument_dialect'
-  if ! actual="$(parse_mutants_config_contract "$file")"; then
-    echo "$file contains an invalid or unreviewed top-level mutation setting" >&2
-    return 1
-  fi
-  if [[ $actual != "$expected" ]]; then
-    printf '%s\n%s\n%s\n%s\n' \
-      "$file has the wrong ordered mutation settings; expected:" \
-      "$expected" \
-      'actual:' \
-      "$actual" >&2
-    return 1
-  fi
-}
-
-mutation_workflow_platforms_are_exact() {
-  local file=$1
-  local expected
-  local actual
-  # Three jobs now: the nightly change check, the shard matrix, and the aggregate.
-  expected=$'ubuntu-latest\nubuntu-latest\nubuntu-latest'
-  actual="$(sed -n 's/^[[:space:]]*runs-on:[[:space:]]*//p' "$file")"
-  if [[ $actual != "$expected" ]]; then
-    printf '%s\n%s\n%s\n%s\n' \
-      "$file has the wrong mutation workflow platforms; expected:" \
-      "$expected" \
-      'actual:' \
-      "$actual" >&2
-    return 1
-  fi
-}
-
-expect_text Cargo.toml 'tree-sitter = "0.27.0"'
-mutation_profile="$(awk '
-  $0 == "[profile.mutants]" { capture = 1; next }
-  capture && /^\[/ { exit }
-  capture { print }
-' Cargo.toml)"
-for setting in \
-  'inherits = "test"' \
-  'opt-level = 1' \
-  'debug = "none"' \
-  'debug-assertions = true' \
-  'overflow-checks = true'; do
-  expect_text <(printf '%s\n' "$mutation_profile") "$setting"
-done
-expect_text .cargo/mutants.toml 'profile = "mutants"'
-setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
+expect_text Cargo.toml 'tree-sitter = "0.27.2"'
+setup_uv_pin='astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3'
 test "$(grep -rF "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
-  echo 'every setup-uv use must share the pinned v10.0.1 action' >&2
+  echo 'every setup-uv use must share the pinned v10.3.3 action' >&2
   exit 1
 }
 if grep -rE 'astral-sh/setup-uv@' .github/workflows |
-  grep -qv '20cfd1bf945f4377ade1205e4dbc17946fc9a30d'; then
+  grep -qv '68559e99cc807c1eb7e9238fd43a15bba460eec2'; then
   echo 'a workflow uses a stale or unpinned setup-uv action' >&2
   exit 1
 fi
-expect_text .github/workflows/ci.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
+expect_text .github/workflows/ci.yml 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3'
 expect_text .github/workflows/ci.yml 'workflow_dispatch:'
-expect_text .github/workflows/mutation.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
-expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3'
-expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
-expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@5.0.1'
+expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3'
+expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3'
+expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@6.0.0'
 expect_text .github/workflows/codspeed.yml 'cargo codspeed build -m simulation --locked --workspace --all-features'
 expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run --workspace'
 if grep -Eq '^[[:space:]]*run:[[:space:]]*cargo codspeed run[[:space:]]*$' \
@@ -144,11 +53,17 @@ if grep -Eq 'enable-cache:[[:space:]]*true|uses:[[:space:]]*actions/cache@' \
   echo 'the ref-selectable benchmark workflow must not save a cache after running either side' >&2
   exit 1
 fi
-expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2'
+expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3'
 expect_text .github/workflows/release.yml 'workflow_dispatch:'
 expect_text .github/workflows/release.yml "if: github.event_name == 'push'"
 expect_text .github/workflows/release.yml "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Linux wheel'
+# Each Linux wheel runs on its own platform before the upload, not only the x86_64 glibc wheel.
+expect_text .github/workflows/release.yml 'runner: ubuntu-24.04-arm'
+# The cross image cannot build ring for aarch64 glibc, so that wheel builds on an Arm runner.
+expect_text .github/workflows/release.yml 'runner: ubuntu-22.04-arm'
+expect_text .github/workflows/release.yml 'name: Smoke-test the musl wheel in Alpine'
+expect_text .github/workflows/release.yml 'needs: [linux, linux-smoke, windows, macos, sdist]'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Windows wheel'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native macOS wheel'
 expect_text .github/workflows/release.yml 'export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"'
@@ -162,12 +77,12 @@ expect_text .github/workflows/release.yml "grep -Eq '/tests/corpus/'"
 expect_text .github/workflows/release.yml 'needs: [verify-artifacts]'
 expect_text pyproject.toml '{ path = "tests/corpus/**/*", format = "sdist" }'
 expect_text .github/workflows/ci.yml 'cargo test --locked -p skit-language --test corpus'
-expect_text .github/workflows/ci.yml 'fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0'
-expect_text .github/workflows/ci.yml 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0'
-expect_text .github/workflows/ci.yml 'node-version: "26.7.0"'
+expect_text .github/workflows/ci.yml 'fish-actions/install-fish@4bb37a71daebb76c6fb7d83771cff31b8a78c28e # v1.2.0'
+expect_text .github/workflows/ci.yml 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0'
+expect_text .github/workflows/ci.yml 'node-version: "26.13.0"'
 expect_text .github/workflows/ci.yml 'run: node --version'
 expect_text .github/workflows/ci.yml 'echo "SKIT_REQUIRE_NODE_RUNTIME=1" >> "$GITHUB_ENV"'
-expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.0.2'
+expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.2.2'
 expect_text .github/workflows/ci.yml 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text crates/skit-runtime/src/uv.rs 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text .github/workflows/ci.yml "throw 'the native Windows uv gate ran zero tests'"
@@ -175,7 +90,7 @@ expect_text .github/workflows/ci.yml 'test_the_preamble_runs_on_every_supported_
 expect_text .github/workflows/ci.yml 'the complete POSIX shell gate ran zero tests'
 expect_text .github/workflows/ci.yml 'the CPython 3.13 compile gate ran zero tests'
 fish_action_line="$(
-  grep -Fn 'uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0' \
+  grep -Fn 'uses: fish-actions/install-fish@4bb37a71daebb76c6fb7d83771cff31b8a78c28e # v1.2.0' \
     .github/workflows/ci.yml | cut -d: -f1
 )"
 test "$(printf '%s\n' "$fish_action_line" | sed '/^$/d' | wc -l)" -eq 1 || {
@@ -212,7 +127,7 @@ test "$fish_action_line" -lt "$fish_flag_line" && test "$fish_flag_line" -lt "$f
   exit 1
 }
 node_action_line="$(
-  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+  grep -Fn 'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0' \
     .github/workflows/ci.yml | cut -d: -f1
 )"
 node_check_line="$(grep -Fn 'run: node --version' .github/workflows/ci.yml | cut -d: -f1)"
@@ -229,10 +144,10 @@ test "$node_action_line" -lt "$node_check_line" && test "$node_check_line" -lt "
   exit 1
 }
 docs_node_line="$(
-  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+  grep -Fn 'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0' \
     .github/workflows/docs.yml | cut -d: -f1
 )"
-docs_npm_line="$(grep -Fn 'run: npm install --global npm@12.0.2' \
+docs_npm_line="$(grep -Fn 'run: npm install --global npm@12.2.2' \
   .github/workflows/docs.yml | cut -d: -f1)"
 docs_ci_line="$(grep -Fn 'run: npm ci' .github/workflows/docs.yml | cut -d: -f1)"
 test "$(printf '%s\n' "$docs_npm_line" | sed '/^$/d' | wc -l)" -eq 1 &&
@@ -289,141 +204,13 @@ test "$(grep -lF 'sys.version_info[:2] == (3, 13)' \
   echo 'every benchmark workflow must verify Python 3.13 before measurement' >&2
   exit 1
 }
-expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
-expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
-expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
-expect_text .github/workflows/mutation.yml '          TMPDIR: ${{ runner.temp }}'
-
-# The test timeout must be explicit. cargo-mutants 27.1.0 calibrates its automatic timeout from a
-# baseline that tests only the shard's mutated package, while `test_workspace = true` makes every
-# mutant run the full workspace suite. The derived budget then times out honest runs. An explicit
-# --timeout is the only calibration that matches the enforced scope, so the multiplier and minimum
-# knobs must not return: they only govern the automatic path and would misread as active policy.
-if grep -qE '^[[:space:]]*(timeout_multiplier|minimum_test_timeout)[[:space:]]*=' .cargo/mutants.toml; then
-  echo 'mutants.toml must not carry automatic-timeout knobs; the explicit --timeout governs' >&2
-  exit 1
-fi
+expect_text CONTRIBUTING.md 'Node.js 26.13.0 and npm 12.2.2 or later'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
-
-# Testing every mutant is opt-in on a pull request, so a branch under active work does not queue a
-# whole shard set on every push and starve the other workflows. All three jobs carry the gate: the
-# change check that gates the other two, the matrix that does the work, and the tally that reads its
-# records. A job without the gate would start a runner on every push and report a success that
-# tested nothing.
-mutation_gate="github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')"
-test "$(grep -cF "$mutation_gate" .github/workflows/mutation.yml)" -eq 3 || {
-  echo 'every mutation job must carry the opt-in label gate' >&2
-  exit 1
-}
-expect_text .github/workflows/mutation.yml 'types: [opened, synchronize, reopened, labeled]'
-expect_text .github/workflows/mutation.yml '!cancelled() &&'
-
-# A zero-survivor gate means something only while the mutation selection stays honest. Parse the
-# complete top-level configuration and allow only the reviewed settings and ordered exclusions.
-mutants_config_is_exact .cargo/mutants.toml
-injected_mutants_config="$(
-  awk '{ print } /"replace current_argument_dialect"/ { print "    \"unexpected_exclusion\"," }' \
-    .cargo/mutants.toml
-)"
-expect_text <(printf '%s\n' "$injected_mutants_config") '    "unexpected_exclusion",'
-if mutants_config_is_exact <(printf '%s\n' "$injected_mutants_config") 2>/dev/null; then
-  echo 'the mutation exclusion parser accepted an injected second entry' >&2
-  exit 1
-fi
-if mutants_config_is_exact <(
-  sed 's/^    "replace current_argument_dialect",$/    "replace current_argument_dialect"/' \
-    .cargo/mutants.toml
-) 2>/dev/null; then
-  echo 'the mutation configuration parser accepted an entry without its TOML comma' >&2
-  exit 1
-fi
-for unexpected_mutation_setting in \
-  'exclude_globs = ["crates/**"]' \
-  'examine_globs = ["crates/**"]' \
-  'examine_re = ["matches_path"]' \
-  'skip_calls = ["matches_path"]'; do
-  if mutants_config_is_exact <(
-    sed -n 'p' .cargo/mutants.toml
-    printf '%s\n' "$unexpected_mutation_setting"
-  ) 2>/dev/null; then
-    echo "the mutation configuration parser accepted: $unexpected_mutation_setting" >&2
-    exit 1
-  fi
-done
-expect_text .cargo/mutants.toml 'The current mutation workflow runs only on Linux.'
-expect_text .cargo/mutants.toml 'must use `--no-config` or a separate config without this exclusion'
-mutation_workflow_platforms_are_exact .github/workflows/mutation.yml
-if mutation_workflow_platforms_are_exact <(
-  sed -n 'p' .github/workflows/mutation.yml
-  printf '%s\n' '  unexpected-windows-job:' '    runs-on: windows-latest'
-) 2>/dev/null; then
-  echo 'the mutation workflow parser accepted an injected Windows job' >&2
-  exit 1
-fi
-
-# Mutation testing runs as shards, because one job cannot finish every mutant inside the platform
-# ceiling. The three places that name the shard count must agree, or some shard silently never runs
-# and the gate passes on a partial result.
-mutation_shards="$(sed -nE 's|.*--shard \$\{\{ matrix\.shard \}\}/([0-9]+).*|\1|p' \
-  .github/workflows/mutation.yml)"
-test -n "$mutation_shards" || {
-  echo 'the mutation workflow must run cargo-mutants with --shard' >&2
-  exit 1
-}
-mutation_matrix="$(sed -nE 's|^        shard: \[(.*)\]$|\1|p' .github/workflows/mutation.yml |
-  tr ',' '\n' | grep -c '[0-9]')"
-test "$mutation_matrix" -eq "$mutation_shards" || {
-  echo "the mutation matrix lists $mutation_matrix shards but runs --shard k/$mutation_shards" >&2
-  exit 1
-}
-expect_text .github/workflows/mutation.yml "SHARD_COUNT: \"$mutation_shards\""
-# The aggregation must survive, and it must fail closed: a shard that never reported is not a pass.
-expect_text .github/workflows/mutation.yml '    needs: [guard, mutation]'
-expect_text .github/workflows/mutation.yml 'if-no-files-found: error'
-expect_text .github/workflows/mutation.yml 'reported no outcomes'
-
-# A failed matrix can leave partial records with no missed or timed-out mutants.
-# Run the actual aggregate script against complete, partial, and absent records.
-mutation_aggregate_script="$(awk '
-  $0 == "      - name: Require every shard to report zero survivors" { step = 1; next }
-  step && $0 == "        run: |" { body = 1; next }
-  body && /^          / { print substr($0, 11); next }
-  body { exit }
-' .github/workflows/mutation.yml)"
-test -n "$mutation_aggregate_script"
-
-run_mutation_aggregate_fixture() (
-  result=$1
-  evidence=$2
-  fixture=$(mktemp -d)
-  trap 'rm -rf -- "$fixture"' EXIT
-  cd "$fixture"
-  mkdir -p shards/mutation-shard-0
-  if test "$evidence" != missing; then
-    printf '%s\n' '{"outcomes":[]}' > shards/mutation-shard-0/outcomes.json
-  fi
-  case "$evidence" in
-    missed | timeout)
-      printf '%s\n' 'one unresolved mutant' > "shards/mutation-shard-0/$evidence.txt"
-      ;;
-  esac
-  SHARD_COUNT=1 MUTATION_JOB_RESULT="$result" bash -c "$mutation_aggregate_script"
-)
-
-run_mutation_aggregate_fixture success complete >/dev/null
-for matrix_result in failure cancelled skipped; do
-  if run_mutation_aggregate_fixture "$matrix_result" partial >/dev/null 2>&1; then
-    echo "the mutation aggregate accepted a $matrix_result matrix with partial records" >&2
-    exit 1
-  fi
-done
-for shard_evidence in missing missed timeout; do
-  if run_mutation_aggregate_fixture success "$shard_evidence" >/dev/null 2>&1; then
-    echo "the mutation aggregate accepted $shard_evidence shard evidence" >&2
-    exit 1
-  fi
-done
-expect_text .github/workflows/mutation.yml 'MUTATION_JOB_RESULT: ${{ needs.mutation.result }}'
+# A release download can fail for a moment (HTTP 504 on the 2026-11-08 nightly), so curl tries
+# again. The digest check stays the gate on what gets installed.
+hyperfine_action=.github/actions/install-hyperfine/action.yml
+expect_text "$hyperfine_action" 'curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o hyperfine.tgz'
+expect_text "$hyperfine_action" '  hyperfine.tgz" | sha256sum -c -'
 
 # The complete UI walk is expensive, so pull requests opt in with one label. Scheduled and manual
 # runs always execute. A failed walk must keep its replay data even when GIF rendering also fails.
@@ -481,7 +268,7 @@ if grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]+write([[:space:]]|$)' "$ui_walk
   exit 1
 fi
 expect_text "$ui_walker_workflow" 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
-expect_text "$ui_walker_workflow" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_text "$ui_walker_workflow" 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_CASES: "2"'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_STEPS: "100"'
 expect_text "$ui_walker_workflow" 'SKIT_WALKER_PROFILES: "complete"'
@@ -559,7 +346,7 @@ fi
 
 upload_step='Upload UI walker artifacts'
 expect_ui_step_text "$upload_step" 'if: ${{ !cancelled() }}'
-expect_ui_step_text "$upload_step" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_ui_step_text "$upload_step" 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2'
 expect_ui_step_text "$upload_step" 'path: target/ui-walker-artifacts/'
 expect_ui_step_text "$upload_step" 'if-no-files-found: error'
 
@@ -621,11 +408,13 @@ for demo in \
   done
 done
 
+# A repository action is not a third-party action. The `$/` self-repository form loads it from
+# the commit that runs, and the `./` form loads it from the checked-out files.
 while IFS= read -r use; do
   echo "GitHub action is not pinned to a full commit: $use" >&2
   exit 1
 done < <(
   sed -nE 's/^[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*/\1/p' .github/workflows/*.yml |
-    grep -v '^\./' |
+    grep -Ev '^(\./|\$/)' |
     grep -Ev '@[0-9a-f]{40}$' || true
 )

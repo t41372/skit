@@ -1,8 +1,9 @@
 //! Completeness guard for Python `tests/test_packaging.py` at `main@206f9ef`.
 //!
-//! Three contracts have executable Rust distribution equivalents. Four inspect Python-only mutmut,
-//! `importlib.metadata`, or module-`__getattr__` behavior and are architecture-closed rather than
-//! represented by unrelated Cargo or binary behavior.
+//! Three contracts have executable Rust distribution equivalents. Four inspect Python-only test
+//! tooling, `importlib.metadata`, or module-`__getattr__` behavior and are architecture-closed
+//! rather than represented by unrelated Cargo or binary behavior. The test-tooling key names its
+//! Python test by what the test checks, not by its Python function name.
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -18,8 +19,8 @@ const EXECUTABLE: &[&str] = &[
 
 const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
     (
-        "test_mutmut_refreshes_all_runtime_package_data_in_a_reused_worktree",
-        "Python mutmut reuses a copied Python package tree and needs also_copy to refresh runtime data. Rust uses cargo-mutants over crate sources and has no reused Python runtime-package worktree.",
+        "test_reused_worktree_refreshes_all_runtime_package_data",
+        "Python-only test tooling reused a copied Python package tree and needed also_copy to refresh runtime data. The Rust workspace has no Python runtime-package worktree to refresh.",
     ),
     (
         "test_version_falls_back_when_no_distribution_is_installed",

@@ -159,7 +159,7 @@ fn launch_errors_localize_their_template_in_every_supported_locale() {
 
     for (locale, template) in [
         ("zh-CN", "找不到所需命令"),
-        ("zh-TW", "找不到必要命令"),
+        ("zh-TW", "找不到所需命令"),
         ("en", "required command was not found"),
     ] {
         sandbox
@@ -170,4 +170,122 @@ fn launch_errors_localize_their_template_in_every_supported_locale() {
             .stderr(predicate::str::contains(template))
             .stderr(predicate::str::contains(needed));
     }
+}
+
+/// A prompt runner refusal at launch says where the marker goes, in every locale.
+///
+/// `skit runner add` skips a marker that touches another brace, so it accepts `{{{prompt}}}`.
+/// The launch counts every `{{prompt}}`, finds two, and refuses the runner before it starts it.
+/// The refusal must tell the user to put one marker in a word after the program.
+#[test]
+fn a_refused_prompt_runner_says_the_marker_goes_after_the_program_in_every_locale() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command("en")
+        .args(["add", "-", "--prompt", "-n", "plain"])
+        .write_stdin("Say hello.\n")
+        .assert()
+        .success();
+    let runner = "bracecheck";
+    sandbox
+        .command("en")
+        .args(["runner", "add", runner])
+        .args(["echo", "{{prompt}}", "{{{prompt}}}"])
+        .assert()
+        .success();
+
+    for (locale, template) in [
+        (
+            "en",
+            "must contain exactly one {{prompt}} marker outside the program token",
+        ),
+        ("zh-CN", "必须在程序之后正好包含一个 {{prompt}} 标记"),
+        ("zh-TW", "必須在程式之後正好包含一個 {{prompt}} 標記"),
+    ] {
+        sandbox
+            .command(locale)
+            .args(["run", "plain", "--runner", runner, "--no-input"])
+            .assert()
+            .code(126)
+            .stderr(predicate::str::contains(template))
+            .stderr(predicate::str::contains(runner));
+    }
+}
+
+const REFUSE_EMPTY: [&str; 3] = [
+    "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
+    "执行器需要一条命令——例如 skit runner add mycli mycli run {{prompt}}",
+    "執行器需要一條命令——例如 skit runner add mycli mycli run {{prompt}}",
+];
+const REFUSE_SLOT: [&str; 3] = [
+    "A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+    "执行器命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词就放在那里。",
+    "執行器命令必須恰好包含一個 {{prompt}} 槽位——渲染後的提示詞就放在那裡。",
+];
+const REFUSE_BIN: [&str; 3] = [
+    "{{prompt}} can't be the command itself — the first word must be the program to run.",
+    "{{prompt}} 不能是命令本身——第一个词必须是要运行的程序。",
+    "{{prompt}} 不能是命令本身——第一個詞必須是要執行的程式。",
+];
+const REFUSE_STRAY: [&str; 3] = [
+    "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+    "执行器命令只接受 {{prompt}} 槽位——单大括号是字面文字,其他 {{占位符}} 不支持。",
+    "執行器命令只接受 {{prompt}} 槽位——單大括號是字面文字,其他 {{佔位符}} 不支援。",
+];
+const STATUS_EMPTY: [&str; 3] = [
+    "Type the agent's command, e.g. mycli run {{prompt}}",
+    "请输入 agent 的命令,例如 mycli run {{prompt}}",
+    "請輸入 agent 的命令,例如 mycli run {{prompt}}",
+];
+const STATUS_SLOT: [&str; 3] = [
+    "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+    "命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词会放在那里。",
+    "命令必須恰好包含一個 {{prompt}} 槽位——渲染後的提示詞會放在那裡。",
+];
+
+/// `skit runner add` refuses with its own sentences, never with the status of a stored row.
+///
+/// Version 0.4 keeps two closed sets: `_runner_reason` for a `runner add` refusal
+/// (`src/skit/cli.py:3358-3378`) and `prompt_runner_row_reason` for the status of a row that is
+/// already in the file (`src/skit/config.py:592-624`). A refusal tells a person what to type on
+/// the command line, so it names `skit runner add`; a row status describes the row.
+#[test]
+fn runner_add_refuses_with_its_own_sentences_in_every_locale() {
+    let sandbox = Sandbox::new();
+    let cases: [(&[&str], [&str; 3], [&str; 3]); 4] = [
+        (&["bare"], REFUSE_EMPTY, STATUS_EMPTY),
+        (&["noslot", "agent"], REFUSE_SLOT, STATUS_SLOT),
+        (&["bin", "{{prompt}}"], REFUSE_BIN, REFUSE_BIN),
+        (&["stray", "agent", "{{other}}"], REFUSE_STRAY, REFUSE_STRAY),
+    ];
+    for (arguments, refusals, statuses) in cases {
+        for ((locale, refusal), status) in ["en", "zh-CN", "zh-TW"]
+            .into_iter()
+            .zip(refusals)
+            .zip(statuses)
+        {
+            let output = sandbox
+                .command(locale)
+                .args(["runner", "add"])
+                .args(arguments)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{arguments:?} {locale}: {stderr}"
+            );
+            assert!(stderr.contains(refusal), "{arguments:?} {locale}: {stderr}");
+            if refusal != status {
+                assert!(!stderr.contains(status), "{arguments:?} {locale}: {stderr}");
+            }
+        }
+    }
+    let config =
+        std::fs::read_to_string(sandbox.config.path().join("config.toml")).unwrap_or_default();
+    assert!(
+        !config.contains("runners"),
+        "a refusal wrote the configuration: {config}"
+    );
 }

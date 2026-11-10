@@ -11,12 +11,14 @@ use crate::{
 };
 
 /// Hyperfine version installed by the repository action.
-pub const HYPERFINE_VERSION: &str = "1.20.0";
+pub const HYPERFINE_VERSION: &str = "2.0.0";
 /// SHA-256 for the pinned Linux archive.
 pub const HYPERFINE_SHA256: &str =
-    "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a";
+    "ae2beda2ac99c098427e4f755244552daf20e514422889cca6d44421e2d93c87";
 /// Upstream archive installed by CI.
-pub const HYPERFINE_URL: &str = "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz";
+pub const HYPERFINE_URL: &str = "https://github.com/sharkdp/hyperfine/releases/download/v2.0.0/hyperfine-v2.0.0-x86_64-unknown-linux-gnu.tar.gz";
+/// The JSON export schema that Hyperfine 2 writes.
+const EXPORT_SCHEMA_VERSION: u32 = 2;
 
 /// One command measured by Hyperfine.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,20 +124,40 @@ pub fn build_argv(
 
 #[derive(Debug, Deserialize)]
 struct Export {
+    schema_version: u32,
     results: Vec<ExportResult>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExportResult {
     command: String,
-    times: Vec<f64>,
-    #[serde(default)]
-    exit_codes: Vec<i32>,
+    /// Hyperfine writes the name only when it is different from the command.
+    name: Option<String>,
+    measurements: Vec<Measurement>,
 }
 
-/// Parse full times in seconds keyed by case name.
+#[derive(Debug, Deserialize)]
+struct Measurement {
+    time_wall_clock: Quantity,
+    /// Hyperfine writes null when a signal stopped the run.
+    exit_code: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Quantity {
+    value: f64,
+    unit: String,
+}
+
+/// Parse full wall-clock times in seconds keyed by case name.
 pub fn parse_export(text: &str) -> Result<BTreeMap<String, Vec<f64>>, HyperfineError> {
     let export: Export = serde_json::from_str(text)?;
+    if export.schema_version != EXPORT_SCHEMA_VERSION {
+        return Err(HyperfineError::Shape(format!(
+            "hyperfine export schema {} is not schema {EXPORT_SCHEMA_VERSION}",
+            export.schema_version
+        )));
+    }
     if export.results.is_empty() {
         return Err(HyperfineError::Shape(
             "hyperfine export has no results".to_owned(),
@@ -143,34 +165,30 @@ pub fn parse_export(text: &str) -> Result<BTreeMap<String, Vec<f64>>, HyperfineE
     }
     let mut output = BTreeMap::new();
     for result in export.results {
-        if result.command.is_empty() || result.times.is_empty() {
+        let case = result.name.unwrap_or(result.command);
+        if case.is_empty() || result.measurements.is_empty() {
             return Err(HyperfineError::Shape(
-                "hyperfine result entry missing command/times".to_owned(),
+                "hyperfine result entry missing name/measurements".to_owned(),
             ));
         }
-        if result
-            .times
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(HyperfineError::Shape(format!(
-                "hyperfine case {:?}: time must be finite and non-negative",
-                result.command
-            )));
+        let mut times = Vec::with_capacity(result.measurements.len());
+        for measurement in result.measurements {
+            let time = measurement.time_wall_clock;
+            if time.unit != "second" || !time.value.is_finite() || time.value < 0.0 {
+                return Err(HyperfineError::Shape(format!(
+                    "hyperfine case {case:?}: time must be finite and non-negative seconds"
+                )));
+            }
+            if measurement.exit_code != Some(0) {
+                return Err(HyperfineError::Shape(format!(
+                    "hyperfine case {case:?} recorded a failed run"
+                )));
+            }
+            times.push(time.value);
         }
-        if result.exit_codes.iter().any(|code| *code != 0) {
+        if output.insert(case.clone(), times).is_some() {
             return Err(HyperfineError::Shape(format!(
-                "hyperfine case {:?} recorded non-zero exit codes",
-                result.command
-            )));
-        }
-        if output
-            .insert(result.command.clone(), result.times)
-            .is_some()
-        {
-            return Err(HyperfineError::Shape(format!(
-                "duplicate hyperfine case {:?}",
-                result.command
+                "duplicate hyperfine case {case:?}"
             )));
         }
     }

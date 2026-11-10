@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     ffi::OsString,
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -207,12 +207,15 @@ pub struct SystemLaunchRunner;
 
 impl LaunchRunner for SystemLaunchRunner {
     fn run(&self, plan: &LaunchPlan) -> io::Result<LaunchProcessOutput> {
-        let status = Command::new(&plan.program)
+        let mut child = Command::new(&plan.program)
             .args(&plan.args)
             .envs(&plan.env)
             .current_dir(&plan.cwd)
-            .status()?;
-        Ok(process_output(status))
+            .spawn()?;
+        // The interrupt keys of the terminal now end the run, not skit: Ctrl+C and Ctrl+\ on Unix,
+        // Ctrl+C and Ctrl+Break on Windows. skit reports the outcome.
+        let _interrupts = crate::interrupts::ChildInterrupts::begin();
+        Ok(process_output(child.wait()?))
     }
 }
 
@@ -1293,7 +1296,7 @@ fn require_file<P: ProgramProbe + ?Sized>(path: &Path, probe: &P) -> Result<(), 
 ///
 /// The environment values arrive as parameters, so a test can drive every arm on every host.
 // The production caller sits in the cfg(windows) arm of command_plan; the function itself
-// compiles on every host so its owner runs — and its mutants die — on the Linux gates.
+// compiles on every host so its owner runs on the Linux gates.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_command_shell<P: ProgramProbe + ?Sized>(
     comspec: Option<std::ffi::OsString>,
@@ -1535,11 +1538,11 @@ fn program_names(name: &str) -> Vec<String> {
             return vec![name.to_owned()];
         }
         let extensions = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
-        return extensions
+        extensions
             .split(';')
             .filter(|value| !value.is_empty())
             .map(|extension| format!("{name}{extension}"))
-            .collect();
+            .collect()
     }
     #[cfg(not(windows))]
     {
@@ -1550,7 +1553,7 @@ fn program_names(name: &str) -> Vec<String> {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
-    fs::metadata(path)
+    std::fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
@@ -1564,6 +1567,7 @@ mod private_tests {
     use super::*;
     use skit_domain::{EntryKind, EntryMeta, Slug};
     use std::cell::RefCell;
+    use std::fs;
     use tempfile::TempDir;
 
     #[derive(Debug, Default)]
@@ -1650,7 +1654,7 @@ mod private_tests {
 
     /// The command shell resolves the way version 0.4's `shell=True` reaches it: COMSPEC
     /// verbatim, then the system directory's cmd.exe, then PATH, then a typed refusal. The
-    /// pure function runs on every host, so each arm stays owned and mutation-killable here.
+    /// pure function runs on every host, so each arm stays owned and tested here.
     #[test]
     fn windows_command_shell_reads_comspec_before_the_system_directory_and_path() {
         use std::ffi::OsString;
@@ -1877,8 +1881,8 @@ mod private_tests {
 
         // The contract is real operating-system exit status, not one shell: spawn the host's own
         // command interpreter. A bare `cmd.exe` resolves through the system directory before any
-        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms keep the other
-        // host's tuple out of this host's executable lines, which the coverage gate counts.
+        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms compile only the
+        // tuple of this host.
         #[cfg(windows)]
         let (shell, flag) = ("cmd.exe", "/C");
         #[cfg(not(windows))]

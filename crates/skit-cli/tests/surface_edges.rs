@@ -1418,7 +1418,7 @@ fn show_reports_an_entry_whose_stored_payload_was_deleted() {
     let report = sandbox.ok(&["show", "sample"]);
 
     assert!(report.contains("⚠ missing:"), "{report}");
-    assert!(report.contains("No form fields"), "{report}");
+    assert!(report.contains("No parameters to fill in"), "{report}");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 # Terminal palette design
 
 Status: owner-approved design, 2026-09-23. Phases 0 to 6 are done; see "Phases". Not verified:
-Windows, and the mutation gate (deferred by the owner).
+Windows.
 
 ## Decision
 
@@ -94,8 +94,10 @@ backgrounds too.
 ## Rules for the `terminal` theme
 
 1. A hue never colors text that a person must read. The accent colors only borders, glyphs, and
-   markers. Status colors (green, yellow, red) color only the ✓ ⚠ ✗ glyph. The text next to it
-   uses the default foreground.
+   markers. One exception: success text is green and warning text is yellow, as in version 0.4.
+   Red colors only the ✗ glyph, and danger text is bold in the default foreground. The exception
+   came on 2026-09-24, after the owner said that very high contrast is not a goal. Before it, a
+   warning with no glyph looked like body text.
 2. Never use ANSI black or white as a foreground. Use the default foreground.
 3. Never set a background except through `REVERSED`. The terminal then guarantees the contrast.
 4. A hue never carries a state alone. Every state must survive the monochrome variant.
@@ -124,7 +126,7 @@ ratatui-interact widgets accept only a `Color` pair and add only `BOLD` on their
 | caret in text area | reverse | reverse | black on `#D97757` |
 | footer keycap | accent fg + reverse, bold | reverse, bold | see "Footer chips" |
 | status glyph | ANSI green / yellow / red | glyph only | ANSI green / yellow / red |
-| status text | default fg | default fg | as today |
+| status text | ANSI green / yellow; danger bold | default fg; danger bold | as today |
 | panel tint | none; titles name the panel | none | per-panel truecolor as today |
 
 
@@ -336,10 +338,11 @@ Owner ruling, 2026-09-23:
   byte for byte.
 - An isolated test is added only where a gate requires it, and only after a written list of the
   ways the unit can fail.
-- The mutation gate is deferred. Write as many tests as possible now; add tests later where a gate
-  falls short.
+- Write as many tests as possible now; add tests later where a gate falls short.
 - The old concrete-color unit assertions stay while they pass. When a phase changes a color that
   one of them checks, ask the owner whether the census replaces it.
+
+This ruling records the state on 2026-09-23. `AGENTS.md` holds the current engineering principles.
 
 The artifact:
 
@@ -423,7 +426,7 @@ first, because the output filter does not depend on the role refactor.
      (dark, light, unknown background, `NO_COLOR`) bring the census to 312 files, and each
      terminal-theme frame passes the rule check: no 24-bit color, no index above 15, no black,
      white, or gray text, no background without reverse, and no hue on a cell that shows a letter
-     or a digit.
+     or a digit. Since 2026-09-24 green and yellow letters pass, for status text (rule 1).
    - `Theme::Terminal(accent)` in `theme.rs`. Widgets that take only colors get a post-pass:
      `patch_focus` reverses a focused button, check box, or radio option; `patch_idle_border`
      dims an idle select; `patch_plain` removes the colors that `Toast` and the removal dialog's
@@ -441,9 +444,9 @@ first, because the output filter does not depend on the role refactor.
      adjacent stops). A save writes `theme` only when it changed, so a clean save keeps the
      historical `config.toml` bytes. `PreferencesSaved` carries the new theme, `LibraryState`
      keeps it, and `render_with_session` applies it to the next frame with the session's color
-     depth, background, and `NO_COLOR`. A session that started in the `skit` theme did not ask
-     for the background, so a switch to `terminal` during the session has no accent hue until
-     the next start.
+     depth, background, and `NO_COLOR`. A session that started in the `skit` theme or with a
+     fixed accent did not ask for the background. A switch to `terminal` or to the `auto` accent
+     during that session therefore has no accent hue until the next start.
    - The default switch (commit "feat(tui): default to the terminal theme"). `DEFAULT_THEME` in
      skit-store and `tui_theme` in skit-cli both give `terminal`, and
      `the_default_theme_is_terminal` and `the_terminal_theme_is_the_default` pin it. The switch sent
@@ -494,7 +497,7 @@ first, because the output filter does not depend on the role refactor.
      coverage run found 17 lines that no test ran. End-to-end tests closed most of them; code that
      no frame can reach was restructured, and the forwarders got the one isolated test of phase 1
      (commit "fix(tui): mark buttons, titles, and overlays in the terminal theme"). The gate then
-     reported complete line coverage. The mutation gate stays deferred by the owner's ruling.
+     reported complete line coverage.
    - A review of the whole branch found six defects in the terminal theme: idle buttons that read
      as plain text, titles that carried the dim of their border, two post-passes sized by the
      widget's click region instead of its painted cells, an overlay border that looked idle,
@@ -522,6 +525,9 @@ committed files, and runs the walker corpus.
 
 Generated from the source on 2026-09-23 (phase 2). Each row lists the functions that call the
 role.
+
+Note (2026-11-08): `dialog_button_style` and screens/modal.rs `discard_changes` no longer exist.
+Commit 909a7f0b draws the dialog actions with `dialog_chip_style` and `ConfirmDiscardSession`.
 
 | Role | Calls | Functions |
 | --- | --- | --- |

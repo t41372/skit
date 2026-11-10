@@ -30,9 +30,23 @@ use unicode_width::UnicodeWidthStr as _;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control, styles_over};
+use pty::{
+    AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control, styles_over,
+    terminal_parser,
+};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
+    let template = if with_parameter {
+        "echo {name}"
+    } else {
+        "echo done"
+    };
+    write_command_template_entry(data, template, with_parameter);
+}
+
+/// Write the command entry `Demo` with `template`, and a required `name` placeholder when
+/// `with_parameter` is true.
+fn write_command_template_entry(data: &Path, template: &str, with_parameter: bool) {
     let directory = data.join("scripts/demo");
     fs::create_dir_all(&directory).unwrap();
     let parameter = if with_parameter {
@@ -45,11 +59,6 @@ fn write_command_entry(data: &Path, with_parameter: bool) {
         )
     } else {
         "params = []\n"
-    };
-    let template = if with_parameter {
-        "echo {name}"
-    } else {
-        "echo done"
     };
     fs::write(
         directory.join("meta.toml"),
@@ -319,6 +328,124 @@ fn write_stale_default_entry(data: &Path, home: &Path) -> (PathBuf, PathBuf) {
     (payload, metadata)
 }
 
+/// Write one Python copy whose skit block manages `NAME` and `GONE`.
+///
+/// With `drifted`, the stored copy then loses the `GONE` constant, as a script does after an edit
+/// that skit did not make. Returns the stored copy's path.
+fn write_resync_entry(data: &Path, home: &Path, drifted: bool) -> PathBuf {
+    let mut name = ParamDecl::new("NAME");
+    name.binding = ParameterBinding::Const;
+    name.delivery = ParameterDelivery::Inject;
+    name.parameter_type = ParameterType::Str;
+    name.default = Some(ParameterValue::String("hello".to_owned()));
+    let mut gone = ParamDecl::new("GONE");
+    gone.binding = ParameterBinding::Const;
+    gone.delivery = ParameterDelivery::Inject;
+    gone.parameter_type = ParameterType::Int;
+    gone.default = Some(ParameterValue::Integer(3));
+
+    let original = "NAME = \"hello\"\nGONE = 3\nprint(NAME, GONE)\n";
+    let managed = write_managed_params("python", original, &[name, gone]).unwrap();
+    let source = home.join("greet.py");
+    fs::write(&source, managed.as_bytes()).unwrap();
+    let store = FileStore::new(data);
+    let entry = store
+        .create(CreateEntry {
+            name: "greet".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: source.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: managed.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let payload = store.payload_path(&entry).unwrap();
+    if drifted {
+        let current = fs::read_to_string(&payload).unwrap();
+        let edited = current
+            .replace("GONE = 3\n", "")
+            .replace("print(NAME, GONE)", "print(NAME)");
+        assert_ne!(edited, current, "the fixture did not remove GONE");
+        // The same commit `skit edit` makes, so the stored hash names the edited copy.
+        store
+            .commit_copy_edit(&entry, edited.as_bytes(), &entry.meta.source_hash)
+            .unwrap();
+    }
+    payload
+}
+
+/// Write one prompt whose body names more variables than the inline list shows.
+fn write_flooded_prompt_entry(data: &Path) {
+    let directory = data.join("scripts/flood");
+    fs::create_dir_all(&directory).unwrap();
+    let body = (0..25)
+        .map(|index| format!("{{{{v{index}}}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    fs::write(directory.join("prompt.md"), format!("{body}\n")).unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Flood\"\n",
+            "kind = \"prompt\"\n",
+            "mode = \"copy\"\n",
+            "source = \"prompt.md\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"3123456789abcdef0123456789abcdef\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"\"\n",
+            "interpolate = true\n",
+        ),
+    )
+    .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
+}
+
+/// Write one prompt whose body names `topic` and `audience`, and manages neither.
+fn write_placeholder_prompt_entry(data: &Path) {
+    let directory = data.join("scripts/review");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("prompt.md"),
+        "Review {{topic}} for {{audience}}.\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Review\"\n",
+            "kind = \"prompt\"\n",
+            "mode = \"copy\"\n",
+            "source = \"prompt.md\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"4123456789abcdef0123456789abcdef\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"\"\n",
+            "interpolate = true\n",
+        ),
+    )
+    .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
+}
+
+/// Return the zero-based row and column where `needle` starts on a replayed screen.
+fn screen_position(screen: &str, needle: &str) -> Option<(usize, usize)> {
+    screen.lines().enumerate().find_map(|(row, line)| {
+        line.find(needle)
+            .map(|byte| (row, line[..byte].chars().count()))
+    })
+}
+
 fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     fn visit(root: &Path, path: &Path, snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         let mut children = fs::read_dir(path)
@@ -390,6 +517,12 @@ fn run_pty(
     )
 }
 
+/// Run `skit` with `args` on a terminal, write each item of `input` after a quiet moment, and wait
+/// for the end.
+///
+/// With `answer_cursor_query`, the terminal answers the first cursor question once. A Windows test
+/// needs that answer, because the pseudo-console asks that question when it opens (invariant 3 in
+/// `support/pty.rs`).
 fn run_pty_configured(
     args: &[&str],
     data: &Path,
@@ -432,6 +565,9 @@ fn run_pty_configured(
     pty.finish()
 }
 
+/// Rows of a terminal that shows a whole settings section without a scroll.
+const TALL_ROWS: u16 = 60;
+
 struct LiveTui {
     pty: PtyChild,
     rows: u16,
@@ -455,6 +591,26 @@ impl LiveTui {
     /// settled write, and the control-stripped view its assertions read.
     fn spawn(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
         let mut tui = Self::spawn_command(&["tui"], data, state, config, home, "en");
+        tui.answer_cursor_query_after(0);
+        tui
+    }
+
+    /// Start the interactive TUI session on a terminal tall enough for a whole settings section.
+    fn spawn_tall(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
+        let mut tui = Self::spawn_command_at_size(
+            &["tui"],
+            data,
+            state,
+            config,
+            home,
+            "en",
+            PtySize {
+                rows: TALL_ROWS,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        );
         tui.answer_cursor_query_after(0);
         tui
     }
@@ -522,6 +678,11 @@ impl LiveTui {
         self.pty.send(bytes);
     }
 
+    /// Write a key whose host effect gives the terminal to a run or an editor.
+    ///
+    /// The session leaves its screen for the effect, and on its return it asks where the cursor
+    /// is. Any other effect stays on the screen and asks nothing: send its key with
+    /// [`Self::send`] and wait for the screen.
     fn send_effect_key(&mut self, bytes: &[u8]) {
         let checkpoint = self.checkpoint();
         self.send(bytes);
@@ -566,7 +727,7 @@ impl LiveTui {
         let (rows, columns) = (self.rows, self.columns);
         self.pty
             .wait_for_after_rendered(checkpoint, needle, |bytes| {
-                let mut screen = vt100::Parser::new(rows, columns, 0);
+                let mut screen = terminal_parser(rows, columns);
                 screen.process(bytes);
                 format!(
                     "{}\n{}",
@@ -636,6 +797,110 @@ fn bare_invocation_runs_the_first_run_gate_and_returns_after_the_library_quits()
     assert_eq!(tree_snapshot(data.path()), data_before);
     assert_eq!(tree_snapshot(state.path()), state_before);
     assert_eq!(tree_snapshot(config.path()), config_before);
+}
+
+/// Wait until the whole screen passes `check`, and return it.
+///
+/// Ratatui writes only the cells that change, so a needle in the output after a checkpoint can
+/// miss a phrase or the absence of one. This reads the screen that all output leaves.
+fn wait_for_screen(tui: &mut LiveTui, what: &str, check: impl Fn(&str) -> bool) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        tui.settle();
+        let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+        if check(&screen) {
+            return screen;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the screen never showed {what}:\n{screen}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Write one command entry with no parameters for the search tests.
+fn write_search_entry(data: &Path, slug: &str, description: &str, added_at: &str, id: &str) {
+    let directory = data.join("scripts").join(slug);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        format!(
+            concat!(
+                "schema = 1\n",
+                "name = {slug:?}\n",
+                "kind = \"command\"\n",
+                "mode = \"copy\"\n",
+                "source = \"\"\n",
+                "source_hash = \"\"\n",
+                "added_at = {added_at:?}\n",
+                "id = {id:?}\n",
+                "workdir = \"invoke\"\n",
+                "description = {description:?}\n",
+                "template = \"echo {slug}\"\n",
+                "params = []\n",
+            ),
+            slug = slug,
+            added_at = added_at,
+            id = id,
+            description = description,
+        ),
+    )
+    .unwrap();
+}
+
+/// The audit case on the real binary. `review` is the newest entry, and its description holds
+/// the letters of `hello` in order, so the search keeps it. Enter must open `hello`. The
+/// `search-ranked` screen of the palette census records the order of the list.
+#[cfg(unix)]
+#[test]
+fn search_enter_opens_the_entry_that_the_query_names() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    FileConfigStore::new(config.path().to_path_buf())
+        .mark_mirror_configured()
+        .unwrap();
+    write_search_entry(
+        data.path(),
+        "review",
+        "Check the change and tell me what looks wrong",
+        "2026-08-09T00:00:00Z",
+        "0123456789abcdef0123456789abcdef",
+    );
+    write_search_entry(
+        data.path(),
+        "hello",
+        "Say hello from Ruby.",
+        "2026-08-08T00:00:00Z",
+        "fedcba9876543210fedcba9876543210",
+    );
+    FileStore::new(data.path()).rebuild_registry().unwrap();
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Library");
+    tui.send(b"/");
+    tui.send(b"hello");
+    // Both entries match, so the count does not change. The first row of the list must change.
+    wait_for_screen(&mut tui, "hello in the first row of the list", |screen| {
+        let lines = screen.lines().collect::<Vec<_>>();
+        let Some(header) = lines
+            .iter()
+            .position(|line| line.contains("Name") && line.contains("Kind"))
+        else {
+            return false;
+        };
+        lines[header + 1..]
+            .iter()
+            .find(|line| line.contains("hello") || line.contains("review"))
+            .is_some_and(|line| line.contains("hello") && !line.contains("review"))
+    });
+
+    let opened = tui.checkpoint();
+    tui.send(b"\r");
+    let screen = tui.wait_for_after(opened, "Run hello");
+    assert!(!screen.contains("Run review"), "{screen}");
 }
 
 // The SGR mouse protocol and cursor query used by this test are Unix PTY byte protocols.
@@ -824,7 +1089,7 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"a");
+    tui.send(b"a");
     tui.wait_for_after(open, "Add an entry");
 
     // Enter the real kept-draft path in the focused Source path field. This uses the same
@@ -833,14 +1098,15 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let typing = tui.checkpoint();
     tui.send(draft_input.as_bytes());
     tui.wait_for_after(typing, &draft_input);
-    let resume = tui.checkpoint();
-    tui.send(b"\r\x1b[1;1R");
-    tui.wait_for_after(resume, "Add skit-new-ship.py");
+    tui.send(b"\r");
+    // The review of a new draft names the entry, not its temporary file.
+    wait_for_screen(&mut tui, "the review of the draft", |screen| {
+        screen.contains("Add skit-new-ship")
+    });
 
     let submit = tui.checkpoint();
     tui.send(&[0x13]);
-    tui.send(b"\x1b[1;1R");
-    let receipt = tui.wait_for_after(submit, "Entryadded");
+    let receipt = tui.wait_for_after(submit, "Entry added");
     assert!(receipt.contains("Library"), "{receipt}");
 
     let store = FileStore::new(data.path());
@@ -1144,8 +1410,9 @@ fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
         !child.contains(LAST_RUNNER_CHILD),
         "the pinned rerun used the last-run runner instead of its pin: {child}"
     );
+    // The form title sits on its panel border. The run header `── Run p ──` is not the form.
     assert!(
-        !rendered.contains("Run p"),
+        !rendered.contains("╭ Run p"),
         "the pinned rerun opened the form before it launched: {rendered}"
     );
     assert!(
@@ -1182,7 +1449,7 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "Run p");
     // The title can arrive before the rest of the frame, so wait for the field the assertion
     // reads.
@@ -1197,10 +1464,11 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     assert!(!form_state.exists());
     let submit = tui.checkpoint();
     tui.send_effect_key(&[0x12]);
-    let program_error = format!("required program was not found: {MISSING_RUNNER}");
+    let program_error =
+        format!("{MISSING_RUNNER} is not on PATH. Install it, or choose another agent.");
     // Wait for the unique suffix. A wait for an earlier word can return while the PTY still has
     // the rest of this line in another read chunk.
-    let refused = tui.wait_for_after(submit, MISSING_RUNNER);
+    let refused = tui.wait_for_after(submit, "another agent.");
     assert!(
         compact_terminal_text(&refused).contains(&compact_terminal_text(&program_error)),
         "the selected runner refusal lost its exact typed error: {refused}"
@@ -1215,7 +1483,7 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     );
 
     let library = tui.wait_for_after(submit, "Library");
-    let expected = format!("Error: {program_error}");
+    let expected = format!("✗ {program_error}");
     tui.settle();
     let final_screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
     assert!(
@@ -1246,12 +1514,13 @@ fn test_run_with_zero_runners_offers_the_new_agent_modal() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
 
     let cancel = tui.checkpoint();
     tui.send(b"\x1b");
-    let returned = tui.wait_for_after(cancel, "configured");
+    // Wait for the end of the sentence, so the whole line has arrived.
+    let returned = tui.wait_for_after(cancel, "to run with.");
     let expected = "A prompt needs a configured agent to run with.";
     assert!(
         compact_terminal_text(&returned).contains(&compact_terminal_text(expected)),
@@ -1288,13 +1557,13 @@ fn test_run_with_zero_runners_define_agent_then_run() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
     tui.send(b"mycli");
     tui.send(b"\t");
     tui.send(command.as_bytes());
     let save = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     let form = tui.wait_for_after(save, "Run p");
     assert!(
         compact_terminal_text(&form).contains("mycli"),
@@ -1357,7 +1626,7 @@ fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     let mut tui = sandbox.tui();
     tui.wait_for("Library");
     let open = tui.checkpoint();
-    tui.send_effect_key(b"\r");
+    tui.send(b"\r");
     tui.wait_for_after(open, "New agent (runner)");
     tui.send(b"mycli");
     tui.send(b"\t");
@@ -1376,9 +1645,10 @@ fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     let config_path = sandbox.config.path().join("config.toml");
     let config_before_save = fs::read(&config_path).unwrap();
 
-    let save = tui.checkpoint();
-    tui.send_effect_key(b"\r");
-    let refused = tui.wait_for_after(save, "already exists");
+    tui.send(b"\r");
+    let refused = wait_for_screen(&mut tui, "the refused save", |screen| {
+        screen.contains("already exists")
+    });
     let compact_refused = compact_terminal_text(&refused);
     assert!(
         compact_refused.contains("Newagent(runner)"),
@@ -1529,9 +1799,15 @@ fn bare_add_uses_the_typed_workflow_and_returns_the_created_entry() {
     );
     tui.wait_for("Source path");
     tui.send(path_input.as_bytes());
-    let review = tui.checkpoint();
+    // A person presses Enter after the path is in the box. On Windows, a line break that arrives in
+    // the same burst as typed text is a paste, and a paste never continues.
+    wait_for_screen(&mut tui, "the typed path", |screen| {
+        screen.contains(&path_input)
+    });
     tui.send(b"\r");
-    tui.wait_for_after(review, "[Ctrl+S] Add");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
     tui.send(b"\x13");
     let (code, output) = tui.wait_for_exit_status_after(0);
 
@@ -1572,7 +1848,7 @@ fn a_path_add_from_a_terminal_opens_the_review_panel() {
     for expected in [
         "Package dependencies",
         "Python constraint",
-        "Tick the ones the run form should ask for:",
+        "Tick the ones the launch menu should ask for:",
         "GREETING",
         // The footer chips in full: the filter keeps SGR parameter text, so a bare word could
         // match escape-code residue rather than anything a person reads.
@@ -1589,6 +1865,262 @@ fn a_path_add_from_a_terminal_opens_the_review_panel() {
         FileStore::new(data.path()).resolve("greet").is_err(),
         "the entry was created before anyone reviewed it"
     );
+}
+
+/// D8 of the 2026-11 audit: a Name and a Description typed on the Add screen reach the entry
+/// when a path wins Continue. Before, the review opened with the file name and the values were
+/// lost without a word.
+#[cfg(unix)]
+#[test]
+fn a_typed_name_and_description_reach_the_entry_of_a_path() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let source = data.path().join("tool.sh");
+    fs::write(&source, b"#!/bin/sh\necho tool\n").unwrap();
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("Source path");
+    tui.send(source.display().to_string().as_bytes());
+    // Tab twice: the source path, then the template, then the name for the command.
+    tui.send(b"\t\t");
+    tui.send(b"My tool");
+    tui.send(b"\t");
+    tui.send(b"Does one thing.");
+    tui.send(b"\r");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    assert!(screen.contains("My tool"), "{screen}");
+    assert!(screen.contains("Does one thing."), "{screen}");
+    tui.send(b"\x13");
+    let (code, output) = tui.wait_for_exit_status_after(0);
+    assert_eq!(code, 0, "{output}");
+
+    let entry = FileStore::new(data.path()).resolve("my-tool").unwrap();
+    assert_eq!(entry.meta.name, "My tool");
+    assert_eq!(entry.meta.description, "Does one thing.");
+}
+
+/// A path that cannot be read is reported once, under its box, as `✗ File not found: <path>`.
+/// The report stays while the person types in the template boxes, and it goes when the path
+/// changes. Before, a bold top line named the path twice and the next key cleared it.
+#[cfg(unix)]
+#[test]
+fn a_missing_source_path_is_reported_under_its_box_until_the_path_changes() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let missing = "/nonexistent/file.sh";
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("Source path");
+    tui.send(missing.as_bytes());
+    tui.send(b"\r");
+    let screen = wait_for_screen(&mut tui, "the report", |screen| {
+        screen.contains("File not found")
+    });
+    let lines = screen.lines().collect::<Vec<_>>();
+    let report = lines
+        .iter()
+        .position(|line| line.contains("File not found"))
+        .expect("the report is drawn");
+    assert_eq!(
+        lines[report].trim_matches(|character| character == '│' || character == ' '),
+        format!("✗ File not found: {missing}"),
+        "{screen}"
+    );
+    assert!(
+        lines[..report]
+            .iter()
+            .rev()
+            .take(3)
+            .any(|line| line.contains(missing)),
+        "the report is not under the source box:\n{screen}"
+    );
+    assert_eq!(screen.matches(missing).count(), 2, "{screen}");
+
+    tui.send(b"\techo {name}");
+    let screen = wait_for_screen(&mut tui, "the typed template", |screen| {
+        screen.contains("echo {name}")
+    });
+    assert!(screen.contains("✗ File not found"), "{screen}");
+
+    tui.send(b"\x1b[Z\x7f");
+    wait_for_screen(&mut tui, "the edited path without the report", |screen| {
+        !screen.contains("File not found") && !screen.contains(missing)
+    });
+}
+
+/// A cursor key in the path box keeps the report of a missing path, because the path stays. A kept
+/// draft that the person puts in the box replaces the path, so the report goes. Before, the report
+/// of the old path stayed under the path of the draft.
+#[cfg(unix)]
+#[test]
+fn a_kept_draft_put_in_the_path_box_ends_the_report_of_the_missing_path() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let drafts = data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-kept.py");
+    fs::write(&draft, b"print('kept')\n").unwrap();
+    let draft = draft.display().to_string();
+    let missing = "/nonexistent/file.sh";
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("skit-new-kept.py");
+    tui.send(missing.as_bytes());
+    tui.send(b"\r");
+    wait_for_screen(&mut tui, "the report", |screen| {
+        screen.contains("✗ File not found")
+    });
+
+    tui.send(b"\x1b[D");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    assert!(
+        screen.contains("✗ File not found"),
+        "a cursor key removed the report:\n{screen}"
+    );
+
+    // Four Tab presses move past the template, the name, and the description to the draft.
+    // Enter puts the draft in the path box.
+    tui.send(b"\t\t\t\t\r");
+    wait_for_screen(&mut tui, "the draft path in the path box", |screen| {
+        screen.contains(&draft)
+    });
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    assert!(
+        !screen.contains("File not found"),
+        "the report of the missing path stayed under the draft path:\n{screen}"
+    );
+}
+
+/// C12 of the 2026-11 audit: a new prompt draft takes its name from its first words. Before, the
+/// Library and the review title showed the temporary file name, such as `skit-new-91G1LH`.
+#[cfg(unix)]
+#[test]
+fn a_new_prompt_draft_is_named_from_its_first_words() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let editor = home.path().join("editor.sh");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf '# New prompt\\n\\nReview the pull request for bugs\\n' > \"$1\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config.path().join("config.toml"),
+        format!("editor = {:?}\n", editor.display().to_string()),
+    )
+    .unwrap();
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("Source path");
+    let drafted = tui.checkpoint();
+    tui.send_effect_key(b"\x10");
+    tui.wait_for_after(drafted, "Add Review the pull request");
+    tui.send(b"\x13");
+    let (code, output) = tui.wait_for_exit_status_after(0);
+    assert_eq!(code, 0, "{output}");
+
+    let entry = FileStore::new(data.path())
+        .resolve("review-the-pull-request")
+        .unwrap();
+    assert_eq!(entry.meta.name, "Review the pull request");
+    assert_eq!(entry.meta.description, "Review the pull request for bugs");
+}
+
+/// F2 opens a small Rename dialog whose footer names Enter, and Enter renames the entry
+/// (A11 and C8 of the 2026-11 audit: Enter only moved the focus in a whole-screen form).
+///
+/// The rename stays on the interface screen, so it must report only in the status line. The
+/// receipt of `skit rename` (`Renamed: <name> (<slug>)`) printed there writes over the cells of the
+/// interface.
+#[cfg(unix)]
+#[test]
+fn rename_dialog_renames_the_entry_on_enter() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    FileConfigStore::new(config.path().to_path_buf())
+        .mark_mirror_configured()
+        .unwrap();
+    write_command_entry(data.path(), false);
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Library");
+    let opened = tui.checkpoint();
+    tui.send(b"\x1bOQ");
+    tui.wait_for_after(opened, "Rename Demo");
+    tui.settle();
+    let dialog = final_terminal_screen(&tui.raw_after(0), tui.rows, tui.columns);
+    for expected in ["Enter Rename", "Esc Cancel", "Renaming keeps everything"] {
+        assert!(dialog.contains(expected), "missing {expected:?}:\n{dialog}");
+    }
+    assert!(
+        !dialog.contains("Tab/↓"),
+        "one field needs no Tab chip:\n{dialog}"
+    );
+
+    let typed = tui.checkpoint();
+    tui.send(b"\x7f\x7f\x7f\x7fWeekly report");
+    tui.wait_for_after(typed, "Weekly report");
+    let renamed = tui.checkpoint();
+    tui.send(b"\r");
+    let receipt = wait_for_screen(&mut tui, "the receipt", |screen| {
+        screen.contains("✓ Entry renamed")
+    });
+    assert!(!receipt.contains("Renamed: "), "{receipt}");
+    let written = tui.visible_after(renamed);
+    assert!(
+        !written.contains("Renamed: "),
+        "the rename printed a receipt over the interface: {written:?}"
+    );
+
+    let entry = FileStore::new(data.path()).resolve("demo").unwrap();
+    assert_eq!(entry.meta.name, "Weekly report");
 }
 
 /// Run one command on a pty, answer the cursor query, and return what it drew.
@@ -1863,6 +2395,71 @@ fn the_terminal_library_shows_host_projected_detail_facts() {
     }
 }
 
+/// Write one command entry whose description is the given text.
+fn write_described_entry(data: &Path, description: &str) {
+    let directory = data.join("scripts/greeter");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        format!(
+            concat!(
+                "schema = 1\n",
+                "name = \"Greeter\"\n",
+                "kind = \"command\"\n",
+                "mode = \"copy\"\n",
+                "source = \"\"\n",
+                "source_hash = \"\"\n",
+                "added_at = \"2026-08-08T00:00:00Z\"\n",
+                "id = \"0123456789abcdef0123456789abcdef\"\n",
+                "workdir = \"invoke\"\n",
+                "description = {description:?}\n",
+                "template = \"echo hello\"\n",
+                "params = []\n",
+            ),
+            description = description,
+        ),
+    )
+    .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
+}
+
+/// A description that keeps a line break shows each line on its own row of the detail pane.
+///
+/// Entry settings edits the description in a multi-line box, so a description can hold a line
+/// break. The detail pane drew the whole text as one line, and the terminal lost the break, so the
+/// two lines ran together as `Say hello from Ruby.Second line`.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn a_two_line_description_shows_each_line_on_its_own_detail_row() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_described_entry(data.path(), "Say hello from Ruby.\nSecond line");
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Second line");
+    let screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
+    let rows = screen.lines().collect::<Vec<_>>();
+    let row_of = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("no row shows {needle:?}:\n{screen}"))
+    };
+    assert_eq!(
+        row_of("Second line"),
+        row_of("Say hello from Ruby.") + 1,
+        "the second line of the description is not on the next row:\n{screen}"
+    );
+    assert!(!screen.contains("Ruby.Second"), "{screen}");
+
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
 /// On Windows, only Windows Terminal (`WT_SESSION`) gets the color question. Another console can
 /// answer nothing, and skit then drops the first keys, or it can answer late, and the answer then
 /// arrives as keys (`docs/design/terminal-palette.md`, phase 5). This pseudo-console is not Windows
@@ -1893,6 +2490,292 @@ fn a_windows_console_outside_windows_terminal_gets_no_color_question() {
     );
 }
 
+/// A Windows console has no bracketed paste, so a terminal types a paste as keys: the line break
+/// of `Bob\rCarol` arrives as Enter. skit reads the keys that arrive together as one paste, so the
+/// launch menu must not run, and the box keeps the first line, as a bracketed paste does on Unix.
+/// The one write puts every key of the paste into the console at once, as a terminal does. Esc
+/// then cancels the launch menu with 130; a run would have ended the session with 0. The
+/// pseudo-console asks where the cursor is when it opens, and it does nothing more until it gets
+/// the answer, so the terminal answers that question first.
+#[cfg(windows)]
+#[test]
+fn a_windows_paste_with_a_line_break_never_runs_the_launch_menu() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+
+    let (code, output) = run_pty_configured(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"Bob\rCarol", b"\x1b"],
+        true,
+        |command| command.env_remove("WT_SESSION"),
+    );
+    let history = strip_terminal_control(&output);
+    assert_eq!(code, 130, "the paste ran the launch menu:\n{history}");
+    assert!(
+        history.contains("Bob"),
+        "the box lost the first line of the paste:\n{history}"
+    );
+    assert!(
+        !history.contains("Carol"),
+        "the box kept the second line of the paste:\n{history}"
+    );
+}
+
+/// A tool can type text and Enter as fast as a terminal types a paste, for example a text expander
+/// or the auto-type of a password manager. A Windows console has no bracketed paste, so skit takes
+/// those keys as a paste, and the Enter does not act. The status line must say why, and the next
+/// Enter must act. `skit add` and the launch menu of `skit run` have separate event loops, so each
+/// loop has a test.
+///
+/// Ways this can fail: the Enter does nothing and nothing on the screen says why; the warning
+/// shows but the next Enter does nothing too; the warning stays after the next key.
+#[cfg(windows)]
+#[test]
+fn a_windows_path_typed_with_enter_in_one_burst_says_why_enter_did_nothing() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let source = data.path().join("typed-add.sh");
+    fs::write(&source, b"#!/bin/sh\necho typed\n").unwrap();
+
+    let mut tui = LiveTui::spawn_command(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.wait_for("Source path");
+    let mut burst = source.display().to_string().into_bytes();
+    burst.push(b'\r');
+    tui.send(&burst);
+    let screen = wait_for_screen(&mut tui, "the warning", |screen| {
+        screen.contains("took this input as a paste")
+    });
+    assert!(
+        !screen.contains("[Ctrl+S] Add"),
+        "the Enter of the burst opened the review:\n{screen}"
+    );
+    tui.send(b"\r");
+    let screen = wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
+    assert!(
+        !screen.contains("took this input as a paste"),
+        "the warning stayed after the next key:\n{screen}"
+    );
+}
+
+/// The launch menu of `skit run` answers the same burst with the same warning, and the next Enter
+/// runs the entry. See [`a_windows_path_typed_with_enter_in_one_burst_says_why_enter_did_nothing`].
+#[cfg(windows)]
+#[test]
+fn a_windows_launch_menu_value_typed_with_enter_in_one_burst_says_why_enter_did_nothing() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+
+    let mut tui = LiveTui::spawn_command(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    wait_for_screen(&mut tui, "the launch menu", |screen| {
+        screen.contains("Run Demo")
+    });
+    tui.send(b"Bob\r");
+    wait_for_screen(&mut tui, "the warning", |screen| {
+        screen.contains("took this input as a paste")
+    });
+    assert_eq!(tui.pty.try_exit_code(), None, "the burst ran the entry");
+    let run = tui.checkpoint();
+    tui.send(b"\r");
+    let (code, output) = tui.wait_for_exit_status_after(run);
+    assert_eq!(code, 0, "the next Enter did not run the entry:\n{output}");
+}
+
+/// A Windows command that prints `ready-42` when it starts and then waits for half a minute.
+///
+/// The command line shows `%COMSPEC:~0,0%`, an empty part of a variable that each Windows session
+/// has, so only the output of the command holds `ready-42`. If Ctrl+C stops `ping` but not `cmd`,
+/// `exit 3` still gives the run a code that is not 0.
+#[cfg(windows)]
+const WINDOWS_LONG_RUN: &str = "echo ready-%COMSPEC:~0,0%42 & ping -n 31 127.0.0.1 >nul & exit 3";
+
+/// The same command, with the value of the `name` placeholder after the mark.
+#[cfg(windows)]
+const WINDOWS_LONG_RUN_WITH_NAME: &str =
+    "echo ready-%COMSPEC:~0,0%42-{name} & ping -n 31 127.0.0.1 >nul & exit 3";
+
+/// The time that a person usually needs to press a key after the first line of a run shows.
+///
+/// skit takes the console events over just after the script starts (see
+/// `crates/skit-runtime/src/interrupts.rs`). Until then, a key also stops skit. A person needs at
+/// least about 100 milliseconds to see the line and press a key, but a test can press at once.
+#[cfg(windows)]
+const REACTION: Duration = Duration::from_millis(300);
+
+/// The code that a result line of skit names, for example `Run exited with code -1073741510`.
+///
+/// The text is the history and the screen together: a pseudo-console can write a line in parts.
+#[cfg(windows)]
+fn reported_code(tui: &mut LiveTui, prefix: &str) -> i64 {
+    let raw = tui.raw_after(0);
+    let text = format!(
+        "{}\n{}",
+        strip_terminal_control(&String::from_utf8_lossy(&raw)),
+        final_terminal_screen(&raw, tui.rows, tui.columns)
+    );
+    let start = text
+        .find(prefix)
+        .unwrap_or_else(|| panic!("skit printed no {prefix:?}:\n{text}"))
+        + prefix.len();
+    let code = text[start..]
+        .chars()
+        .take_while(|character| *character == '-' || character.is_ascii_digit())
+        .collect::<String>();
+    code.parse()
+        .unwrap_or_else(|_| panic!("no code follows {prefix:?}:\n{text}"))
+}
+
+/// The process exit status that Windows gives for a code that skit reports.
+///
+/// skit reports a code as a signed 32-bit number, as cmd and PowerShell do, and the process
+/// status is the same 32 bits without a sign.
+#[cfg(windows)]
+fn windows_status(code: i64) -> u32 {
+    i32::try_from(code).unwrap().cast_unsigned()
+}
+
+/// A Windows console sends Ctrl+C to each process that it serves, skit too. The key must stop the
+/// script and not skit: skit reports the run, keeps the preset that the run asked for (version
+/// 0.4: `src/skit/cli.py:3222-3228`), records the run, and exits with the code of the run, as it
+/// does for every run on Windows.
+#[cfg(windows)]
+#[test]
+fn ctrl_c_ends_a_windows_skit_run_that_still_saves_its_preset_and_reports_its_code() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_command_template_entry(data.path(), WINDOWS_LONG_RUN_WITH_NAME, true);
+
+    let mut run = LiveTui::spawn_command(
+        &[
+            "run",
+            "demo",
+            "--set",
+            "name=x",
+            "--save-preset",
+            "prod",
+            "--no-input",
+        ],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    run.wait_for("ready-42-x");
+    std::thread::sleep(REACTION);
+    let interrupt = run.checkpoint();
+    run.send(b"\x03");
+    // The run ends at once. A script that the key missed would run for half a minute.
+    let (status, history) = run.wait_for_exit_status_after(interrupt);
+    // The result line can still be on its way from the console when skit exits.
+    run.settle();
+    let code = reported_code(&mut run, "Run exited with code ");
+    assert_ne!(code, 0, "{history}");
+    assert_eq!(status, windows_status(code), "{history}");
+
+    let saved = FileFormStateStore::new(state.path()).load(&Slug::parse("demo").unwrap());
+    assert_eq!(
+        saved
+            .presets
+            .get("prod")
+            .and_then(|values| values.get("name"))
+            .map(String::as_str),
+        Some("x"),
+        "{history}"
+    );
+    assert_eq!(saved.last_run.exit, Some(code), "{history}");
+}
+
+/// Ctrl+C during a run from the interface must stop the script and not skit. A session that ends
+/// after the run prints the result line and exits with the code of the run. A session that stays
+/// comes back to the Library with the outcome as its status.
+#[cfg(windows)]
+#[test]
+fn ctrl_c_ends_a_windows_run_from_the_interface_and_the_session_reports_it() {
+    for after_run in ["exit", "stay"] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        write_command_template_entry(data.path(), WINDOWS_LONG_RUN, false);
+        fs::write(
+            config.path().join("config.toml"),
+            format!("after_run = {after_run:?}\n"),
+        )
+        .unwrap();
+
+        let mut tui = LiveTui::spawn_command(
+            &["tui"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            "en",
+        );
+        tui.wait_for("Demo");
+        let open = tui.checkpoint();
+        tui.send(b"\r");
+        tui.wait_for_after(open, "Run Demo");
+        let launch = tui.checkpoint();
+        tui.send(b"\r");
+        tui.wait_for_after(launch, "ready-42");
+        std::thread::sleep(REACTION);
+        let interrupt = tui.checkpoint();
+        let pressed = std::time::Instant::now();
+        tui.send(b"\x03");
+
+        if after_run == "exit" {
+            let (status, history) = tui.wait_for_exit_status_after(interrupt);
+            tui.settle();
+            // The Unix tests check the glyph. Here the words are enough, whatever the console font.
+            let code = reported_code(&mut tui, "Demo exited with code ");
+            assert_ne!(code, 0, "{history}");
+            assert_eq!(status, windows_status(code), "{history}");
+        } else {
+            // skit is still there: the Library comes back with its footer, and the outcome of the
+            // run is reported. The Unix tests check that the status shows it.
+            let screen = tui.wait_for_after(interrupt, "q/Esc Quit");
+            assert!(screen.contains("Demo exited with code "), "{screen}");
+            // A script that the key missed would end only after half a minute.
+            assert!(
+                pressed.elapsed() < Duration::from_secs(20),
+                "the run did not end at the key:\n{screen}"
+            );
+            let quit = tui.checkpoint();
+            tui.send(b"q");
+            let (status, history) = tui.wait_for_exit_status_after(quit);
+            assert_eq!(status, 0, "{history}");
+        }
+    }
+}
+
 /// The Settings parameter summary must use the source's live default without changing any stored
 /// data merely because the user inspected it.
 // Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
@@ -1913,7 +2796,7 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
     tui.wait_for("greet");
     let settings_checkpoint = tui.checkpoint();
-    tui.send_effect_key(b"p");
+    tui.send(b"p");
     let settings = tui.wait_for_after(settings_checkpoint, "NAME");
     assert!(
         settings.contains("Entry settings · greet"),
@@ -1943,6 +2826,335 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     assert_eq!(tree_snapshot(config.path()), config_before);
 }
 
+/// The resync reads the script at once and says what the save will change, before the save.
+///
+/// Version 0.4's `Ctrl+R` reads the definitions again, keeps the result in memory, and prints the
+/// analyzer warnings above the save (`src/skit/tui_settings.py:908-926`, shown at `:637`). The
+/// rows show the result, so a person sees the change before choosing to keep it. Nothing is
+/// written until the save, and an edit in another section survives the refresh.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn the_resync_reports_a_dropped_parameter_before_the_save_and_keeps_other_edits() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let payload = write_resync_entry(data.path(), home.path(), true);
+    let data_before = tree_snapshot(data.path());
+
+    let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("greet");
+    let opened = tui.checkpoint();
+    tui.send(b"p");
+    let settings = tui.wait_for_after(opened, "GONE");
+    assert!(
+        compact_terminal_text(&settings).contains("GONEint3"),
+        "the drifted row is not on the screen before the resync: {settings}"
+    );
+    // The name box owns the keyboard when the screen opens. This edit is in another section. The
+    // terminal redraws only the cells that changed, so the wait replays the whole session.
+    tui.send(b"-x");
+    tui.wait_for_after(0, "greet-x");
+
+    tui.send(b"\x12");
+    wait_for_screen(&mut tui, "the resync report", |screen| {
+        screen.contains("no longer exists in the script.")
+    });
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("Dropped GONE: it no longer exists in the script."),
+        "the report is not on the screen:\n{screen}"
+    );
+    assert!(
+        !compact_terminal_text(&screen).contains("GONEint3"),
+        "the dropped row is still on the screen:\n{screen}"
+    );
+    assert_eq!(
+        tree_snapshot(data.path()),
+        data_before,
+        "the resync wrote before the save"
+    );
+
+    let saved = tui.checkpoint();
+    tui.send(b"\x13");
+    tui.wait_for_after(saved, "Settings saved");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+
+    let stored = fs::read_to_string(&payload).unwrap();
+    assert!(!stored.contains("GONE"), "the save kept GONE: {stored}");
+    assert!(stored.contains("NAME"), "the save dropped NAME: {stored}");
+    let metadata = fs::read_to_string(payload.parent().unwrap().join("meta.toml")).unwrap();
+    assert!(
+        metadata.contains("name = \"greet-x\""),
+        "the refresh discarded the edit in another section: {metadata}"
+    );
+}
+
+/// A resync of a script that still matches says so, and unticking it takes the report back.
+///
+/// Version 0.4 prints `Everything still matches the script.` when the resync finds nothing to
+/// report (`src/skit/tui_settings.py:923-925`). The control is a checkbox in version 0.5, so the
+/// same key takes the request back, and a screen with no other edit then closes without a
+/// discard question.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn the_resync_reports_a_matching_script_and_unticking_takes_the_report_back() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_resync_entry(data.path(), home.path(), false);
+    let data_before = tree_snapshot(data.path());
+
+    let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("greet");
+    let opened = tui.checkpoint();
+    tui.send(b"p");
+    tui.wait_for_after(opened, "GONE");
+
+    let resynced = tui.checkpoint();
+    tui.send(b"\x12");
+    tui.wait_for_after(resynced, "still matches the script.");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("Everything still matches the script."),
+        "the report is not on the screen:\n{screen}"
+    );
+
+    // Unticking is local: no host round trip, so no cursor question follows.
+    tui.send(b"\x12");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        !screen.contains("Everything still matches the script."),
+        "unticking the resync kept its report:\n{screen}"
+    );
+
+    let closed = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(closed, "Library");
+    tui.settle();
+    let library = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        !library.contains("Discard"),
+        "an untouched screen asked to discard changes:\n{library}"
+    );
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+    assert_eq!(tree_snapshot(data.path()), data_before);
+}
+
+/// Unticking the resync gives back an edit on a row that the report dropped.
+///
+/// The checkbox is reversible, so a person who ticks it by mistake can untick it
+/// (`docs/behavior-changes.md`). While the report shows, the dropped row is not on the screen. When
+/// the row comes back, its edit comes back too: the keep box stays unticked, leaving asks before it
+/// discards the edit, and the save unmanages the parameter.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn unticking_the_resync_gives_back_an_edit_on_a_dropped_row() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let payload = write_resync_entry(data.path(), home.path(), true);
+
+    let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("greet");
+    let opened = tui.checkpoint();
+    tui.send(b"p");
+    tui.wait_for_after(opened, "GONE");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    let (row, column) = screen_position(&screen, "☑ GONE")
+        .unwrap_or_else(|| panic!("the kept GONE row is not on the screen:\n{screen}"));
+    // A click on the keep box unticks it. SGR mouse coordinates are one-based.
+    tui.write_raw(format!("\x1b[<0;{};{}M", column + 3, row + 1).as_bytes());
+    tui.write_raw(format!("\x1b[<0;{};{}m", column + 3, row + 1).as_bytes());
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("☐ GONE"),
+        "the click did not untick the keep box:\n{screen}"
+    );
+
+    tui.send(b"\x12");
+    wait_for_screen(&mut tui, "the resync report", |screen| {
+        screen.contains("no longer exists in the script.")
+    });
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        !compact_terminal_text(&screen).contains("GONEint3"),
+        "the dropped row is still on the screen:\n{screen}"
+    );
+
+    // Unticking is local: no host round trip, so no cursor question follows.
+    tui.send(b"\x12");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    assert!(
+        screen.contains("☐ GONE"),
+        "unticking the resync lost the edit on the dropped row:\n{screen}"
+    );
+
+    let asked = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(asked, "Discard unsaved changes?");
+    tui.send(b"n");
+    tui.settle();
+    let saved = tui.checkpoint();
+    tui.send(b"\x13");
+    tui.wait_for_after(saved, "Settings saved");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+
+    let stored = fs::read_to_string(&payload).unwrap();
+    assert!(!stored.contains("GONE"), "the save kept GONE: {stored}");
+    assert!(stored.contains("NAME"), "the save dropped NAME: {stored}");
+}
+
+/// A prompt with more detected variables than the inline list shows offers the full picker in the
+/// footer, and both the key and a click on the chip open it.
+///
+/// Version 0.4 caps the inline list at `LIST_PREVIEW_LIMIT`, says how many more there are, and
+/// offers `Ctrl+O` for the complete set (`src/skit/tui_settings.py:687-717`, `:1158-1180`). Its
+/// chip sits under the list, below the fold of a normal terminal, so the footer carries it too.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn a_flooded_prompt_offers_the_variable_picker_in_the_footer() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_flooded_prompt_entry(data.path());
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Flood");
+    let opened = tui.checkpoint();
+    tui.send(b"p");
+    tui.wait_for_after(opened, "Renaming");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
+    let rows = screen.lines().count();
+    let (row, column) = screen_position(&screen, "Choose variables")
+        .unwrap_or_else(|| panic!("the screen does not offer the picker:\n{screen}"));
+    assert!(row + 4 >= rows, "the chip is not in the footer:\n{screen}");
+    assert!(
+        screen
+            .lines()
+            .nth(row)
+            .is_some_and(|line| line.contains("Ctrl+O") || line.contains("^O")),
+        "the chip does not name its key:\n{screen}"
+    );
+
+    // SGR mouse coordinates are one-based.
+    let clicked = tui.checkpoint();
+    tui.write_raw(format!("\x1b[<0;{};{}M", column + 1, row + 1).as_bytes());
+    tui.write_raw(format!("\x1b[<0;{};{}m", column + 1, row + 1).as_bytes());
+    tui.wait_for_after(clicked, "Choose prompt variables");
+    tui.send(b"\x1b");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
+    assert!(
+        !screen.contains("Choose prompt variables") && screen.contains("Renaming"),
+        "Escape did not return to the settings screen:\n{screen}"
+    );
+
+    let keyed = tui.checkpoint();
+    tui.send(b"\x0f");
+    tui.wait_for_after(keyed, "Choose prompt variables");
+    tui.send(b"\x1b");
+    tui.settle();
+    let closed = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(closed, "Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+/// A name typed in a prompt's add-a-parameter box becomes a placeholder field when the body names
+/// it, and an environment variable for the agent when it does not. No name becomes a flag.
+///
+/// Version 0.4 builds the declaration from the body (`src/skit/tui_settings.py:721-730`): a
+/// placeholder in the body gets required placeholder delivery, and any other name gets environment
+/// delivery. A flag means nothing to a prompt, because a prompt has no argument vector.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
+#[test]
+fn a_name_added_to_a_prompt_becomes_a_placeholder_when_the_body_names_it() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    write_placeholder_prompt_entry(data.path());
+
+    let mut tui = LiveTui::spawn_tall(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Review");
+    let opened = tui.checkpoint();
+    tui.send(b"p");
+    tui.wait_for_after(opened, "Renaming");
+    tui.settle();
+    let screen = final_terminal_screen(&tui.raw_after(0), TALL_ROWS, 120);
+    let (row, column) = screen_position(&screen, "Add a parameter")
+        .unwrap_or_else(|| panic!("the add box is not on the screen:\n{screen}"));
+    // The label sits in the top border of the box, so the text row is the next one. SGR mouse
+    // coordinates are one-based.
+    tui.write_raw(format!("\x1b[<0;{};{}M", column + 2, row + 2).as_bytes());
+    tui.write_raw(format!("\x1b[<0;{};{}m", column + 2, row + 2).as_bytes());
+    tui.settle();
+    tui.send(b"topic extra");
+    tui.wait_for_after(0, "topic extra");
+    let saved = tui.checkpoint();
+    tui.send(b"\x13");
+    tui.wait_for_after(saved, "Settings saved");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+
+    let entry = FileStore::new(data.path()).resolve("review").unwrap();
+    let settings = EntrySettings::from_meta(&entry.meta);
+    assert_eq!(settings.params, ["topic"], "{settings:?}");
+    let declared = |name: &str| {
+        settings
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .unwrap_or_else(|| panic!("{name} was not declared: {:?}", settings.parameters))
+    };
+    assert_eq!(declared("topic").delivery, ParameterDelivery::Placeholder);
+    assert!(declared("topic").required);
+    assert_eq!(declared("extra").delivery, ParameterDelivery::Env);
+    assert!(
+        settings
+            .parameters
+            .iter()
+            .all(|parameter| parameter.delivery != ParameterDelivery::Flag),
+        "{:?}",
+        settings.parameters
+    );
+}
+
 // A run from the Library with `after_run = "exit"` ends the session. The shell then writes its
 // prompt where skit left the cursor, so the cursor must stay below the output of the run.
 // `\x1b[?1049l` also restores the cursor that `\x1b[?1049h` saved, on the normal screen too
@@ -1967,7 +3179,7 @@ fn a_run_that_ends_the_session_leaves_the_cursor_below_its_output() {
     let (code, output) = tui.wait_for_exit_status_after(run);
     assert_eq!(code, 0, "{output}");
 
-    let mut terminal = vt100::Parser::new(tui.rows, tui.columns, 0);
+    let mut terminal = terminal_parser(tui.rows, tui.columns);
     terminal.process(&tui.raw_after(0));
     terminal.process(b"PROMPT$ ");
     let screen = terminal.screen().contents();
@@ -1992,7 +3204,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         config.path(),
-        &[b"x", b"\x1b[A", b"h", b"\x1b[1;1R", b"\x1b", b"q"],
+        &[b"x", b"\x1b[A", b"h", b"\x1b", b"q"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -2006,7 +3218,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         &invalid_config,
-        &[b",", b"\x1b[1;1R", b"q", b"\x1b", b"q"],
+        &[b",", b"q", b"\x1b", b"q"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -2019,7 +3231,7 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
         data.path(),
         state.path(),
         config.path(),
-        &[b"\r", b"\x1b[1;1R", b"\x12"],
+        &[b"\r", b"\x12"],
     );
     assert_eq!(code, 0, "{output}");
 }
@@ -2191,7 +3403,7 @@ fn interactive_run_refuses_invalid_presets_before_form_or_storage_work() {
         (
             false,
             vec!["run", "demo", "--save-preset", "empty", "--dry-run"],
-            "Demo has no form fields, so there's nothing to save.",
+            "Demo has no parameters, so there is nothing to save.",
         ),
         (
             true,
@@ -2393,13 +3605,13 @@ fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
         ),
         (
             "zh-CN",
-            "删除格式错误的提示词运行器容器？[y/N]：",
-            "格式错误的提示词运行器容器已删除。",
+            "要移除格式错误的提示词执行器容器吗？[y/N]：",
+            "已移除格式错误的提示词执行器容器。",
         ),
         (
             "zh-TW",
-            "移除格式錯誤的提示詞執行器容器？[y/N]：",
-            "格式錯誤的提示詞執行器容器已移除。",
+            "要移除格式錯誤的提示詞執行器容器嗎？[y/N]：",
+            "已移除格式錯誤的提示詞執行器容器。",
         ),
     ] {
         let run = |answer: &[u8]| {
@@ -2454,13 +3666,13 @@ fn runner_human_selection_reports_container_unknown_and_pinned_names() {
         ),
         (
             "zh-CN",
-            "有 2 个提示词固定使用此运行器",
-            "删除 Agent“local”？[y/N]：",
+            "有 2 个提示词固定使用此执行器",
+            "要移除 agent“local”吗？[y/N]：",
         ),
         (
             "zh-TW",
-            "有 2 個提示詞固定使用此執行器",
-            "移除 Agent「local」？[y/N]：",
+            "有 2 個提示詞釘選此執行器",
+            "要移除 agent「local」嗎？[y/N]：",
         ),
     ] {
         let data = TempDir::new().unwrap();
@@ -2590,9 +3802,10 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
     );
     tui.wait_for("Source path");
     tui.send(source_input.as_slice());
-    let review = tui.checkpoint();
     tui.send(b"\r");
-    tui.wait_for_after(review, "[Ctrl+S] Add");
+    wait_for_screen(&mut tui, "the review", |screen| {
+        screen.contains("[Ctrl+S] Add")
+    });
     tui.send(b"\x13");
     let (code, output) = tui.wait_for_exit_status_after(0);
     assert_eq!(code, 0, "{output}");

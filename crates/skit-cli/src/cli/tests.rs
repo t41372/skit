@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use skit_application::{DiagnosticCode, ExitClass, LibraryService, RepositoryError};
+use skit_application::{ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
@@ -1060,12 +1060,12 @@ fn prompt_runner_validation_keeps_empty_configuration_typed_and_read_only() {
         ),
         (
             Locale::ZhCn,
-            "未知运行器：missing。已配置的运行器：—",
+            "未知的执行器:missing。已配置的执行器:—",
             "执行器 missing 未配置(已知:—)。管理执行器:skit runner list",
         ),
         (
             Locale::ZhTw,
-            "未知執行器：missing。已設定的執行器：—",
+            "未知的執行器:missing。已設定的執行器:—",
             "執行器 missing 未設定(已知:—)。管理執行器:skit runner list",
         ),
     ] {
@@ -1352,6 +1352,7 @@ fn interactive_runner_value_tracks_selection_separately_from_the_default() {
         plain: false,
         raw: false,
         forget_args: false,
+        extra_args_from_menu: false,
         extra_args: Vec::new(),
     };
     let baseline = BTreeMap::new();
@@ -1625,12 +1626,19 @@ fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_replacement() {
         ],
     )
     .unwrap();
+    // The Library shows the receipt as a warning, which stays until the next key.
+    let mut library = LibraryState::default();
+    library.update(action.clone());
+    assert_eq!(library.status_kind(), StatusKind::Warning);
+    assert_eq!(library.status_kind().display_time(), None);
     let UiAction::AddCompleted { message, slug, .. } = action else {
         panic!("auxiliary cleanup failures must not turn a committed add into failure");
     };
     assert_eq!(slug, created.slug);
-    assert!(message.starts_with("Entry added\nwarning: "));
-    assert_eq!(message.matches("warning: ").count(), 2);
+    // The status line has one row of text, so the warnings follow the receipt on the same line.
+    assert!(message.starts_with("Entry added — warning: "), "{message}");
+    assert!(!message.contains('\n'), "{message}");
+    assert_eq!(message.matches(" — warning: ").count(), 2);
     assert!(message.contains("changed"));
     assert!(message.contains("skit-new-replaced.py"));
     assert_eq!(fs::read(&draft).unwrap(), b"print('replacement')\n");
@@ -1701,7 +1709,7 @@ fn tui_add_maps_every_draft_cleanup_outcome_without_rolling_back_the_entry() {
     assert_eq!(
         message,
         format!(
-            "Entry added\nwarning: The kept draft changed before cleanup. skit kept it at {}.",
+            "Entry added — warning: The kept draft changed before cleanup. skit kept it at {}.",
             changed_source.display()
         )
     );
@@ -1719,7 +1727,7 @@ fn tui_add_maps_every_draft_cleanup_outcome_without_rolling_back_the_entry() {
     assert_eq!(
         message,
         format!(
-            "Entry added\nwarning: skit's drafts path is not an owned directory: {}",
+            "Entry added — warning: skit's drafts path is not an owned directory: {}",
             failed_data.join("drafts").display()
         )
     );
@@ -2416,6 +2424,29 @@ fn human_parameter_declarations_render_the_reconciled_current_default() {
     assert_eq!(
         format!("Current default: {}", tui_parameter_value(current)),
         "Current default: 1200"
+    );
+}
+
+// Ways this can fail: a managed row whose block keeps no default shows no default, although the
+// script holds a literal, so `skit params` and Entry settings disagree about one record. Version
+// 0.4 shows the live literal first and the block value only as a fallback
+// (`src/skit/analysis.py:129-138`).
+#[test]
+fn human_parameter_declarations_show_the_live_literal_when_the_block_keeps_no_default() {
+    let mut width = ParamDecl::new("WIDTH");
+    width.binding = ParameterBinding::Const;
+    width.delivery = ParameterDelivery::Inject;
+    width.parameter_type = ParameterType::Int;
+    let stored = write_managed_params("shell", "WIDTH=800\n", &[width.clone()]).unwrap();
+    assert_eq!(managed_params("shell", &stored)[0].default, None);
+    let live = stored.replace("WIDTH=800", "WIDTH=1200");
+
+    let declarations = human_parameter_declarations("shell", &live, &[width]);
+    assert_eq!(declarations[0].default, Some(ParameterValue::Integer(1200)));
+    assert_eq!(
+        declarations,
+        settings_managed_params("shell", &live),
+        "the read view and Entry settings must show one record"
     );
 }
 
@@ -4356,7 +4387,9 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         UiEffect::Preferences(PreferencesEffect::Save(failure)),
     )
     .unwrap();
-    assert!(matches!(action, UiAction::SetStatus(ref message) if message.starts_with("Error: ")));
+    assert!(
+        matches!(action, UiAction::SetStatus { ref message, kind: StatusKind::Error } if message.starts_with("Error: "))
+    );
     assert_eq!(fs::read(&broken_config).unwrap(), b"keep config bytes");
     assert!(!root.path().join("config-is-a-file.bak").exists());
 
@@ -4373,7 +4406,9 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         }),
     )
     .unwrap();
-    assert!(matches!(action, UiAction::SetStatus(ref message) if message.starts_with("Error: ")));
+    assert!(
+        matches!(action, UiAction::SetStatus { ref message, kind: StatusKind::Error } if message.starts_with("Error: "))
+    );
     assert_eq!(fs::read(&skill_parent).unwrap(), b"keep skill parent");
     assert!(!skills_dir.exists());
 }
@@ -4462,7 +4497,7 @@ fn typed_run_feedback_and_preset_effects_use_application_and_store_ports() {
     assert!(matches!(error, CliError::Usage(_)), "{error:?}");
     assert_eq!(
         error.message().localize(Locale::En),
-        "cannot save a preset because the entry has no form fields"
+        "cannot save a preset because the entry has no parameters"
     );
     assert_eq!(test_tree_snapshot(root.path()), before);
 }
@@ -4766,7 +4801,7 @@ fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
             Locale::En,
         )
         .unwrap(),
-        UiAction::SetStatus(message) if message.contains("hasn't run yet")
+        UiAction::SetStatus { message, kind: StatusKind::Info } if message.contains("has not run yet")
     ));
 
     let prompt_source = root.path().join("review.prompt.md");
@@ -4895,7 +4930,10 @@ fn tui_rerun_localizes_runner_failures_without_writing() {
                 locale,
             )
             .unwrap(),
-            UiAction::SetStatus(expected.to_owned())
+            UiAction::SetStatus {
+                kind: StatusKind::Error,
+                message: expected.to_owned(),
+            }
         );
         assert_eq!(test_tree_snapshot(root.path()), before);
     }
@@ -5302,72 +5340,135 @@ fn tui_host_submits_every_form_without_global_process_state() {
     );
 }
 
+/// A host output that keeps each line with the name of its stream.
+#[derive(Debug, Default)]
+struct StreamLog(std::cell::RefCell<Vec<(&'static str, String)>>);
+
+impl HostOutput for StreamLog {
+    fn success(&self, message: &str) {
+        self.0.borrow_mut().push(("success", message.to_owned()));
+    }
+
+    fn detail(&self, message: &str) {
+        self.0.borrow_mut().push(("detail", message.to_owned()));
+    }
+
+    fn plain(&self, message: &str) {
+        self.0.borrow_mut().push(("plain", message.to_owned()));
+    }
+
+    fn stdout(&self, message: &str) {
+        self.0.borrow_mut().push(("stdout", message.to_owned()));
+    }
+
+    fn diagnostic(&self, message: &str) {
+        self.0.borrow_mut().push(("diagnostic", message.to_owned()));
+    }
+}
+
+// Ways this can fail: a stream skips the header, the header goes out twice, or a line changes
+// its stream on the way through.
 #[test]
-fn selected_prompt_runner_preflight_mapping_is_typed_and_scoped() {
-    let prompt = health_entry("prompt");
+fn the_run_header_goes_out_once_before_the_first_line_of_any_stream() {
+    type Write = fn(&dyn HostOutput, &str);
+    let writes: [(&str, Write); 6] = [
+        ("success", |output, line| output.success(line)),
+        ("detail", |output, line| output.detail(line)),
+        ("plain", |output, line| output.plain(line)),
+        ("stdout", |output, line| output.stdout(line)),
+        ("diagnostic", |output, line| output.diagnostic(line)),
+        // The default failure stream is the diagnostic stream.
+        ("diagnostic", |output, line| output.failure(line)),
+    ];
+    for (stream, write) in writes {
+        let log = StreamLog::default();
+        let framed = RunHeaderOutput::new(&log, "HEADER".to_owned());
+        write(&framed, "one");
+        write(&framed, "two");
+        assert_eq!(
+            log.0.borrow().as_slice(),
+            [
+                ("stdout", "HEADER".to_owned()),
+                (stream, "one".to_owned()),
+                (stream, "two".to_owned()),
+            ],
+            "{stream}"
+        );
+    }
+}
+
+// Ways this can fail: the message loses the program name, gives the wrong next step for the
+// kind, stays untranslated, or replaces an error that is not a missing program.
+#[test]
+fn a_missing_program_names_the_program_and_the_next_step_for_each_kind() {
     let missing = RunError::Launch(LaunchError::ProgramNotFound {
-        name: "missing-agent".to_owned(),
+        name: "pwsh".to_owned(),
     });
-    for (locale, expected) in [
+    for (kind, locale, expected) in [
         (
+            "prompt",
             Locale::En,
-            "Error: required program was not found: missing-agent",
+            "pwsh is not on PATH. Install it, or choose another agent.",
         ),
-        (Locale::ZhCn, "错误：找不到所需程序：missing-agent"),
-        (Locale::ZhTw, "錯誤：找不到必要程式：missing-agent"),
+        (
+            "prompt",
+            Locale::ZhCn,
+            "PATH 上找不到 pwsh。请先安装，或换一个 agent。",
+        ),
+        (
+            "prompt",
+            Locale::ZhTw,
+            "PATH 上找不到 pwsh。請先安裝，或換一個 agent。",
+        ),
+        (
+            "powershell",
+            Locale::En,
+            "pwsh is not on PATH. Install it, or set the interpreter in Entry settings.",
+        ),
+        (
+            "powershell",
+            Locale::ZhCn,
+            "PATH 上找不到 pwsh。请先安装，或在条目设置里指定解释器。",
+        ),
+        (
+            "powershell",
+            Locale::ZhTw,
+            "PATH 上找不到 pwsh。請先安裝，或在項目設定裡指定直譯器。",
+        ),
+        (
+            "command",
+            Locale::En,
+            "pwsh is not on PATH. Install it, then run again.",
+        ),
+        (
+            "command",
+            Locale::ZhCn,
+            "PATH 上找不到 pwsh。请先安装，再重新运行。",
+        ),
+        (
+            "command",
+            Locale::ZhTw,
+            "PATH 上找不到 pwsh。請先安裝，再重新執行。",
+        ),
     ] {
         assert_eq!(
-            selected_prompt_runner_preflight_message(
-                &prompt,
-                Some("missing-agent"),
-                &missing,
-                locale,
-            )
-            .as_deref(),
+            tui_missing_program(&health_entry(kind), &missing, locale).as_deref(),
             Some(expected),
+            "{kind} {locale:?}",
         );
     }
 
-    let command = health_entry("command");
-    assert_eq!(
-        selected_prompt_runner_preflight_message(
-            &command,
-            Some("missing-agent"),
-            &missing,
-            Locale::En,
-        ),
-        None,
-    );
-    assert_eq!(
-        selected_prompt_runner_preflight_message(&prompt, None, &missing, Locale::En),
-        None,
-    );
+    let prompt = health_entry("prompt");
     let unknown = RunError::RunnerNotFound {
         name: "missing-agent".to_owned(),
         known: "working".to_owned(),
     };
-    assert_eq!(
-        selected_prompt_runner_preflight_message(
-            &prompt,
-            Some("missing-agent"),
-            &unknown,
-            Locale::En,
-        ),
-        None,
-    );
+    assert_eq!(tui_missing_program(&prompt, &unknown, Locale::En), None);
     let process = RunError::Launch(LaunchError::Process {
         operation: "start",
         source: io::Error::other("late spawn failure"),
     });
-    assert_eq!(
-        selected_prompt_runner_preflight_message(
-            &prompt,
-            Some("missing-agent"),
-            &process,
-            Locale::En,
-        ),
-        None,
-    );
+    assert_eq!(tui_missing_program(&prompt, &process, Locale::En), None);
 }
 
 #[test]
@@ -6476,18 +6577,18 @@ fn the_localized_command_tree_translates_every_description() {
                 "skit",
                 "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單",
             ),
-            ("list", "列出所有已登記的條目"),
+            ("list", "列出所有已登記的項目"),
             (
                 "show",
-                "顯示一個條目的全部資訊：中繼資料、依賴、參數和參數組合",
+                "顯示一個項目的全部資訊：中繼資料、依賴、參數和參數組合",
             ),
-            ("remove", "移除一個已登記的條目（原始來源檔案不受影響）"),
-            ("rename", "重新命名條目（參數組合、記住的值與歷史都會保留）"),
-            ("describe", "設定條目的說明（顯示在工具庫和 skit list 中）"),
-            ("params", "檢視或編輯條目的管理參數或宣告參數"),
+            ("remove", "移除一個已登記的項目（原始來源檔案不受影響）"),
+            ("rename", "重新命名項目（參數組合、記住的值與歷史都會保留）"),
+            ("describe", "設定項目的說明（顯示在工具庫和 skit list 中）"),
+            ("params", "檢視或編輯項目的管理參數或宣告參數"),
             (
                 "deps",
-                "檢視或更新條目的套件依賴、Python 版本限制和所需命令",
+                "檢視或更新項目的套件依賴、Python 版本限制和所需命令",
             ),
             ("doctor", "檢查 uv 是否可用以及工具庫是否完好"),
         ],
@@ -6600,7 +6701,7 @@ fn every_translated_help_string_keeps_the_version_0_4_wording() {
         (
             "config",
             None,
-            "Read or set skit's settings (language, editor, mirror, form style, after-run)",
+            "Read or set skit's settings (language, editor, mirror, launch menu style, after-run)",
         ),
         ("config", Some("--json"), "Output as JSON"),
         ("deps", Some("--clear"), "Remove every dependency"),
@@ -6706,7 +6807,7 @@ fn every_translated_help_string_keeps_the_version_0_4_wording() {
         (
             "params",
             Some("--prompt"),
-            "Set a parameter's form prompt, as NAME=text (repeatable)",
+            "Set the label that the launch menu shows for a parameter, as NAME=text (repeatable)",
         ),
         (
             "params",
@@ -6791,17 +6892,17 @@ fn every_translated_help_string_keeps_the_version_0_4_wording() {
         (
             "run",
             Some("--plain"),
-            "Line-by-line prompts instead of the inline form",
+            "Line-by-line prompts instead of the inline launch menu",
         ),
         (
             "run",
             Some("--preset"),
-            "Named preset of parameter values to prefill the form with",
+            "Named preset of parameter values to prefill the launch menu with",
         ),
         (
             "run",
             Some("--raw"),
-            "Skip the parameter form and injection and run the script as-is (escape hatch)",
+            "Skip the launch menu and injection and run the script as-is (escape hatch)",
         ),
         (
             "run",
@@ -6816,7 +6917,7 @@ fn every_translated_help_string_keeps_the_version_0_4_wording() {
         (
             "run",
             Some("--set"),
-            "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)",
+            "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the launch menu no longer asks for a field you set)",
         ),
         (
             "runner add",
@@ -7273,6 +7374,168 @@ fn tui_settings_source_requests_refuse_missing_or_unreadable_stored_copies_witho
     }
 }
 
+/// Add one stored Python copy whose block manages `CITY` and `GONE`, then change the copy the way
+/// an edit outside skit does: `CITY` gets a new literal, `GONE` goes away, and `WIDTH` appears.
+fn drifted_resync_entry(service: &LibraryService<FileStore>, store: &FileStore) -> Entry {
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    let mut gone = city.clone();
+    gone.name = "GONE".to_owned();
+    let source = write_managed_params(
+        "python",
+        "CITY = \"Taipei\"\nGONE = 1\nprint(CITY, GONE)\n",
+        &[city, gone],
+    )
+    .unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Resync preview".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let payload = source_path(store, &entry).unwrap();
+    let text = fs::read_to_string(&payload).unwrap();
+    let edited = text
+        .replace(
+            "CITY = \"Taipei\"\nGONE = 1\n",
+            "CITY = \"Tainan\"\nWIDTH = 3\n",
+        )
+        .replace("print(CITY, GONE)", "print(CITY, WIDTH)");
+    assert_ne!(edited, text, "the fixture did not change the copy");
+    // The same commit `skit edit` makes, so the stored hash names the edited copy.
+    let claimed = service.claim_identity(&entry).unwrap();
+    service
+        .commit_copy_edit(&claimed, edited.as_bytes(), &entry.meta.source_hash)
+        .unwrap()
+}
+
+/// The resync preview runs the save's resync on the stored copy as it is now, and writes nothing.
+///
+/// Version 0.4's `Ctrl+R` keeps its result in memory until the save
+/// (`src/skit/tui_settings.py:908-926`). The rows it returns carry the literal the script holds
+/// now, and the offer lists the constant that appeared.
+#[test]
+fn tui_resync_preview_reports_the_drift_and_writes_nothing() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = drifted_resync_entry(&service, &store);
+    let before = test_tree_snapshot(root.path());
+
+    let action = tui_effect_in_english(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        UiEffect::PreviewSettingsResync {
+            selector: entry.slug.as_str().to_owned(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(test_tree_snapshot(root.path()), before, "the preview wrote");
+    let UiAction::Settings(SettingsAction::ResyncPreviewed { selector, preview }) = action else {
+        panic!("the host did not answer with a resync preview: {action:?}");
+    };
+    assert_eq!(selector, entry.slug.as_str());
+    assert_eq!(
+        preview.warnings,
+        [skit_domain::parameters::SourceEditWarning::ResyncDropped {
+            name: "GONE".to_owned()
+        }]
+    );
+    let managed = preview
+        .parameters
+        .managed
+        .iter()
+        .map(|declaration| (declaration.name.as_str(), declaration.default.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        managed,
+        [("CITY", Some(ParameterValue::String("Tainan".to_owned())))]
+    );
+    assert_eq!(preview.parameters.candidates, ["WIDTH"]);
+    assert_eq!(preview.parameters.reader_fields, 0);
+}
+
+/// A linked file and a copy that cannot be read get a refusal, not an empty report.
+///
+/// An empty report would say that everything still matches the script, which nobody checked.
+#[test]
+fn tui_resync_preview_refuses_a_linked_file_and_an_unreadable_copy() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("tool.py");
+    fs::write(&source, "NAME = \"world\"\nprint(NAME)\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: None,
+            name: Some("Linked".to_owned()),
+            description: Some(String::new()),
+            reference: true,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: Vec::new(),
+            dependencies_explicit: false,
+            requires_python: None,
+            no_input: false,
+        },
+    )
+    .unwrap();
+    let error = tui_preview_settings_resync(&service, &store, "linked").unwrap_err();
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "source management applies only to a stored copy"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let entry = drifted_resync_entry(&service, &store);
+        let payload = source_path(&store, &entry).unwrap();
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o000)).unwrap();
+        // A superuser reads the file anyway, and then there is no refusal to observe.
+        if fs::read(&payload).is_err() {
+            let error =
+                tui_preview_settings_resync(&service, &store, entry.slug.as_str()).unwrap_err();
+            assert!(matches!(error, CliError::SourceRead { .. }), "{error:?}");
+            // The refusal names the copy it could not read.
+            assert!(
+                error
+                    .message()
+                    .localize(Locale::En)
+                    .contains(&payload.display().to_string()),
+                "{error:?}"
+            );
+        }
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
+
 #[test]
 fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() {
     let root = TempDir::new().unwrap();
@@ -7326,11 +7589,11 @@ fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() 
     );
     assert_eq!(
         settings_saved_message(&outcome, Locale::ZhCn),
-        "设置已保存 — 已移除 GONE：它已不存在于脚本中。"
+        "设置已保存 — 已剔除 GONE:脚本中已找不到。"
     );
     assert_eq!(
         settings_saved_message(&outcome, Locale::ZhTw),
-        "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。"
+        "設定已儲存 — 已剔除 GONE:腳本中已找不到。"
     );
 }
 
@@ -8651,10 +8914,14 @@ fn terminal_first_run_questions_use_real_pty_defaults_choices_and_localized_repr
         ),
         (
             "zh-CN",
-            "PyPI 索引（Python 软件包）",
-            "自定义选项需要 URL。",
+            "PyPI 索引（Python 包）",
+            "选了“自定义”就需要填 URL。",
         ),
-        ("zh-TW", "PyPI 索引（Python 套件）", "自訂選項需要 URL。"),
+        (
+            "zh-TW",
+            "PyPI 索引（Python 套件）",
+            "選了「自訂」就需要填 URL。",
+        ),
     ] {
         let mut custom = MirrorPromptPty::spawn("axis-pypi", locale);
         custom.wait_for(question);
@@ -11872,6 +12139,8 @@ fn settings_inputs_read_prompt_runners_and_keep_future_kinds_empty_without_hidde
 fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    use skit_application::DiagnosticCode;
+
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
     let state_dir = root.path().join("state");
@@ -11980,6 +12249,7 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
             surface: None,
             rerunnable: None,
             ref message,
+            kind: StatusKind::Warning,
         } if message == "Entry added"
     ));
 
@@ -12084,7 +12354,8 @@ fn completed_add_keeps_success_and_localizes_a_refresh_failure() {
             UiAction::Complete {
                 surface: None,
                 rerunnable: None,
-                message: format!("{}\n{warning}", text(locale, "Entry added")),
+                message: format!("{} — {warning}", text(locale, "Entry added")),
+                kind: StatusKind::Warning,
             }
         );
     }
@@ -12177,8 +12448,8 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 
 // This src test module deliberately keeps its own copy of the terminal rules instead of
 // including `tests/support/pty.rs`: an include from src would compile 450 harness lines into
-// the library test build, where the coverage checker counts every line. The canonical rules and
-// their wave evidence live in that module; keep this copy in step with it.
+// the library test build. The canonical rules and their wave evidence live in that module; keep
+// this copy in step with it.
 /// Deliver one canned answer the way a terminal delivers it.
 ///
 /// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
@@ -12186,7 +12457,8 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 /// character, so the prompt keeps waiting and both sides stop
 /// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
 /// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
+/// Unix exactly as it was. Only the Unix terminal harness types answers.
+#[cfg(unix)]
 fn keystrokes(answer: &[u8]) -> Vec<u8> {
     answer
         .iter()
@@ -12606,7 +12878,10 @@ fn a_preferences_save_without_staged_agents_keeps_the_settings_only_write() {
     };
     assert!(matches!(
         tui_preferences_effect(&service, &broken, PreferencesEffect::Save(change)).unwrap(),
-        UiAction::SetStatus(_)
+        UiAction::SetStatus {
+            kind: StatusKind::Error,
+            ..
+        }
     ));
     assert_eq!(fs::read(&broken).unwrap(), b"keep config bytes");
 
@@ -12779,7 +13054,10 @@ fn every_preferences_commit_outcome_projects_to_one_typed_action_in_every_locale
         ] {
             assert!(matches!(
                 project_preferences_commit(result, locale),
-                Some(UiAction::SetStatus(_))
+                Some(UiAction::SetStatus {
+                    kind: StatusKind::Error,
+                    ..
+                })
             ));
         }
     }

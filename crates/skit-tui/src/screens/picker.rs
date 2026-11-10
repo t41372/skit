@@ -24,7 +24,6 @@ use skit_ui::{
     ChoicePicker, PathOutputPolicy, PathPickerState, PathSelectionMode, PickerMode, PickerPurpose,
     PickerResult,
 };
-use tui_input::{Input as LineInput, InputRequest};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -34,8 +33,9 @@ use crate::{
         node as snapshot_node, path_value as snapshot_path, path_values as snapshot_paths,
         rect as snapshot_rect, scroll as snapshot_scroll, value as snapshot_value,
     },
+    editor::{EditResponse, TextEditor},
     footer::handle_footer_scroll,
-    pointer::{ClickOutcome, ClickTracker, EditableGeometry},
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, is_primary_drag},
     session::render_search_line_input,
     theme::{self, Panel, Status, panel_block},
 };
@@ -132,7 +132,7 @@ pub enum PromptCandidatePickerEvent {
 #[derive(Clone, Debug)]
 pub struct PromptCandidatePickerSession {
     picker: ChoicePicker<String>,
-    query: LineInput,
+    query: TextEditor,
     list: ListPickerState,
     visible_height: usize,
     footer_scroll: ScrollableContentState,
@@ -145,6 +145,27 @@ pub struct PromptCandidatePickerSession {
 impl PromptCandidatePickerSession {
     pub(crate) fn cancel_click(&mut self) {
         self.click.cancel();
+    }
+
+    /// The Search box, which has the keyboard while the picker is open.
+    pub(crate) const fn query_editor(&self) -> &TextEditor {
+        &self.query
+    }
+
+    /// Report whether the cell shows the text of the Search box.
+    pub(crate) fn query_box_at(&self, column: u16, row: u16) -> bool {
+        self.query_editable
+            .is_some_and(|geometry| geometry.position_contains(column, row))
+    }
+
+    /// Each visible footer chip, and whether a primary press holds it.
+    pub(crate) fn pointer_targets(&self, geometry: &ChoicePickerGeometry) -> Vec<(Rect, bool)> {
+        geometry
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.target, ChoicePickerHit::Done | ChoicePickerHit::Cancel))
+            .map(|hit| (hit.area, self.click.pressed() == Some(&hit.target)))
+            .collect()
     }
 
     pub(crate) fn agent_review_snapshot(
@@ -194,7 +215,7 @@ impl PromptCandidatePickerSession {
                         "visible": visible,
                     }),
                 ),
-                ("query", snapshot_value("prompt_picker.query", query)?),
+                ("query", query.agent_review_snapshot()),
                 ("list", snapshot_list_picker(list)),
                 ("visible_height", serde_json::json!(visible_height)),
                 ("footer_scroll", snapshot_scroll(footer_scroll)),
@@ -226,7 +247,7 @@ impl PromptCandidatePickerSession {
         let total = picker.visible_items().len();
         Self {
             picker,
-            query: LineInput::default(),
+            query: TextEditor::default(),
             list: ListPickerState::new(total),
             visible_height: 1,
             footer_scroll: ScrollableContentState::default(),
@@ -265,9 +286,7 @@ impl PromptCandidatePickerSession {
             }
             Event::Paste(value) => {
                 self.click.cancel();
-                for character in value.chars() {
-                    self.query.handle(InputRequest::InsertChar(character));
-                }
+                let _ = self.query.paste(&value);
                 self.sync_choice_filter();
                 Some(PromptCandidatePickerEvent::Changed)
             }
@@ -302,6 +321,14 @@ impl PromptCandidatePickerSession {
                 Some(PromptCandidatePickerEvent::Changed)
             }
             Event::Mouse(mouse) => {
+                // A drag that started in the Search box selects in it and keeps the press armed.
+                if is_primary_drag(&mouse)
+                    && matches!(self.click.pressed(), Some(ChoicePickerHit::Search))
+                    && let Some(editable) = self.query_editable
+                {
+                    let _ = editable.pointer(&mut self.query, &mouse);
+                    return Some(PromptCandidatePickerEvent::Changed);
+                }
                 let target = geometry
                     .hits
                     .iter()
@@ -312,7 +339,7 @@ impl PromptCandidatePickerSession {
                     && matches!(target, Some(ChoicePickerHit::Search))
                     && let Some(editable) = self.query_editable
                 {
-                    let _ = editable.place_cursor(&mut self.query, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.query, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Armed => Some(PromptCandidatePickerEvent::Changed),
@@ -324,6 +351,10 @@ impl PromptCandidatePickerSession {
         }
     }
 
+    /// Give one key to the picker, and every key that it does not own to the Search box.
+    ///
+    /// The picker owns the list keys, Space, Esc, and its Ctrl+S, Ctrl+A, and Ctrl+N chords. The
+    /// Search box edits as every other box does.
     fn handle_choice_key(&mut self, key: KeyEvent) -> Option<PromptCandidatePickerEvent> {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
@@ -336,7 +367,7 @@ impl PromptCandidatePickerSession {
                     self.picker.select_all(false);
                     Some(PromptCandidatePickerEvent::Changed)
                 }
-                _ => None,
+                _ => self.edit_choice_query(&key),
             };
         }
         match key.code {
@@ -365,17 +396,19 @@ impl PromptCandidatePickerSession {
             }
             KeyCode::Char(' ') => self.toggle_current_choice(),
             KeyCode::Esc => Some(PromptCandidatePickerEvent::Cancelled),
-            KeyCode::Backspace => {
-                self.query.handle(InputRequest::DeletePrevChar);
+            _ => self.edit_choice_query(&key),
+        }
+    }
+
+    /// Give one key to the Search box, and filter the list again when the query changed.
+    fn edit_choice_query(&mut self, key: &KeyEvent) -> Option<PromptCandidatePickerEvent> {
+        match self.query.handle_key(key) {
+            EditResponse::Changed => {
                 self.sync_choice_filter();
                 Some(PromptCandidatePickerEvent::Changed)
             }
-            KeyCode::Char(character) => {
-                self.query.handle(InputRequest::InsertChar(character));
-                self.sync_choice_filter();
-                Some(PromptCandidatePickerEvent::Changed)
-            }
-            _ => None,
+            EditResponse::Consumed => Some(PromptCandidatePickerEvent::Changed),
+            EditResponse::Ignored | EditResponse::Boundary => None,
         }
     }
 
@@ -681,7 +714,7 @@ pub enum FilePickerEvent {
 pub struct FilePickerSession {
     contract: PathPickerState,
     explorer: FileExplorerState,
-    query: LineInput,
+    query: TextEditor,
     current_directory_focused: bool,
     visible_height: usize,
     io_error: Option<String>,
@@ -862,6 +895,26 @@ impl FilePickerSession {
         self.click.cancel();
     }
 
+    /// Each visible footer chip, and whether a primary press holds it.
+    ///
+    /// The footer chips are the only targets with these actions, so the action names the chip.
+    pub(crate) fn pointer_targets(&self, geometry: &FilePickerGeometry) -> Vec<(Rect, bool)> {
+        geometry
+            .hits
+            .iter()
+            .filter(|hit| {
+                matches!(
+                    hit.target,
+                    FilePickerHit::Accept
+                        | FilePickerHit::Cancel
+                        | FilePickerHit::Up
+                        | FilePickerHit::Hidden
+                )
+            })
+            .map(|hit| (hit.area, self.click.pressed() == Some(&hit.target)))
+            .collect()
+    }
+
     pub(crate) fn agent_review_snapshot(
         &self,
     ) -> Result<AgentReviewNode, AgentReviewSnapshotError> {
@@ -961,7 +1014,7 @@ impl FilePickerSession {
                         "filtered_indices": explorer.filtered_indices,
                     }),
                 ),
-                ("query", snapshot_value("file_picker.query", query)?),
+                ("query", query.agent_review_snapshot()),
                 (
                     "current_directory_focused",
                     serde_json::json!(current_directory_focused),
@@ -996,9 +1049,9 @@ impl FilePickerSession {
     #[must_use]
     pub fn new(contract: PathPickerState) -> Self {
         let start = nearest_directory(contract.start_dir().to_path_buf());
-        let mut explorer = FileExplorerState::new(start);
-        explorer.show_hidden = contract.show_hidden() || contract.query().starts_with('.');
-        let io_error = explorer.load_entries().err().map(|error| error.to_string());
+        let mut explorer = explorer_in(start);
+        explorer.show_hidden = contract.show_hidden() || search_shows_hidden(contract.query());
+        let io_error = read_directory(&mut explorer);
         Self::from_explorer(contract, explorer, io_error, None)
     }
 
@@ -1007,8 +1060,8 @@ impl FilePickerSession {
         memory_source: MemoryFilePickerSource,
     ) -> Self {
         let start = memory_source.nearest_directory(contract.start_dir());
-        let mut explorer = FileExplorerState::new(start);
-        explorer.show_hidden = contract.show_hidden() || contract.query().starts_with('.');
+        let mut explorer = explorer_in(start);
+        explorer.show_hidden = contract.show_hidden() || search_shows_hidden(contract.query());
         memory_source.load_entries(&mut explorer);
         Self::from_explorer(contract, explorer, None, Some(memory_source))
     }
@@ -1020,7 +1073,7 @@ impl FilePickerSession {
         memory_source: Option<MemoryFilePickerSource>,
     ) -> Self {
         let has_real_entry = select_first_real_entry(&mut explorer);
-        let query = LineInput::new(contract.query().to_owned());
+        let query = TextEditor::single_line(contract.query());
         explorer.search_query = contract.query().trim().to_owned();
         if !explorer.search_query.is_empty() {
             apply_filter(&mut explorer);
@@ -1078,6 +1131,13 @@ impl FilePickerSession {
                     self.handle_key(key)
                 }
             }
+            Event::Paste(value) => {
+                self.click.cancel();
+                if self.query.paste(&value) == EditResponse::Changed {
+                    self.sync_filter();
+                }
+                Some(FilePickerEvent::Changed)
+            }
             Event::FocusGained | Event::FocusLost => {
                 self.click.cancel();
                 None
@@ -1110,6 +1170,14 @@ impl FilePickerSession {
                 Some(FilePickerEvent::Changed)
             }
             Event::Mouse(mouse) => {
+                // A drag that started in the Search box selects in it and keeps the press armed.
+                if is_primary_drag(&mouse)
+                    && matches!(self.click.pressed(), Some(FilePickerHit::Search))
+                    && let Some(editable) = self.query_editable
+                {
+                    let _ = editable.pointer(&mut self.query, &mouse);
+                    return Some(FilePickerEvent::Changed);
+                }
                 let target = geometry
                     .hits
                     .iter()
@@ -1120,7 +1188,7 @@ impl FilePickerSession {
                     && matches!(target, Some(FilePickerHit::Search))
                     && let Some(editable) = self.query_editable
                 {
-                    let _ = editable.place_cursor(&mut self.query, mouse.column, mouse.row);
+                    let _ = editable.pointer(&mut self.query, &mouse);
                 }
                 match self.click.update(&mouse, target) {
                     ClickOutcome::Armed => Some(FilePickerEvent::Changed),
@@ -1128,10 +1196,15 @@ impl FilePickerSession {
                     ClickOutcome::Ignored => None,
                 }
             }
-            _ => None,
+            Event::Resize(_, _) => None,
         }
     }
 
+    /// Give one key to the picker, and every key that it does not own to the Search box.
+    ///
+    /// The picker owns the list keys, Enter, Esc, Backspace in an empty Search box, Space in a
+    /// picker that selects more than one file, and its Ctrl+A, Ctrl+N, and Ctrl+H chords. The
+    /// Search box edits as every other box does.
     fn handle_key(&mut self, key: KeyEvent) -> Option<FilePickerEvent> {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
@@ -1144,7 +1217,7 @@ impl FilePickerSession {
                     Some(FilePickerEvent::Changed)
                 }
                 KeyCode::Char('h') => self.handle_hit(FilePickerHit::Hidden),
-                _ => None,
+                _ => self.edit_query(&key),
             };
         }
         match key.code {
@@ -1212,24 +1285,34 @@ impl FilePickerSession {
                 self.go_up();
                 Some(FilePickerEvent::Changed)
             }
-            KeyCode::Esc if self.query.value().is_empty() => Some(FilePickerEvent::Cancelled),
-            KeyCode::Esc => {
-                self.query.reset();
-                self.sync_filter();
-                Some(FilePickerEvent::Changed)
-            }
-            KeyCode::Char(character) => {
-                self.query.handle(InputRequest::InsertChar(character));
-                self.sync_filter();
-                Some(FilePickerEvent::Changed)
-            }
-            KeyCode::Backspace => {
-                self.query.handle(InputRequest::DeletePrevChar);
-                self.sync_filter();
-                Some(FilePickerEvent::Changed)
-            }
-            _ => None,
+            // The footer shows Esc as Cancel, so Esc cancels also when the Search box has text.
+            // Version 0.4 does the same (`src/skit/tui_pathpick.py:285`). Ctrl+U clears the box.
+            KeyCode::Esc => Some(FilePickerEvent::Cancelled),
+            _ => self.edit_query(&key),
         }
+    }
+
+    /// Give one key to the Search box, and filter the entries again when the query changed.
+    fn edit_query(&mut self, key: &KeyEvent) -> Option<FilePickerEvent> {
+        match self.query.handle_key(key) {
+            EditResponse::Changed => {
+                self.sync_filter();
+                Some(FilePickerEvent::Changed)
+            }
+            EditResponse::Consumed => Some(FilePickerEvent::Changed),
+            EditResponse::Ignored | EditResponse::Boundary => None,
+        }
+    }
+
+    /// The Search box, which has the keyboard while the picker is open.
+    pub(crate) const fn query_editor(&self) -> &TextEditor {
+        &self.query
+    }
+
+    /// Report whether the cell shows the text of the Search box.
+    pub(crate) fn query_box_at(&self, column: u16, row: u16) -> bool {
+        self.query_editable
+            .is_some_and(|geometry| geometry.position_contains(column, row))
     }
 
     fn handle_hit(&mut self, target: FilePickerHit) -> Option<FilePickerEvent> {
@@ -1316,7 +1399,7 @@ impl FilePickerSession {
 
     fn enter(&mut self, path: PathBuf) {
         self.explorer.current_dir = path;
-        self.query.reset();
+        self.query.replace_text("");
         self.contract.set_query("");
         self.reload_entries();
     }
@@ -1333,7 +1416,7 @@ impl FilePickerSession {
             return;
         }
         self.explorer.current_dir = parent;
-        self.query.reset();
+        self.query.replace_text("");
         self.contract.set_query("");
         self.reload_entries();
     }
@@ -1341,7 +1424,7 @@ impl FilePickerSession {
     fn sync_filter(&mut self) {
         self.contract.set_query(self.query.value());
         let query = self.query.value().trim().to_owned();
-        let show_hidden = self.contract.show_hidden() || query.starts_with('.');
+        let show_hidden = self.contract.show_hidden() || search_shows_hidden(&query);
         if self.explorer.show_hidden != show_hidden {
             self.explorer.show_hidden = show_hidden;
             self.load_entries();
@@ -1367,13 +1450,37 @@ impl FilePickerSession {
             source.load_entries(&mut self.explorer);
             self.io_error = None;
         } else {
-            self.io_error = self
-                .explorer
-                .load_entries()
-                .err()
-                .map(|error| error.to_string());
+            self.io_error = read_directory(&mut self.explorer);
         }
     }
+}
+
+/// Read the current directory of `explorer` from the filesystem, and return the read error.
+///
+/// When a read fails, ratatui-interact does not change the entries, cursor, scroll, or filter.
+/// Before the first read, the list is empty and has no `..` row. After that, the list belongs to
+/// the directory that the user left. So after a failed read the picker keeps only the `..` row:
+/// the list shows nothing from another directory, and the user can go back.
+fn read_directory(explorer: &mut FileExplorerState) -> Option<String> {
+    let error = explorer.load_entries().err()?;
+    explorer.entries = explorer
+        .current_dir
+        .parent()
+        .map(|parent| FileEntry::parent_dir(parent.to_path_buf()))
+        .into_iter()
+        .collect();
+    explorer.cursor_index = 0;
+    explorer.scroll = 0;
+    explorer.filtered_indices = None;
+    Some(error.to_string())
+}
+
+/// Report whether a search shows hidden files: a search that starts with "." looks for them.
+///
+/// The list and the hidden-files chip use this one rule, on the query without its outer spaces,
+/// so they always agree.
+fn search_shows_hidden(query: &str) -> bool {
+    query.trim().starts_with('.')
 }
 
 fn portable_picker_relative(path: &Path) -> Result<PathBuf, ScreenTargetError> {
@@ -1587,6 +1694,19 @@ pub fn render_file_picker(
     FilePickerGeometry { search, rows, hits }
 }
 
+/// What the Ctrl+H chip of the file picker says that the key does next, in words.
+///
+/// The key changes whether hidden files show. A search that starts with "." shows them for any
+/// setting, so during that search the key changes only what shows after the search.
+const fn hidden_files_chip(show_hidden: bool, search_shows_hidden: bool) -> &'static str {
+    match (show_hidden, search_shows_hidden) {
+        (false, false) => "Show hidden files",
+        (true, false) => "Hide hidden files",
+        (false, true) => "Show hidden files after this search",
+        (true, true) => "Hide hidden files after this search",
+    }
+}
+
 #[derive(Debug)]
 struct PositionedPickerFooterItem<T> {
     label: String,
@@ -1615,7 +1735,19 @@ fn render_file_footer(
             format!("[Backspace] {}", text(locale, "Back")),
             FilePickerHit::Up,
         ),
-        ("[Ctrl+H] .".to_owned(), FilePickerHit::Hidden),
+        (
+            format!(
+                "[Ctrl+H] {}",
+                text(
+                    locale,
+                    hidden_files_chip(
+                        session.contract.show_hidden(),
+                        search_shows_hidden(&session.explorer.search_query),
+                    ),
+                )
+            ),
+            FilePickerHit::Hidden,
+        ),
     ];
     let (positioned, rows, content_width) =
         scrollable_picker_footer(items, area, &mut session.footer_scroll);
@@ -2034,6 +2166,18 @@ fn nearest_directory(mut path: PathBuf) -> PathBuf {
     path
 }
 
+/// Make an explorer state that opens in `directory` exactly as the picker names it.
+///
+/// `FileExplorerState::new` changes a path that is not a clean absolute path. It uses the
+/// canonical path, or an absolute path when the directory does not exist. On Windows, `/` is not
+/// absolute, so it becomes `\\?\D:\`, and the in-memory path `/fixtures` becomes `D:\fixtures`,
+/// which is not in the tree. The picker sets its own directory path, as `enter` and `go_up` do.
+fn explorer_in(directory: PathBuf) -> FileExplorerState {
+    let mut explorer = FileExplorerState::new(directory.clone());
+    explorer.current_dir = directory;
+    explorer
+}
+
 fn apply_filter(explorer: &mut FileExplorerState) {
     explorer.update_filter();
     let Some(indices) = &mut explorer.filtered_indices else {
@@ -2304,6 +2448,20 @@ mod tests {
         );
     }
 
+    // Ways this can fail: one wording of the hidden-files chip has no Chinese row, so a Chinese
+    // session shows that chip in English.
+    #[test]
+    fn every_wording_of_the_hidden_files_chip_is_localized() {
+        for (show_hidden, search_shows_hidden) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let english = hidden_files_chip(show_hidden, search_shows_hidden);
+            for locale in [Locale::ZhCn, Locale::ZhTw] {
+                assert_ne!(text(locale, english), english, "{english} in {locale:?}");
+            }
+        }
+    }
+
     #[test]
     fn empty_or_zero_width_picker_footers_have_no_positions() {
         let (positioned, rows) = position_picker_footer_items::<()>(Vec::new(), 8);
@@ -2356,6 +2514,40 @@ mod tests {
                 dir.path().join("reports/tool.py")
             ]))
         );
+    }
+
+    // Ways this can fail: a search that starts with "." after a space filters for a hidden file
+    // while the list still leaves hidden files out, so the search finds nothing and the chip and
+    // the list disagree.
+    #[test]
+    fn a_query_with_outer_spaces_follows_the_one_hidden_file_rule() {
+        let mut contract = PathPickerState::new(
+            PickerPurpose::Source,
+            PathBuf::from("/fixtures"),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        );
+        contract.set_query(" .e");
+        let source = MemoryFilePickerSource::new(
+            PathBuf::from("/fixtures"),
+            BTreeSet::from([PathBuf::from("/fixtures")]),
+            BTreeSet::from([
+                PathBuf::from("/fixtures/.env"),
+                PathBuf::from("/fixtures/alpha.py"),
+            ]),
+        );
+        let session = FilePickerSession::with_memory_source(contract, source);
+        assert!(session.explorer().show_hidden);
+        assert_eq!(session.explorer().search_query, ".e");
+        assert_eq!(
+            visible_entries(session.explorer())
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [".env"]
+        );
+        assert!(search_shows_hidden(" .env") && !search_shows_hidden("a.env"));
     }
 
     #[test]
@@ -2589,7 +2781,7 @@ mod tests {
             vec!["xz", "xa"]
         );
         assert_eq!(
-            session.handle_event(key(KeyCode::Esc), &geometry),
+            session.handle_event(key(KeyCode::Backspace), &geometry),
             Some(FilePickerEvent::Changed)
         );
         assert_eq!(
@@ -3093,7 +3285,7 @@ mod tests {
     fn prompt_picker_search_click_places_the_caret_before_typing() {
         let picker = ChoicePicker::new(PickerMode::Multiple, Vec::new(), Vec::new());
         let mut session = PromptCandidatePickerSession::new(picker);
-        session.query = LineInput::new("abcdef".to_owned());
+        session.query = TextEditor::single_line("abcdef");
         let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
         let mut geometry = ChoicePickerGeometry::default();
         terminal
@@ -3207,7 +3399,9 @@ mod tests {
                 Some(PromptCandidatePickerEvent::Changed)
             );
         }
-        assert_eq!(session.handle_event(control('x'), &geometry), None);
+        // Ctrl+X belongs to the Search box, so a chord that neither the picker nor the box owns
+        // shows that the rest go to the screen.
+        assert_eq!(session.handle_event(control('t'), &geometry), None);
         assert_eq!(session.handle_event(key(KeyCode::F(2)), &geometry), None);
         assert_eq!(
             session.handle_event(Event::Paste("be".to_owned()), &geometry),
@@ -3307,7 +3501,9 @@ mod tests {
         #[cfg(unix)]
         assert!(buffer_text(&terminal).contains('↗'));
 
-        assert_eq!(session.handle_event(control('x'), &geometry), None);
+        // Ctrl+X belongs to the Search box, so a chord that neither the picker nor the box owns
+        // shows that the rest go to the screen.
+        assert_eq!(session.handle_event(control('t'), &geometry), None);
         assert_eq!(session.handle_event(key(KeyCode::F(2)), &geometry), None);
         assert_eq!(
             session.handle_event(control('a'), &geometry),
@@ -3502,7 +3698,7 @@ mod tests {
         );
         assert_eq!(
             directory.handle_event(key(KeyCode::Esc), &default_geometry),
-            Some(FilePickerEvent::Changed)
+            Some(FilePickerEvent::Cancelled)
         );
 
         let mut empty_file = FilePickerSession::new(PathPickerState::new(
@@ -3672,7 +3868,12 @@ mod tests {
             ),
             None,
         );
-        assert_eq!(single.handle_event(control('a'), &geometry), None);
+        // A picker of one file selects nothing with Ctrl+A: the key goes to the Search box.
+        assert_eq!(
+            single.handle_event(control('a'), &geometry),
+            Some(FilePickerEvent::Changed),
+        );
+        assert!(single.explorer().selected_files.is_empty());
         assert_eq!(single.handle_event(control('n'), &geometry), None);
         assert_eq!(
             single.handle_event(key(KeyCode::Char(' ')), &geometry),

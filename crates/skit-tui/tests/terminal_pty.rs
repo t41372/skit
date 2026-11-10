@@ -15,6 +15,24 @@ use skit_tui::{
 };
 use skit_ui::{Action, Effect, FormField, FormPurpose, FormView, LibraryState, RunFormView};
 
+/// A Library with one selected script, so `e` asks the host to open the editor.
+fn library_with_one_script() -> LibraryState {
+    use skit_application::LibraryScan;
+    use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
+
+    LibraryState::from_scan(LibraryScan {
+        entries: vec![EntrySummary {
+            slug: Slug::parse("alpha").unwrap(),
+            name: "Alpha".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            description: String::new(),
+            target: None,
+        }],
+        diagnostics: Vec::new(),
+    })
+}
+
 #[derive(Debug)]
 struct HostError;
 
@@ -122,7 +140,7 @@ fn public_terminal_wrapper_child() {
             .unwrap();
         }
         "suspend-modes" => run(
-            LibraryState::default(),
+            library_with_one_script(),
             |_effect: Effect| -> Result<Action, HostError> {
                 let mut out = std::io::stdout();
                 out.write_all(HOST_EFFECT_MARKER).unwrap();
@@ -214,33 +232,37 @@ fn every_public_terminal_wrapper_owns_a_real_terminal_lifecycle() {
         }],
     );
     assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "preflight");
-    // The path-completion wrapper has no check of its own: the effect reaches the host. The host
-    // effect suspends and resumes the terminal, and only a Unix resume asks for the cursor
-    // position, which the wait for the resumed frame answers. ConPTY re-renders its own screen,
-    // so this case is a Unix case, as the suspend contract below is.
+    // The path-completion wrapper has no check of its own: the effect reaches the host. A reload
+    // needs no terminal, so the session serves it on its screen, and the only exit from the
+    // alternate screen is the one at the end. ConPTY re-renders its own screen and does not pass
+    // every control sequence through, so this case is a Unix case, as the suspend contract below
+    // is.
     #[cfg(unix)]
     {
         let marker = tempfile::NamedTempFile::new().unwrap();
-        run_child_in_pty(
+        let output = run_child_in_pty(
             "public_terminal_wrapper_child",
             Some("run-with-path-host"),
             "Library",
-            &[
-                Exchange {
-                    input: b"\x12",
-                    wait: Wait::File(marker.path()),
-                },
-                Exchange {
-                    input: b"",
-                    wait: Wait::Output(b"Library"),
-                },
-            ],
+            &[Exchange {
+                input: b"\x12",
+                wait: Wait::File(marker.path()),
+            }],
         );
         assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "host");
+        assert_eq!(
+            output
+                .windows(b"\x1b[?1049l".len())
+                .filter(|window| *window == b"\x1b[?1049l")
+                .count(),
+            1,
+            "the session left the alternate screen for a reload: {}",
+            String::from_utf8_lossy(&output)
+        );
     }
 }
 
-/// A host effect must leave and re-enter every screen mode.
+/// A host effect that needs the terminal must leave and re-enter every screen mode.
 ///
 /// Mouse capture and focus reporting are not part of the alternate screen. If the suspend keeps
 /// focus reporting on, the process that owns the terminal receives `ESC [ I` and `ESC [ O` as input
@@ -256,10 +278,10 @@ fn a_host_effect_leaves_and_re_enters_every_screen_mode() {
         Some("suspend-modes"),
         "Library",
         &[
-            // Ctrl+R on the library is Reload, the same key the refused preflight above uses to
-            // reach the host boundary.
+            // `e` on the selected script asks the host to open the editor, which needs the
+            // terminal.
             Exchange {
-                input: b"\x12",
+                input: b"e",
                 wait: Wait::Output(HOST_EFFECT_MARKER),
             },
             // Raw mode is off while the host effect runs, so Ctrl+C would be a signal. Wait for the

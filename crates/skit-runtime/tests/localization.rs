@@ -304,7 +304,7 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     );
     assert_eq!(
         error.message().localize(Locale::ZhCn),
-        "无法创建 /entries/demo 处的 JavaScript 依赖项：permission denied"
+        "无法创建 /entries/demo 处的 JavaScript 依赖：permission denied"
     );
 
     let uv = UvBootstrapError::Io {

@@ -387,7 +387,10 @@ fn c2_agent_skill_status_provenance_replays_and_user_status_stays_byte_exact() {
     let mut state = host.initial_state().unwrap();
     let root = host._sandbox.path().display().to_string();
     let user_message = format!("User entry ({root}).");
-    let action = Action::SetStatus(user_message.clone());
+    let action = Action::SetStatus {
+        kind: skit_ui::StatusKind::Info,
+        message: user_message.clone(),
+    };
     let emitted = state.update(action.clone());
     let mut session = c2_session(Path::new("/unregistered/session"), None, Vec::new());
     let mut recorded_action = action;
@@ -404,7 +407,7 @@ fn c2_agent_skill_status_provenance_replays_and_user_status_stays_byte_exact() {
         .unwrap();
     assert_eq!(observation.state["status"], user_message);
     assert_eq!(
-        serde_json::to_value(recorded_action).unwrap()["set_status"],
+        serde_json::to_value(recorded_action).unwrap()["set_status"]["message"],
         user_message
     );
 }

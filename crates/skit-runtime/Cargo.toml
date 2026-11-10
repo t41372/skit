@@ -24,6 +24,12 @@ zip.workspace = true
 skit-application.workspace = true
 skit-domain.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+signal-hook.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["signal"] }
+
 [dev-dependencies]
 skit-i18n.workspace = true
 tempfile.workspace = true

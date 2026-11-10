@@ -71,7 +71,7 @@ const MODELED_SH: &[u8] =
 const CONST_PY: &[u8] = b"MESSAGE = 'Hello'\nTIMES = 3\nWIDTH = 40\nprint(MESSAGE)\n";
 
 // The exact renderer strings this module asserts on (skit-tui/src/screens/add.rs).
-const TICK_PROMPT: &str = "Tick the ones the run form should ask for:";
+const TICK_PROMPT: &str = "Tick the ones the launch menu should ask for:";
 const READER_NOTICE: &str = "skit read this script's own arguments";
 const REF_NOTE_MODELED: &str = "Link the original: skit never writes to the file.";
 const REF_NOTE_UNMODELED: &str = "parameter setup is skipped";
@@ -378,8 +378,8 @@ fn test_review_names_extra_arguments_field_once() {
     let screen = rendered(terminal.backend().buffer());
     assert_eq!(screen.matches("extra-arguments field").count(), 1);
     // The framework notice is the one that names it; the argv-only hint is suppressed.
-    assert!(screen.contains("so the run form offers an extra-arguments field"));
-    assert!(!screen.contains("the run form has an extra-arguments field for them"));
+    assert!(screen.contains("so the launch menu offers an extra-arguments field"));
+    assert!(!screen.contains("the launch menu has an extra-arguments field for them"));
 }
 
 // ==========================================================================

@@ -110,7 +110,7 @@ fn c2_commit_review_name_requires_exact_live_draft_provenance() {
 }
 
 #[test]
-fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
+fn c2_add_input_mirror_maps_its_cursor_and_history_and_refuses_shape_drift() {
     let mut host = RealWalkerHost::spawn(profile()).unwrap();
     let draft = write_draft_at(&host, "skit-new-界.py", b"print('unicode')\n", 10);
     host.path_map.refresh(&host.service).unwrap();
@@ -121,8 +121,10 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
         "state": {
             "value": raw,
             "cursor": raw.chars().count(),
-            "yank": "",
-            "last_was_cut": false,
+            "anchor": null,
+            "undo": [],
+            "redo": [],
+            "group": null,
         },
     });
     let valid = c2_session(
@@ -142,6 +144,63 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
         stable.chars().count()
     );
 
+    // A click or an arrow key moves the cursor and keeps the derived value. Every cursor in the
+    // value projects: the start stays at the start, the end stays at the end, an interior cursor
+    // stays interior, and a cursor further right never projects further left.
+    let raw_chars = raw.chars().count();
+    let stable_chars = stable.chars().count();
+    let mut previous = 0;
+    for cursor in 0..=raw_chars {
+        let mut moved = valid.clone();
+        moved["add"]["fields"]["inputs"][0]["state"]["cursor"] = json!(cursor);
+        host.path_map.project_session_value(&mut moved).unwrap();
+        let state = &moved["add"]["fields"]["inputs"][0]["state"];
+        assert_eq!(state["value"], stable);
+        let projected = usize::try_from(state["cursor"].as_u64().unwrap()).unwrap();
+        match cursor {
+            0 => assert_eq!(projected, 0),
+            cursor if cursor == raw_chars => assert_eq!(projected, stable_chars),
+            cursor => assert!(
+                (1..stable_chars).contains(&projected),
+                "the interior cursor {cursor} projects to {projected}"
+            ),
+        }
+        assert!(projected >= previous, "the cursor {cursor} moved left");
+        previous = projected;
+    }
+
+    // A Shift key or a drag selects in the derived value and keeps it: the anchor projects with
+    // the same map as the cursor.
+    let mut selected = valid.clone();
+    selected["add"]["fields"]["inputs"][0]["state"]["anchor"] = json!(0);
+    host.path_map.project_session_value(&mut selected).unwrap();
+    assert_eq!(selected["add"]["fields"]["inputs"][0]["state"]["anchor"], 0);
+    assert_eq!(
+        selected["add"]["fields"]["inputs"][0]["state"]["cursor"],
+        stable_chars
+    );
+
+    // Undo and redo move the derived value between the box and its history, so the history can
+    // hold user text next to it, and a typed run can be open. Each history entry that holds the
+    // derived value takes its stable form, and user text keeps its exact bytes.
+    let mut edited = valid.clone();
+    edited["add"]["fields"]["inputs"][0]["state"]["undo"] = json!([
+        {"value": "cut", "cursor": 0, "anchor": null},
+        {"value": raw, "cursor": 0, "anchor": raw_chars},
+    ]);
+    edited["add"]["fields"]["inputs"][0]["state"]["redo"] =
+        json!([{"value": "cut", "cursor": 3, "anchor": null}]);
+    edited["add"]["fields"]["inputs"][0]["state"]["group"] =
+        json!({"typing": {"after_space": false}});
+    host.path_map.project_session_value(&mut edited).unwrap();
+    let state = &edited["add"]["fields"]["inputs"][0]["state"];
+    assert_eq!(state["value"], stable);
+    assert_eq!(state["undo"][0]["value"], "cut");
+    assert_eq!(state["undo"][1]["value"], stable);
+    assert_eq!(state["undo"][1]["anchor"], stable_chars);
+    assert_eq!(state["redo"][0]["value"], "cut");
+    assert_eq!(state["group"]["typing"]["after_space"], false);
+
     let mut invalid = c2_session(Path::new("/unregistered/session"), None, Vec::new());
     assert!(host.path_map.project_session_value(&mut invalid).is_err());
     let mut duplicate = c2_session(
@@ -152,10 +211,13 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
     assert!(host.path_map.project_session_value(&mut duplicate).is_err());
     for (pointer, replacement) in [
         ("/add/fields/inputs/0/state/value", json!("wrong")),
-        ("/add/fields/inputs/0/state/cursor", json!(0)),
-        ("/add/fields/inputs/0/state/yank", json!("cut")),
-        ("/add/fields/inputs/0/state/yank", json!(7)),
-        ("/add/fields/inputs/0/state/last_was_cut", json!(true)),
+        ("/add/fields/inputs/0/state/cursor", json!(raw_chars + 1)),
+        ("/add/fields/inputs/0/state/cursor", json!(-1)),
+        ("/add/fields/inputs/0/state/cursor", json!("end")),
+        ("/add/fields/inputs/0/state/anchor", json!(raw_chars + 1)),
+        ("/add/fields/inputs/0/state/anchor", json!("start")),
+        ("/add/fields/inputs/0/state/undo", json!(7)),
+        ("/add/fields/inputs/0/state/redo", json!([7])),
         ("/add/fields/inputs/0/state", json!([])),
     ] {
         let mut invalid = valid.clone();
@@ -176,7 +238,7 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
     missing_field["add"]["fields"]["inputs"][0]["state"]
         .as_object_mut()
         .unwrap()
-        .remove("yank");
+        .remove("undo");
     assert!(
         host.path_map
             .project_session_value(&mut missing_field)
@@ -191,24 +253,68 @@ fn c2_add_input_mirror_refuses_cursor_yank_cut_and_shape_drift() {
     );
 }
 
+/// The cursor map of one derived value.
+///
+/// The ways it can fail: the end or the start loses its place; an equal value moves its cursor;
+/// an interior cursor lands on an end; the order of two cursors reverses; the result passes the
+/// end of the stable value; the arithmetic overflows or divides by zero; a stable value with no
+/// interior position makes the clamp panic.
 #[test]
-fn c2_add_review_name_yank_keeps_the_cut_derived_name_projected() {
-    let review_input = |value: &str, yank: &str, cut: bool| {
+fn c2_a_derived_cursor_keeps_both_ends_the_order_and_the_interior() {
+    // The real review name `skit-new-000000` projects to `<draft:0>`.
+    assert_eq!(derived_cursor(15, 15, 9), 9);
+    assert_eq!(derived_cursor(0, 15, 9), 0);
+    assert_eq!(derived_cursor(14, 15, 9), 8);
+    assert_eq!(derived_cursor(9, 15, 9), 5);
+    assert_eq!(derived_cursor(1, 15, 9), 1);
+    // Two values of the same length keep every cursor.
+    for cursor in 0..=9 {
+        assert_eq!(derived_cursor(cursor, 9, 9), cursor);
+    }
+    // A short stable value keeps an interior cursor off both ends.
+    assert_eq!(derived_cursor(1, 60, 3), 1);
+    assert_eq!(derived_cursor(59, 60, 3), 2);
+    // A stable value without an interior position stays inside its own length.
+    assert_eq!(derived_cursor(3, 6, 1), 1);
+    assert_eq!(derived_cursor(3, 6, 0), 0);
+    // An empty raw value has only its end. A huge value does not overflow.
+    assert_eq!(derived_cursor(0, 0, 9), 9);
+    assert_eq!(derived_cursor(usize::MAX - 1, usize::MAX, 9), 8);
+    let mut previous = 0;
+    for cursor in 0..=40 {
+        let projected = derived_cursor(cursor, 40, 7);
+        assert!(projected >= previous && projected <= 7);
+        previous = projected;
+    }
+}
+
+#[test]
+fn c2_add_review_name_history_keeps_the_cut_derived_name_projected() {
+    // An edit of the derived name leaves the name in the undo history, so undo can bring it back.
+    let review_input = |value: &str, history: &[&str], redo: &[&str]| {
+        let entries = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| json!({"value": value, "cursor": value.chars().count(), "anchor": null}))
+                .collect::<Vec<_>>()
+        };
         json!({
             "id": "ReviewName",
             "state": {
                 "value": value,
                 "cursor": value.chars().count(),
-                "yank": yank,
-                "last_was_cut": cut,
+                "anchor": null,
+                "undo": entries(history),
+                "redo": entries(redo),
+                "group": null,
             },
         })
     };
-    let project = |host: &mut RealWalkerHost, value: &str, yank: &str, cut: bool| {
+    let project = |host: &mut RealWalkerHost, value: &str, history: &[&str], redo: &[&str]| {
         let mut session = c2_session(
             Path::new("/unregistered/session"),
             None,
-            vec![review_input(value, yank, cut)],
+            vec![review_input(value, history, redo)],
         );
         host.path_map
             .project_session_value(&mut session)
@@ -221,10 +327,10 @@ fn c2_add_review_name_yank_keeps_the_cut_derived_name_projected() {
         )
         .unwrap()
     };
-    let state = |name: &str| {
+    let state = |name: &str, source: &Path| {
         json!({"workflow": {"active": {"add": {
             "review_defaults": {"name": null},
-            "review": {"name": name},
+            "review": {"name": name, "source": {"path": source}},
         }}}})
     };
 
@@ -235,33 +341,70 @@ fn c2_add_review_name_yank_keeps_the_cut_derived_name_projected() {
     set_review_name_projection(&mut host, &draft, "skit-new-first", "<draft:0>");
 
     host.path_map.record_add_projection_cause(&edit(""));
-    host.path_map.reconcile_add_provenance(&state("")).unwrap();
+    host.path_map
+        .reconcile_add_provenance(&state("", &draft))
+        .unwrap();
     assert!(host.path_map.add_provenance.review_name.is_none());
-    let cut = project(&mut host, "", "skit-new-first", true).unwrap();
-    assert_eq!(cut["yank"], "<draft:0>");
+    let cut = project(&mut host, "", &["skit-new-first"], &[]).unwrap();
+    assert_eq!(cut["undo"][0]["value"], "<draft:0>");
+    assert_eq!(cut["undo"][0]["cursor"], "<draft:0>".chars().count());
     assert_eq!(cut["value"], "");
     assert_eq!(cut["cursor"], 0);
-    assert_eq!(cut["last_was_cut"], true);
+
+    // Undo brings the derived name back. The action that brings it is projected before the state,
+    // so it takes the stable name from the yank. Then the name is the host value again, with its
+    // provenance, and the redo entry keeps the empty user text.
+    let stable_action = |host: &mut RealWalkerHost, name: &str| {
+        let mut action = edit(name);
+        host.path_map.project_typed_action(&mut action).unwrap();
+        serde_json::to_value(action).unwrap()["add"]["set_review_name"].clone()
+    };
+    assert_eq!(stable_action(&mut host, "skit-new-first"), "<draft:0>");
+    host.path_map
+        .record_add_projection_cause(&edit("skit-new-first"));
+    host.path_map
+        .reconcile_add_provenance(&state("skit-new-first", &draft))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_some());
+    assert!(host.path_map.add_provenance.review_name_yank.is_none());
+    assert!(!host.path_map.add_provenance.review_name_edited);
+    let restored = project(&mut host, "skit-new-first", &[], &[""]).unwrap();
+    assert_eq!(restored["value"], "<draft:0>");
+    assert_eq!(restored["redo"][0]["value"], "");
+    assert_eq!(stable_action(&mut host, "skit-new-first"), "<draft:0>");
+
+    // Redo deletes the name again, and the name goes back to the yank.
+    host.path_map.record_add_projection_cause(&edit(""));
+    host.path_map
+        .reconcile_add_provenance(&state("", &draft))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_none());
+    assert!(host.path_map.add_provenance.review_name_yank.is_some());
+    assert_eq!(stable_action(&mut host, "user text"), "user text");
 
     host.path_map
         .record_add_projection_cause(&edit("Corpus Prompt"));
     host.path_map
-        .reconcile_add_provenance(&state("Corpus Prompt"))
+        .reconcile_add_provenance(&state("Corpus Prompt", &draft))
         .unwrap();
-    let typed = project(&mut host, "Corpus Prompt", "skit-new-first", false).unwrap();
-    assert_eq!(typed["yank"], "<draft:0>");
+    let typed = project(&mut host, "Corpus Prompt", &["skit-new-first", ""], &[]).unwrap();
+    assert_eq!(typed["undo"][0]["value"], "<draft:0>");
+    assert_eq!(typed["undo"][1]["value"], "");
     assert_eq!(typed["value"], "Corpus Prompt");
 
-    let replaced = project(&mut host, "Corpus Prompt", "Corpus", false).unwrap();
-    assert_eq!(replaced["yank"], "Corpus");
+    let undone = project(&mut host, "Corpus Prompt", &[], &["skit-new-first"]).unwrap();
+    assert_eq!(undone["redo"][0]["value"], "<draft:0>");
+
+    let replaced = project(&mut host, "Corpus Prompt", &["Corpus"], &[]).unwrap();
+    assert_eq!(replaced["undo"][0]["value"], "Corpus");
 
     let mut manual = RealWalkerHost::spawn(profile()).unwrap();
     let manual_draft = write_draft_at(&manual, "skit-new-first.py", b"first\n", 10);
     manual.path_map.refresh(&manual.service).unwrap();
     manual.path_map.add_provenance.review_source_path = Some(manual_draft);
     manual.path_map.add_provenance.review_name_edited = true;
-    let lookalike = project(&mut manual, "typed", "skit-new-first", true).unwrap();
-    assert_eq!(lookalike["yank"], "skit-new-first");
+    let lookalike = project(&mut manual, "typed", &["skit-new-first"], &[]).unwrap();
+    assert_eq!(lookalike["undo"][0]["value"], "skit-new-first");
 
     let mut drift = RealWalkerHost::spawn(profile()).unwrap();
     let drift_draft = write_draft_at(&drift, "skit-new-first.py", b"first\n", 10);
@@ -271,11 +414,120 @@ fn c2_add_review_name_yank_keeps_the_cut_derived_name_projected() {
     drift.path_map.add_cause = AddProjectionCause::None;
     drift
         .path_map
-        .reconcile_add_provenance(&state("Corpus Prompt"))
+        .reconcile_add_provenance(&state("Corpus Prompt", &drift_draft))
         .unwrap();
     assert!(drift.path_map.add_provenance.review_name.is_none());
-    let drifted = project(&mut drift, "Corpus Prompt", "skit-new-first", false).unwrap();
-    assert_eq!(drifted["yank"], "<draft:0>");
+    let drifted = project(&mut drift, "Corpus Prompt", &["skit-new-first"], &[]).unwrap();
+    assert_eq!(drifted["undo"][0]["value"], "<draft:0>");
+
+    // A copy of the whole derived name in the session clipboard takes its stable form too.
+    let mut session = c2_session(
+        Path::new("/unregistered/session"),
+        None,
+        vec![review_input("Corpus Prompt", &[], &[])],
+    );
+    session["clipboard"]["fields"]["state"] =
+        json!({"text": "skit-new-first", "pending_export": "skit-new-first"});
+    drift.path_map.project_session_value(&mut session).unwrap();
+    assert_eq!(
+        session["clipboard"]["fields"]["state"],
+        json!({"text": "<draft:0>", "pending_export": "<draft:0>"})
+    );
+    for invalid in [
+        json!({"text": 7, "pending_export": null}),
+        json!({"text": "", "pending_export": 7}),
+        json!({"text": ""}),
+    ] {
+        let mut broken = c2_session(Path::new("/unregistered/session"), None, Vec::new());
+        broken["clipboard"]["fields"]["state"] = invalid;
+        assert!(drift.path_map.project_session_value(&mut broken).is_err());
+    }
+
+    // A history entry that holds the derived name must have the editor shape. An entry with no
+    // anchor, or with an anchor past its value, is refused, and the projection does not guess.
+    for (entry, refusal) in [
+        (
+            json!({"value": "skit-new-first", "cursor": 0}),
+            "an auto-derived Add input has no anchor",
+        ),
+        (
+            json!({"value": "skit-new-first", "cursor": 0, "anchor": 99}),
+            "an auto-derived Add input anchor is outside its value",
+        ),
+    ] {
+        let mut broken = c2_session(
+            Path::new("/unregistered/session"),
+            None,
+            vec![review_input("Corpus Prompt", &[], &[])],
+        );
+        broken["add"]["fields"]["inputs"][0]["state"]["undo"] = json!([entry]);
+        assert_eq!(
+            drift.path_map.project_session_value(&mut broken),
+            Err(refusal.to_owned())
+        );
+    }
+}
+
+/// A selected draft path that undo brings back has its provenance again.
+///
+/// The ways it can fail: an edit drops the provenance of the selected draft path, so its history
+/// entry stays raw; or undo brings back the exact path and the value stays raw.
+#[test]
+fn c2_a_selected_draft_path_that_undo_brings_back_has_its_provenance_again() {
+    let mut host = RealWalkerHost::spawn(profile()).unwrap();
+    let draft = write_draft_at(&host, "skit-new-undo.py", b"undo\n", 10);
+    host.path_map.refresh(&host.service).unwrap();
+    let source = |path: &str| json!({"workflow": {"active": {"add": {"source": {"path": path}}}}});
+    host.path_map.add_provenance.selected_source_path = Some(draft.clone());
+    host.path_map.reconcile_add_provenance(&source("")).unwrap();
+    assert!(host.path_map.add_provenance.selected_source_path.is_none());
+    assert!(host.path_map.add_provenance.source_path_yank.is_some());
+    let raw = draft.display().to_string();
+    host.path_map
+        .reconcile_add_provenance(&source(&raw))
+        .unwrap();
+    assert_eq!(
+        host.path_map.add_provenance.selected_source_path,
+        Some(draft.clone())
+    );
+    assert!(host.path_map.add_provenance.source_path_yank.is_none());
+}
+
+/// A copy of a derived name keeps its stable form after the Add workflow that proved it ends.
+///
+/// The ways it can fail: the end of the workflow drops the proof while the session clipboard keeps
+/// the raw name, so the walk records a raw allocator stem; or the proof outlives the copy, so the
+/// same text that comes back later with no proof takes a stable form.
+#[test]
+fn c2_a_copied_derived_name_keeps_its_stable_form_after_add_ends() {
+    let mut host = RealWalkerHost::spawn(profile()).unwrap();
+    let draft = write_draft_at(&host, "skit-new-first.py", b"first\n", 10);
+    host.path_map.refresh(&host.service).unwrap();
+    host.path_map.add_provenance.review_source_path = Some(draft.clone());
+    set_review_name_projection(&mut host, &draft, "skit-new-first", "<draft:0>");
+    let clipboard = |host: &mut RealWalkerHost, text: &str| {
+        let mut session = c2_session(Path::new("/unregistered/session"), None, Vec::new());
+        session["clipboard"]["fields"]["state"] = json!({"text": text, "pending_export": text});
+        host.path_map.project_session_value(&mut session).unwrap();
+        session["clipboard"]["fields"]["state"].clone()
+    };
+    assert_eq!(
+        clipboard(&mut host, "skit-new-first"),
+        json!({"text": "<draft:0>", "pending_export": "<draft:0>"})
+    );
+
+    host.path_map
+        .record_add_projection_cause(&Action::AddCancelled);
+    host.path_map
+        .reconcile_add_provenance(&json!({"workflow": {"active": null}}))
+        .unwrap();
+    assert!(host.path_map.add_provenance.review_name.is_none());
+    assert_eq!(clipboard(&mut host, "skit-new-first")["text"], "<draft:0>");
+    assert_eq!(clipboard(&mut host, "other text")["text"], "other text");
+    assert_eq!(
+        clipboard(&mut host, "skit-new-first")["text"],
+        "skit-new-first"
+    );
 }
 
 #[test]
@@ -519,8 +771,10 @@ fn c2_source_edited_keeps_derived_review_provenance_when_the_name_is_unchanged()
             "state": {
                 "value": "skit-new-first",
                 "cursor": "skit-new-first".chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -563,8 +817,10 @@ fn c2_source_edited_keeps_derived_review_provenance_when_the_name_is_unchanged()
             "state": {
                 "value": "skit-new-first",
                 "cursor": "skit-new-first".chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -624,8 +880,10 @@ fn c2_source_edited_keeps_derived_review_provenance_when_the_name_is_unchanged()
             "state": {
                 "value": first.display().to_string(),
                 "cursor": first.display().to_string().chars().count(),
-                "yank": "",
-                "last_was_cut": false,
+                "anchor": null,
+                "undo": [],
+                "redo": [],
+                "group": null,
             },
         })],
     );
@@ -882,8 +1140,10 @@ fn c2_provenance_refuses_mismatched_state_and_covers_optional_session_shapes() {
         "state": {
             "value": "skit-new-refusal",
             "cursor": "skit-new-refusal".chars().count(),
-            "yank": "",
-            "last_was_cut": false,
+            "anchor": null,
+            "undo": [],
+            "redo": [],
+            "group": null,
         },
     });
     let mut duplicate = c2_session(

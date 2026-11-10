@@ -17,7 +17,7 @@ fn new_refusal_messages_have_complete_chinese_rows() {
     for english in [
         "standard input cannot be an executable entry",
         "--no-interpolate only applies to prompt entries",
-        "cannot save a preset because the entry has no form fields",
+        "cannot save a preset because the entry has no parameters",
         "invalid Boolean value {}; use true or false",
         "{} is not valid UTF-8",
         "{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",

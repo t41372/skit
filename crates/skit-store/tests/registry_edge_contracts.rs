@@ -1,9 +1,9 @@
 use std::fs;
 
-use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions, UpdateEntry,
-};
+use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
+// Only the Unix tests read an entry back, update one, and read a removal error.
+#[cfg(unix)]
+use skit_application::{EntryRepository, RepositoryError, UpdateEntry};
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;

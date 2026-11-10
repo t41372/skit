@@ -12,6 +12,9 @@ use std::{
     process::Command,
 };
 
+#[path = "support/version_line.rs"]
+mod expected_version;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -136,8 +139,8 @@ fn test_version_is_single_sourced_from_the_distribution() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        output.stdout,
-        format!("skit {pyproject_version}\n").as_bytes(),
+        String::from_utf8_lossy(&output.stdout),
+        expected_version::version_line(pyproject_version),
         "the installed binary reports a different version"
     );
     assert!(

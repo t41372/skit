@@ -200,6 +200,25 @@ impl<'a> RunServices<'a> {
     pub(crate) const fn probe(&self) -> &'a dyn ProgramProbe {
         self.ports.probe()
     }
+
+    /// The output that a run writes its lines to.
+    pub(crate) const fn output(&self) -> &'a dyn HostOutput {
+        self.output
+    }
+
+    /// The same services with another output, for a caller that frames the lines of a run.
+    pub(crate) fn with_output<'b>(&self, output: &'b dyn HostOutput) -> RunServices<'b>
+    where
+        'a: 'b,
+    {
+        RunServices {
+            invocation: self.invocation.clone(),
+            ports: self.ports,
+            allocator: self.allocator,
+            output,
+            clock: self.clock,
+        }
+    }
 }
 
 /// Options for `skit run`.
@@ -209,11 +228,11 @@ pub(crate) struct RunArgs {
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     pub(crate) selector: String,
 
-    /// Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set).
+    /// Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the launch menu no longer asks for a field you set).
     #[arg(long = "set", value_name = "NAME=VALUE")]
     pub(crate) values: Vec<String>,
 
-    /// Named preset of parameter values to prefill the form with.
+    /// Named preset of parameter values to prefill the launch menu with.
     #[arg(
         long,
         short = 'p',
@@ -241,17 +260,22 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) no_input: bool,
 
-    /// Line-by-line prompts instead of the inline form.
+    /// Line-by-line prompts instead of the inline launch menu.
     #[arg(long)]
     pub(crate) plain: bool,
 
-    /// Skip the parameter form and injection and run the script as-is (escape hatch).
+    /// Skip the launch menu and injection and run the script as-is (escape hatch).
     #[arg(long)]
     pub(crate) raw: bool,
 
     /// Forget the remembered extra arguments before this run (they are otherwise reused when you pass none).
     #[arg(long)]
     pub(crate) forget_args: bool,
+
+    /// The launch menu showed the extra-arguments box, so `extra_args` is the whole tail of this
+    /// run, also when the box is empty.
+    #[arg(skip)]
+    pub(crate) extra_args_from_menu: bool,
 
     /// Arguments after `--`.
     #[arg(last = true, value_name = "ARGS")]
@@ -281,7 +305,7 @@ pub(crate) enum RunError {
     UnknownSet { names: String, valid: String },
     #[error("preset {name:?} does not exist")]
     PresetNotFound { name: String },
-    #[error("{name} has no form fields, so there's nothing to save.")]
+    #[error("{name} has no parameters, so there is nothing to save.")]
     PresetWithoutFields { name: String },
     #[error("could not read {path}: {source}")]
     Read {
@@ -324,11 +348,11 @@ pub(crate) enum RunError {
     #[error("could not determine the platform configuration directory; set SKIT_CONFIG_DIR")]
     ConfigDirectoryUnavailable,
     #[error(
-        "The script and its form definitions don't match anymore: {parameter}. Run `skit params {entry} --resync` to fix it."
+        "The script and its parameter definitions no longer match: {parameter}. Run `skit params {entry} --resync` to fix it."
     )]
     InjectionDrift { parameter: String, entry: String },
     #[error(
-        "The script and its form definitions don't match anymore: {detail}. Run `skit params {entry} --resync` to fix it."
+        "The script and its parameter definitions no longer match: {detail}. Run `skit params {entry} --resync` to fix it."
     )]
     InjectionSemanticDrift { detail: Message, entry: String },
     #[error("skit refused to run its own injected copy: {detail}")]
@@ -356,7 +380,7 @@ impl Localize for RunError {
             }
             Self::PresetNotFound { name } => Message::new("preset {} does not exist").quoted(name),
             Self::PresetWithoutFields { name } => {
-                Message::new("{} has no form fields, so there's nothing to save.").with(name)
+                Message::new("{} has no parameters, so there is nothing to save.").with(name)
             }
             Self::Read { path, source } => Message::new("could not read {}: {}")
                 .with(path)
@@ -396,12 +420,12 @@ impl Localize for RunError {
                 "could not determine the platform configuration directory; set SKIT_CONFIG_DIR",
             ),
             Self::InjectionDrift { parameter, entry } => Message::new(
-                "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+                "The script and its parameter definitions no longer match: {}. Run `skit params {} --resync` to fix it.",
             )
             .with(parameter)
             .with(entry),
             Self::InjectionSemanticDrift { detail, entry } => Message::new(
-                "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+                "The script and its parameter definitions no longer match: {}. Run `skit params {} --resync` to fix it.",
             )
             .nested(detail.clone())
             .with(entry),
@@ -556,7 +580,7 @@ pub(crate) fn run_with_services(
 
     let (extra_args, expand_extra, new_tail) = if args.raw {
         (args.extra_args.clone(), false, None)
-    } else if !args.extra_args.is_empty() {
+    } else if !args.extra_args.is_empty() || args.extra_args_from_menu {
         (
             args.extra_args.clone(),
             false,
@@ -567,7 +591,11 @@ pub(crate) fn run_with_services(
     } else {
         (saved.extra_args.clone(), saved.extra_args_raw, None)
     };
-    if !args.raw && args.extra_args.is_empty() && !args.forget_args && !saved.extra_args.is_empty()
+    if !args.raw
+        && args.extra_args.is_empty()
+        && !args.extra_args_from_menu
+        && !args.forget_args
+        && !saved.extra_args.is_empty()
     {
         services.output.diagnostic(&skit_i18n::format_text(
             services.invocation.locale,
@@ -2129,6 +2157,7 @@ mod tests {
                 plain: true,
                 raw: false,
                 forget_args: false,
+                extra_args_from_menu: false,
                 extra_args: Vec::new(),
             },
         )
@@ -2708,15 +2737,15 @@ mod localization_tests {
         for (locale, expected) in [
             (
                 Locale::En,
-                "The script and its form definitions don't match anymore: source changed after semantic edit planning. Run `skit params demo --resync` to fix it.",
+                "The script and its parameter definitions no longer match: source changed after semantic edit planning. Run `skit params demo --resync` to fix it.",
             ),
             (
                 Locale::ZhCn,
-                "脚本内容和表单定义对不上了：源文件在语义编辑规划后已更改。运行 `skit params demo --resync` 即可修复。",
+                "脚本内容和参数定义对不上了：源文件在语义编辑规划后已更改。运行 `skit params demo --resync` 即可修复。",
             ),
             (
                 Locale::ZhTw,
-                "腳本內容和表單定義對不上了：來源在語義編輯規劃後已變更。執行 `skit params demo --resync` 即可修復。",
+                "腳本內容和參數定義對不上了：來源在語義編輯規劃後已變更。執行 `skit params demo --resync` 即可修復。",
             ),
         ] {
             assert_eq!(semantic_drift.message().localize(locale), expected);

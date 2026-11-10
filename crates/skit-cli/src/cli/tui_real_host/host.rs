@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use skit_application::{
     LibraryService, form_state::FormStateService, prompt_selection::PromptSelectionService,
 };
-use skit_i18n::{Locale, Localize, Message, requested_locale};
+use skit_i18n::{Locale, requested_locale};
 use skit_store::{FileConfigStore, FileFormStateStore, FilePromptSelectionStore, FileStore};
 use skit_tui_walker_support::{
     engine::CheckpointCauseProjection,
@@ -385,12 +385,22 @@ impl SeededTuiHost {
                     .record_created_copy(&self.service, &action);
                 Ok(action)
             }
-            Err(error) => Ok(Action::SetStatus(
-                Message::new("Error: {}")
-                    .nested(error.message())
-                    .localize(self.locale.get()),
+            Err(error) => Ok(skit_tui::preflight_refusal_status(
+                &error,
+                self.locale.get(),
             )),
         }
+    }
+
+    /// Answer one effect the way the hosted terminal of the product answers it.
+    ///
+    /// The terminal shows a host failure as a status line and keeps the session, so the walk
+    /// does the same. The terminal checks the preflight only before the first effect of a chain.
+    /// Only a run and a rerun have a preflight, and the reducer emits them only for an input
+    /// action, so a check before each effect gives the same result.
+    pub(crate) fn hosted_dispatch(&self, effect: Effect) -> Action {
+        self.dispatch(effect)
+            .unwrap_or_else(|error| skit_tui::host_failure_status(&error, self.locale.get()))
     }
 
     fn pending_observation(&self) -> Result<PendingHostObservation, String> {

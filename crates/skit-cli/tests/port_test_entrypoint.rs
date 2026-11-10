@@ -17,6 +17,9 @@
 //! - Python `skit.__version__` -> `env!("CARGO_PKG_VERSION")` (the test crate is the same
 //!   package `skit-cli-rs`, so this equals the binary's version).
 //!
+//! The version line is no longer the oracle line. On 2026-11-09 the owner added the build commit:
+//! `skit 0.5.0 (1a2b3c4d5)`. `support/version_line.rs` asks `git` for the expected commit.
+//!
 //! Buckets:
 //! - Real asserting tests (8 def -> 10 `#[test]`): the observable half of every version-flag
 //!   contract -- exact stdout line, plain text, exit code, the `--version`-vs-callback byte
@@ -31,6 +34,9 @@
 use std::fs;
 
 use tempfile::TempDir;
+
+#[path = "support/version_line.rs"]
+mod expected_version;
 
 /// The three skit directories plus `SKIT_LANG=en`, so every `skit` invocation writes only
 /// inside the temp sandbox and speaks the English source locale.
@@ -70,9 +76,9 @@ impl Sandbox {
     }
 }
 
-/// The one version line both paths print: `skit <version>\n`.
+/// The one version line both paths print: `skit <version> (<commit>)\n` in a Git checkout.
 fn version_line() -> String {
-    format!("skit {}\n", env!("CARGO_PKG_VERSION"))
+    expected_version::version_line(env!("CARGO_PKG_VERSION"))
 }
 
 #[test]

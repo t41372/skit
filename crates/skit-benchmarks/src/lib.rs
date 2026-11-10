@@ -22,7 +22,8 @@ pub mod runner;
 pub mod sources;
 pub mod stats;
 pub mod suites;
-#[cfg(test)]
+// Only the Unix tests make a git repository fixture.
+#[cfg(all(test, unix))]
 mod test_support;
 pub mod tui_probe;
 

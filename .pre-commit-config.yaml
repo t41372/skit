@@ -1,4 +1,4 @@
-# Install prek 0.4.12, then run `prek install` and `prek run --all-files`.
+# Install prek 0.5.10, then run `prek install` and `prek run --all-files`.
 default_install_hook_types: [pre-commit, commit-msg]
 minimum_pre_commit_version: "3.5.0"
 

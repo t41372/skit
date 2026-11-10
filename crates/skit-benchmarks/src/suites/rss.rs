@@ -1,26 +1,33 @@
 //! Peak resident memory of fresh CLI processes.
+//!
+//! The probe runs POSIX `time`, so Windows skips the suite and builds none of the probe code.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::fs;
+#[cfg(not(windows))]
 use std::{collections::BTreeMap, path::Path};
 
+#[cfg(not(windows))]
 use crate::{
-    Metric, SuiteKind, SuiteOutput, SuitePlan,
+    Metric,
     process::{ProcessSpec, run as run_process},
-    runner::{PROBE_TIMEOUT, RunContext, path_arg},
+    runner::{PROBE_TIMEOUT, path_arg},
     stats::{median, nearest_rank_p95, sample_stddev},
 };
+use crate::{SuiteKind, SuiteOutput, SuitePlan, runner::RunContext};
 
 use super::SuiteError;
 
 #[cfg(target_os = "macos")]
 use crate::parsers::bsd_time_max_kib;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use crate::parsers::gnu_time_max_kib;
 
 pub(super) fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput, SuiteError> {
     #[cfg(windows)]
     {
+        // The probe needs POSIX `time`, so it uses neither the context nor the plan.
+        let _ = (context, plan);
         Ok(SuiteOutput::skip_all(
             SuiteKind::Rss,
             "peak RSS probe is POSIX-only",
@@ -91,6 +98,7 @@ fn run_with_time(
     Ok(output)
 }
 
+#[cfg(not(windows))]
 fn summarize_peaks(peaks: &[u64]) -> Result<(Metric, Metric), SuiteError> {
     let values = peaks.iter().map(|value| *value as f64).collect::<Vec<_>>();
     let samples = values.len();
@@ -111,6 +119,7 @@ fn summarize_peaks(peaks: &[u64]) -> Result<(Metric, Metric), SuiteError> {
     Ok((peak, maximum))
 }
 
+#[cfg(not(windows))]
 fn sample_peak(
     context: &RunContext,
     time_binary: &Path,
@@ -164,6 +173,7 @@ fn sample_peak(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     #[test]
     fn peak_maximum_retains_the_number_of_independent_samples() {
         let (peak, maximum) = super::summarize_peaks(&[10, 30, 20]).unwrap();

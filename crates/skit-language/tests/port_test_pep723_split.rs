@@ -176,7 +176,7 @@ fn test_empty_and_blank_input() {
 #[test]
 fn test_uppercase_x_in_name_is_ordinary_text() {
     // Guards the bracket character classes against corruption: an 'X' in a package
-    // name must not perturb the bracket-nesting depth (kills the "XX([XX" mutants).
+    // name must not perturb the bracket-nesting depth (only bracket characters count).
     assert_eq!(split_pep508_requirements("pkgX, rich"), ["pkgX", "rich"]);
 }
 

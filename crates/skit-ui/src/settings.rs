@@ -11,13 +11,14 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use skit_domain::parameters::{ParamDecl, ParameterBinding};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, SourceEditWarning};
 use skit_form::{
     field::{
         ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue,
     },
     parameter_section::{
         ParameterRow, ParameterSection, ParameterSectionContext, SourceFollowup, parameter_section,
+        source_managed_section,
     },
 };
 use skit_language::split_pep508_requirements;
@@ -117,7 +118,7 @@ impl SettingsSectionId {
             Self::Storage => "Storage",
             Self::Launch => "Run in (working directory)",
             Self::Runner => "Runner (the agent this prompt runs with)",
-            Self::Parameters => "Parameters (the run form's fields)",
+            Self::Parameters => "Parameters (fields in the launch menu)",
             Self::Presets => "Presets",
             Self::Dependencies => "Dependencies",
             Self::Needs => "Needs (external commands)",
@@ -284,6 +285,91 @@ pub struct SettingsInputs {
     pub revealed: Option<SettingsSectionId>,
 }
 
+/// The inputs of one parameter section whose schema the stored source owns.
+///
+/// The screen keeps the set it opened with, so a resync that is taken back can restore it. The host
+/// answers a resync with a new set of the same shape.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct SourceParameters {
+    /// Parameters the source's skit block declares, with the defaults the script shows.
+    pub managed: Vec<ParamDecl>,
+    /// Constants the analyzer found that nobody manages yet, in detection order.
+    pub candidates: Vec<String>,
+    /// How many fields the script's own command-line reader models.
+    pub reader_fields: usize,
+}
+
+/// What a resync will change, read from the script before the save.
+///
+/// Version 0.4's `Ctrl+R` reads the definitions again at once, keeps the result in memory, and
+/// prints the report above the save (`src/skit/tui_settings.py:908-926`, shown at `:637`). The host
+/// builds this value and writes nothing. The save runs the resync again on the script it reads at
+/// that time, so this value shows what the save will do.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SettingsResyncPreview {
+    /// The parameter section after the resync.
+    pub parameters: SourceParameters,
+    /// What the resync reports, in operation order. An empty list means that nothing drifted.
+    pub warnings: Vec<SourceEditWarning>,
+}
+
+/// The resync state of a parameter section whose schema the stored source owns.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ResyncState {
+    /// Entry kind. It decides the shell-only offer in the section.
+    kind: String,
+    /// The section the screen opened with.
+    opened: SourceParameters,
+    /// The host's answer, while the resync is ticked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<SettingsResyncPreview>,
+    /// Edits whose controls the shown section does not have, by field key.
+    ///
+    /// An answer can drop a row that already has an edit. The edit stays here until a rebuilt
+    /// section has its control again, so unticking the resync gives the edit back with its row. An
+    /// edit that is not on the screen never travels in a save.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    set_aside: BTreeMap<String, FieldValue>,
+}
+
+impl ResyncState {
+    /// Build the source-managed parameter section again, and keep every edit made in it.
+    ///
+    /// The section shows the host's answer while there is one, with its report, and the
+    /// definitions that the screen opened with otherwise. An edit moves to the rebuilt control
+    /// with the same key. An edit whose control the rebuilt section does not have is set aside.
+    fn rebuild(&mut self, sections: &mut [SettingsSection]) {
+        let (parameters, report) = match &self.preview {
+            Some(preview) => (&preview.parameters, Some(preview.warnings.as_slice())),
+            None => (&self.opened, None),
+        };
+        let mut edits = std::mem::take(&mut self.set_aside);
+        for section in sections
+            .iter_mut()
+            .filter(|section| section.id == SettingsSectionId::Parameters)
+        {
+            edits.extend(
+                section
+                    .fields()
+                    .filter(|field| field.is_dirty())
+                    .map(|field| (field.key.clone(), field.value().clone())),
+            );
+            let (rows, followup) = source_managed_section(
+                &parameters.managed,
+                &parameters.candidates,
+                parameters.reader_fields,
+            );
+            section.items = source_managed_items(&self.kind, parameters, rows, followup, report);
+            for field in section.fields_mut() {
+                if let Some(value) = edits.remove(&field.key) {
+                    carry_edit(field, &value);
+                }
+            }
+        }
+        self.set_aside = edits;
+    }
+}
+
 /// The complete settings screen as frontend-neutral state.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SettingsView {
@@ -326,6 +412,11 @@ pub struct SettingsView {
     /// empty path is not a policy" (`src/skit/tui_settings.py:508-512`). Keeping it here means the
     /// host never re-reads it, so a concurrent write cannot become the fallback.
     stored_workdir: String,
+    /// The parameter section a resync starts from, and the host's answer while it is ticked.
+    ///
+    /// It exists exactly where [`RESYNC_KEY`] exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resync: Option<ResyncState>,
 }
 
 /// One typed edit to the settings screen.
@@ -348,8 +439,18 @@ pub enum SettingsAction {
     FocusNext,
     /// Move the keyboard one stop back.
     FocusPrevious,
-    /// Ask the script for its parameter definitions again when the save runs.
+    /// Tick or untick the resync.
+    ///
+    /// Ticking it asks the host to read the script's parameter definitions again at once. The save
+    /// keeps the result.
     Resync,
+    /// Show what the resync will change, as the host read it from the script.
+    ResyncPreviewed {
+        /// Entry the host read. An answer for another entry changes nothing.
+        selector: String,
+        /// The host's answer.
+        preview: SettingsResyncPreview,
+    },
     /// Replace the settings-local detected-placeholder selection in body order.
     SetPromptCandidates {
         /// Complete selected placeholder list in body order.
@@ -370,6 +471,9 @@ pub enum SettingsEffect {
     None,
     /// Persist every axis.
     Save,
+    /// Read the script's parameter definitions again, write nothing, and answer with
+    /// [`SettingsAction::ResyncPreviewed`].
+    PreviewResync,
     /// Refuse the save and say why. Nothing was written.
     Refused(SettingsError),
     /// Leave the screen; nothing moved.
@@ -419,7 +523,7 @@ impl SettingsView {
         sections.extend(storage_section(inputs));
         sections.extend(launch_section(inputs));
         sections.extend(runner_section(inputs));
-        sections.extend(parameters_section(inputs, resync_available));
+        sections.extend(parameters_section(inputs));
         sections.push(presets_section(inputs));
         sections.extend(dependencies_section(inputs));
         sections.push(needs_section(inputs));
@@ -442,6 +546,16 @@ impl SettingsView {
                 Vec::new()
             },
             revealed,
+            resync: resync_available.then(|| ResyncState {
+                kind: inputs.kind.clone(),
+                opened: SourceParameters {
+                    managed: inputs.managed.clone(),
+                    candidates: inputs.candidates.clone(),
+                    reader_fields: inputs.reader_fields,
+                },
+                preview: None,
+                set_aside: BTreeMap::new(),
+            }),
         };
         // The keyboard lands in the section the deep link named, so the first key press acts on
         // what the user came for. A section with nothing to edit keeps the anchor instead.
@@ -749,12 +863,58 @@ impl SettingsView {
         );
     }
 
+    /// Tick or untick the resync, and report whether the host must read the script.
+    ///
+    /// Ticking asks the host for the definitions at once, as version 0.4's `Ctrl+R` does
+    /// (`src/skit/tui_settings.py:908-926`). Unticking takes the request back: the rows that the
+    /// screen opened with return with their edits, and the report goes away. Neither writes
+    /// anything.
+    fn request_resync(&mut self, ticked: bool) -> SettingsEffect {
+        if !self.set_value(RESYNC_KEY, FieldValue::boolean(ticked)) {
+            return SettingsEffect::None;
+        }
+        self.focus(RESYNC_KEY);
+        if ticked {
+            return SettingsEffect::PreviewResync;
+        }
+        if let Some(resync) = self.resync.as_mut()
+            && resync.preview.take().is_some()
+        {
+            resync.rebuild(&mut self.sections);
+        }
+        SettingsEffect::None
+    }
+
+    /// Show the host's resync answer: the rows the save will keep, and the report.
+    ///
+    /// The answer applies only while the resync for the same entry is still ticked, so a late
+    /// answer cannot bring back a request the person took back. Version 0.4 rebuilds the whole
+    /// screen and loses every unsaved edit (`src/skit/tui_settings.py:926`). Only the parameter
+    /// section is rebuilt here. An edit made in it moves to the rebuilt field with the same key, or
+    /// waits for its row when the answer drops that row.
+    fn show_resync_preview(&mut self, selector: &str, preview: SettingsResyncPreview) {
+        let ticked = self
+            .field(RESYNC_KEY)
+            .is_some_and(|field| field.value().as_text() == "true");
+        if self.selector != selector || !ticked {
+            return;
+        }
+        if let Some(resync) = self.resync.as_mut() {
+            resync.preview = Some(preview);
+            resync.rebuild(&mut self.sections);
+        }
+    }
+
     /// Apply one typed edit and report what the host must do.
     ///
     /// `Close` routes through the discard guard whenever anything moved, so leaving never drops
     /// work silently (`src/skit/tui_settings.py:43-46` is the guard it opens).
     pub fn update(&mut self, action: SettingsAction) -> SettingsEffect {
         match action {
+            // A click or Space on the resync control does what the chord does.
+            SettingsAction::SetField { key, value } if key == RESYNC_KEY => {
+                self.request_resync(value.as_text() == "true")
+            }
             // Touching a control moves the keyboard to it. A click that changed a value and left
             // the cursor elsewhere would send the next arrow key to a control the user is not
             // looking at. Typing already satisfies this, so it changes nothing there.
@@ -784,8 +944,10 @@ impl SettingsView {
                     return SettingsEffect::None;
                 };
                 let next = field.value().as_text() != "true";
-                self.set_value(RESYNC_KEY, FieldValue::boolean(next));
-                self.focus(RESYNC_KEY);
+                self.request_resync(next)
+            }
+            SettingsAction::ResyncPreviewed { selector, preview } => {
+                self.show_resync_preview(&selector, preview);
                 SettingsEffect::None
             }
             SettingsAction::SetPromptCandidates { selected } => {
@@ -1013,7 +1175,7 @@ fn runner_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
     // settings and saving something unrelated never silently clears it
     // (`src/skit/tui_settings.py:547-557`).
     let stale = !inputs.runner.is_empty() && !inputs.configured_runners.contains(&inputs.runner);
-    let mut options = vec![ChoiceOption::labelled("", "ask on the run form")];
+    let mut options = vec![ChoiceOption::labelled("", "ask in the launch menu")];
     if stale {
         options.push(
             ChoiceOption::labelled(&inputs.runner, "{} (no longer configured)")
@@ -1098,7 +1260,7 @@ fn presets_section(inputs: &SettingsInputs) -> SettingsSection {
         return SettingsSection::new(
             SettingsSectionId::Presets,
             vec![SettingsItem::note(
-                "None yet — press Ctrl+S inside the run form to save one.",
+                "None yet — press Ctrl+S in the launch menu to save one.",
             )],
         );
     }
@@ -1148,7 +1310,7 @@ fn needs_section(inputs: &SettingsInputs) -> SettingsSection {
 /// Version 0.4 decides what this section *is* before it draws any row
 /// (`src/skit/tui_settings.py:588-631`), which is what keeps a control the save could not keep off
 /// the screen. Everything here follows that decision.
-fn parameters_section(inputs: &SettingsInputs, resync_available: bool) -> Option<SettingsSection> {
+fn parameters_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
     // An unknown kind gets no editor a newer skit might define.
     if inputs.kind.is_empty() {
         return None;
@@ -1190,9 +1352,17 @@ fn parameters_section(inputs: &SettingsInputs, resync_available: bool) -> Option
             items
         }
         ParameterSection::Declared { rows } => declared_items(inputs, rows),
-        ParameterSection::SourceManaged { rows, followup } => {
-            source_managed_items(inputs, rows, followup, resync_available)
-        }
+        ParameterSection::SourceManaged { rows, followup } => source_managed_items(
+            &inputs.kind,
+            &SourceParameters {
+                managed: inputs.managed.clone(),
+                candidates: inputs.candidates.clone(),
+                reader_fields: inputs.reader_fields,
+            },
+            rows,
+            followup,
+            None,
+        ),
     };
     Some(SettingsSection::new(SettingsSectionId::Parameters, items))
 }
@@ -1220,7 +1390,7 @@ fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<Setti
     if inputs.kind == "prompt" {
         items.push(SettingsItem::field(Field::new(
             INTERPOLATE_KEY,
-            "Variable insertion ({{name}} placeholders become form fields)",
+            "Variable insertion ({{name}} placeholders become launch menu fields)",
             FieldKind::Boolean,
             FieldOwner::EntryPolicy,
             FieldValue::boolean(inputs.interpolate),
@@ -1267,14 +1437,19 @@ fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<Setti
 }
 
 /// The block-managed editor: the rows, then whatever else the source allows.
+///
+/// A linked source never reaches this section (`ParameterSection::Reference` takes it), so every
+/// entry here is a stored copy with an analyzer, which is exactly where a resync does something.
+/// `report` is the host's resync answer, when the screen shows one.
 fn source_managed_items(
-    inputs: &SettingsInputs,
+    kind: &str,
+    parameters: &SourceParameters,
     rows: Vec<ParameterRow>,
     followup: SourceFollowup,
-    resync_available: bool,
+    report: Option<&[SourceEditWarning]>,
 ) -> Vec<SettingsItem> {
-    let all_input_bound = !inputs.managed.is_empty()
-        && inputs
+    let all_input_bound = !parameters.managed.is_empty()
+        && parameters
             .managed
             .iter()
             .all(|declaration| declaration.binding == ParameterBinding::Input);
@@ -1284,7 +1459,7 @@ fn source_managed_items(
         // Managing a constant would write a block that shadows the script's own reader, so version
         // 0.4 explains instead of offering the checkboxes (`src/skit/tui_settings.py:612-623`).
         SourceFollowup::ReaderDriven => items.push(SettingsItem::note(
-            "This script's run form comes from its own command-line arguments. Managing a hardcoded constant here would replace that form — leave it as is.",
+            "This script's launch menu comes from its own command-line arguments. Managing a hardcoded constant here would replace that launch menu — leave it as is.",
         )),
         // The offer's own label is version 0.4's sentence above the checkboxes (`:624-631`).
         SourceFollowup::Offer { candidates } => items.push(SettingsItem::field(Field::new(
@@ -1304,16 +1479,16 @@ fn source_managed_items(
     }
     // The one opt-in semantic edit to a stored script, and the only kind it applies to. Version 0.4
     // advises the same rewrite from the command line (`src/skit/cli.py:4014`, `:4113-4116`).
-    if inputs.kind == "shell" && !inputs.reference_mode {
+    if kind == "shell" {
         // A constant that already reads `${NAME:-value}` is the result of this rewrite, so offering
         // it again would be a control whose only outcome is a refusal — the normalizer refuses a
         // value that names itself (`crates/skit-language/src/semantic/shell.rs:747-751`).
-        let names = inputs
+        let names = parameters
             .managed
             .iter()
             .filter(|declaration| declaration.binding != ParameterBinding::EnvDefault)
             .map(|declaration| declaration.name.clone())
-            .chain(inputs.candidates.iter().cloned())
+            .chain(parameters.candidates.iter().cloned())
             .collect::<Vec<_>>();
         if !names.is_empty() {
             items.push(SettingsItem::field(Field::new(
@@ -1329,16 +1504,47 @@ fn source_managed_items(
     }
     // The chord and the control appear together, so `Ctrl+R` can never be advertised for a screen
     // that has nothing to resync (`src/skit/tui_settings.py:408-415`).
-    if resync_available {
-        items.push(SettingsItem::field(Field::new(
-            RESYNC_KEY,
-            "Read the parameter definitions from the script again on save",
-            FieldKind::Boolean,
-            FieldOwner::SourceBlock,
-            FieldValue::boolean(false),
-        )));
+    items.push(SettingsItem::field(Field::new(
+        RESYNC_KEY,
+        "Read the parameter definitions from the script again on save",
+        FieldKind::Boolean,
+        FieldOwner::SourceBlock,
+        FieldValue::boolean(false),
+    )));
+    // The report comes right after the control that asked for it. Version 0.4 prints the warnings,
+    // or one sentence when there are none (`src/skit/tui_settings.py:917-925`).
+    if let Some(warnings) = report {
+        if warnings.is_empty() {
+            items.push(SettingsItem::note("Everything still matches the script."));
+        }
+        items.extend(warnings.iter().map(|warning| {
+            SettingsItem::Note(SettingsNote {
+                text: warning.template().to_owned(),
+                arguments: warning.name().map(str::to_owned).into_iter().collect(),
+            })
+        }));
     }
     items
+}
+
+/// Put one edit on the rebuilt field that has the same key.
+///
+/// A rebuilt option set can lose an option, for example a constant the script no longer has, so a
+/// carried selection keeps only the options that still exist.
+fn carry_edit(field: &mut Field, value: &FieldValue) {
+    let carried = match (&field.kind, value.explicit()) {
+        (FieldKind::MultiChoice { options }, Some(TypedValue::Choices(picked))) => {
+            FieldValue::Explicit(TypedValue::Choices(
+                picked
+                    .iter()
+                    .filter(|name| options.iter().any(|option| option.value == **name))
+                    .cloned()
+                    .collect(),
+            ))
+        }
+        _ => value.clone(),
+    };
+    field.set_value(carried);
 }
 
 fn row_items(rows: Vec<ParameterRow>) -> Vec<SettingsItem> {
@@ -1399,6 +1605,7 @@ mod tests {
             focused: String::new(),
             revealed: None,
             stored_workdir: String::new(),
+            resync: None,
         };
         let before = serde_json::to_value(&view).unwrap();
 
@@ -1431,7 +1638,7 @@ mod tests {
             ),
             (
                 SettingsSectionId::Parameters,
-                "Parameters (the run form's fields)",
+                "Parameters (fields in the launch menu)",
             ),
             (SettingsSectionId::Presets, "Presets"),
             (SettingsSectionId::Dependencies, "Dependencies"),
@@ -2121,7 +2328,7 @@ mod tests {
         assert!(
             notes(&reader_driven, SettingsSectionId::Parameters)
                 .iter()
-                .any(|note| note.starts_with("This script's run form comes from its own")),
+                .any(|note| note.starts_with("This script's launch menu comes from its own")),
             "the trap must be explained"
         );
     }
@@ -2176,6 +2383,47 @@ mod tests {
         let picker = view.prompt_picker();
 
         assert!(!picker.is_selected(&"VALUE_0".to_owned()));
+    }
+
+    /// The full picker sits directly below the inline preview and its count. It shows only when
+    /// the preview hides a candidate.
+    ///
+    /// Failure modes: the picker is missing when the preview hides candidates; the picker shows
+    /// when all candidates are in the preview; the picker moves away from the preview.
+    #[test]
+    fn the_full_picker_follows_the_preview_only_when_the_preview_hides_candidates() {
+        let prompt = |count: usize| {
+            SettingsView::from_inputs(&SettingsInputs {
+                kind: "prompt".to_owned(),
+                name: "Prompt".to_owned(),
+                supports_modes: true,
+                declared_schema: true,
+                interpolate: true,
+                candidates: (0..count).map(|index| format!("VALUE_{index}")).collect(),
+                ..SettingsInputs::default()
+            })
+        };
+
+        assert_eq!(
+            parameter_items(&prompt(crate::PROMPT_LIST_PREVIEW_LIMIT)),
+            [
+                INTERPOLATE_KEY,
+                "note: Off — the body travels to the agent exactly as written.",
+                PROMPT_CANDIDATES_KEY,
+                ADD_PARAMETER_KEY,
+            ]
+        );
+        assert_eq!(
+            parameter_items(&prompt(crate::PROMPT_LIST_PREVIEW_LIMIT + 1)),
+            [
+                INTERPOLATE_KEY,
+                "note: Off — the body travels to the agent exactly as written.",
+                PROMPT_CANDIDATES_KEY,
+                "note: …and {} more",
+                "picker",
+                ADD_PARAMETER_KEY,
+            ]
+        );
     }
 
     /// A command entry edits its own command line here, and a prompt edits its insertion switch.
@@ -2385,7 +2633,10 @@ mod tests {
         assert!(view.resync_available);
         assert!(view.field(RESYNC_KEY).is_some());
 
-        assert_eq!(view.update(SettingsAction::Resync), SettingsEffect::None);
+        assert_eq!(
+            view.update(SettingsAction::Resync),
+            SettingsEffect::PreviewResync
+        );
         assert_eq!(
             view.field(RESYNC_KEY).unwrap().value(),
             &FieldValue::boolean(true)
@@ -2410,7 +2661,353 @@ mod tests {
             declared.update(SettingsAction::Resync),
             SettingsEffect::None
         );
+        // A click that names the control on a screen without it changes nothing either.
+        assert_eq!(
+            declared.update(SettingsAction::SetField {
+                key: RESYNC_KEY.to_owned(),
+                value: FieldValue::boolean(true),
+            }),
+            SettingsEffect::None
+        );
         assert!(declared.submitted_values().is_empty());
+    }
+
+    fn constant(name: &str, default: &str) -> ParamDecl {
+        let mut declaration = ParamDecl::new(name);
+        declaration.default = Some(skit_domain::parameters::ParameterValue::String(
+            default.to_owned(),
+        ));
+        declaration
+    }
+
+    /// The inputs of a stored Python copy whose block manages `NAME` and `GONE`.
+    fn resync_inputs() -> SettingsInputs {
+        SettingsInputs {
+            managed: vec![constant("NAME", "hello"), constant("GONE", "3")],
+            candidates: vec!["WIDTH".to_owned(), "DEPTH".to_owned()],
+            ..python_inputs()
+        }
+    }
+
+    /// The host's answer when the script lost `GONE` and `DEPTH`.
+    fn dropped_gone() -> SettingsResyncPreview {
+        SettingsResyncPreview {
+            parameters: SourceParameters {
+                managed: vec![constant("NAME", "bonjour")],
+                candidates: vec!["WIDTH".to_owned()],
+                reader_fields: 0,
+            },
+            warnings: vec![SourceEditWarning::ResyncDropped {
+                name: "GONE".to_owned(),
+            }],
+        }
+    }
+
+    fn set(view: &mut SettingsView, key: &str, value: FieldValue) -> SettingsEffect {
+        view.update(SettingsAction::SetField {
+            key: key.to_owned(),
+            value,
+        })
+    }
+
+    fn previewed(view: &mut SettingsView, selector: &str, preview: SettingsResyncPreview) {
+        assert_eq!(
+            view.update(SettingsAction::ResyncPreviewed {
+                selector: selector.to_owned(),
+                preview,
+            }),
+            SettingsEffect::None
+        );
+    }
+
+    /// Return the parameter section's items as short tags: a field key or a note template.
+    fn parameter_items(view: &SettingsView) -> Vec<String> {
+        view.sections
+            .iter()
+            .filter(|section| section.id == SettingsSectionId::Parameters)
+            .flat_map(|section| section.items.iter())
+            .map(|item| match item {
+                SettingsItem::Field(field) => field.key.clone(),
+                SettingsItem::Note(note) => format!("note: {}", note.text),
+                SettingsItem::PromptCandidatePicker => "picker".to_owned(),
+            })
+            .collect()
+    }
+
+    /// Ticking the resync asks the host at once, and its answer rebuilds the rows and nothing else.
+    ///
+    /// Version 0.4 reads the definitions again on `Ctrl+R` and prints the report above the save
+    /// (`src/skit/tui_settings.py:908-926`, `:637`). Failure modes: the answer replaces edits in
+    /// another section; an edit on a surviving row is lost; a selection keeps a candidate the
+    /// script lost; the report sits away from its control; the save no longer asks for the resync.
+    #[test]
+    fn ticking_the_resync_asks_the_host_and_its_answer_rebuilds_only_the_rows() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        set(&mut view, NAME_KEY, FieldValue::text("Renamed"));
+        set(&mut view, "parameter:NAME:prompt", FieldValue::text("Who"));
+        set(&mut view, "parameter:GONE:prompt", FieldValue::text("Lost"));
+        set(
+            &mut view,
+            MANAGE_KEY,
+            FieldValue::Explicit(TypedValue::Choices(vec![
+                "WIDTH".to_owned(),
+                "DEPTH".to_owned(),
+            ])),
+        );
+        assert_eq!(
+            view.update(SettingsAction::Resync),
+            SettingsEffect::PreviewResync
+        );
+        // Until the host answers, the rows are the ones the screen opened with.
+        assert!(view.field("parameter:GONE:keep").is_some());
+
+        previewed(&mut view, "tool", dropped_gone());
+        assert!(view.field("parameter:GONE:keep").is_none());
+        assert_eq!(
+            view.field("parameter:NAME:keep").unwrap().label,
+            "NAME  str 'bonjour'"
+        );
+        assert_eq!(
+            view.field(NAME_KEY).unwrap().value(),
+            &FieldValue::text("Renamed")
+        );
+        assert_eq!(
+            view.field("parameter:NAME:prompt").unwrap().value(),
+            &FieldValue::text("Who")
+        );
+        assert_eq!(
+            view.field(MANAGE_KEY).unwrap().value(),
+            &FieldValue::Explicit(TypedValue::Choices(vec!["WIDTH".to_owned()]))
+        );
+        let items = parameter_items(&view);
+        let control = items.iter().position(|item| item == RESYNC_KEY).unwrap();
+        assert_eq!(
+            items[control + 1],
+            "note: Dropped {}: it no longer exists in the script."
+        );
+        let report = view
+            .sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .find_map(|item| match item {
+                SettingsItem::Note(note) if note.text.starts_with("Dropped") => Some(note),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(report.arguments, ["GONE"]);
+        assert_eq!(view.focused(), RESYNC_KEY);
+
+        let values = view.submitted_values();
+        assert_eq!(values.get(RESYNC_KEY), Some(&FieldValue::boolean(true)));
+        assert_eq!(values.get(NAME_KEY), Some(&FieldValue::text("Renamed")));
+        assert_eq!(
+            values.get("parameter:NAME:prompt"),
+            Some(&FieldValue::text("Who"))
+        );
+        assert!(!values.contains_key("parameter:GONE:prompt"));
+    }
+
+    /// A report with nothing to say says that the script still matches, as version 0.4 does.
+    ///
+    /// Every other warning keeps its own sentence and the name it is about
+    /// (`src/skit/tui_settings.py:917-925`).
+    #[test]
+    fn the_report_names_each_warning_or_says_that_everything_still_matches() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        view.update(SettingsAction::Resync);
+        previewed(
+            &mut view,
+            "tool",
+            SettingsResyncPreview {
+                parameters: SourceParameters {
+                    managed: resync_inputs().managed,
+                    candidates: resync_inputs().candidates,
+                    reader_fields: 0,
+                },
+                warnings: Vec::new(),
+            },
+        );
+        assert!(
+            notes(&view, SettingsSectionId::Parameters)
+                .contains(&"Everything still matches the script.".to_owned())
+        );
+
+        // A second tick asks again, and the new answer replaces the old report.
+        view.update(SettingsAction::Resync);
+        assert_eq!(
+            view.update(SettingsAction::Resync),
+            SettingsEffect::PreviewResync
+        );
+        previewed(
+            &mut view,
+            "tool",
+            SettingsResyncPreview {
+                parameters: SourceParameters {
+                    managed: resync_inputs().managed,
+                    candidates: Vec::new(),
+                    reader_fields: 0,
+                },
+                warnings: vec![
+                    SourceEditWarning::ResyncSkipped,
+                    SourceEditWarning::ResyncRebound {
+                        name: "NAME".to_owned(),
+                    },
+                ],
+            },
+        );
+        let reported = view
+            .sections
+            .iter()
+            .filter(|section| section.id == SettingsSectionId::Parameters)
+            .flat_map(|section| section.items.iter())
+            .filter_map(|item| match item {
+                SettingsItem::Note(note) => Some((note.text.as_str(), note.arguments.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            reported.contains(&(
+                "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
+                Vec::new()
+            )),
+            "{reported:?}"
+        );
+        assert!(
+            reported
+                .iter()
+                .any(|(text, arguments)| text.starts_with("{}: re-anchored")
+                    && arguments == &["NAME".to_owned()]),
+            "{reported:?}"
+        );
+        assert!(
+            !reported
+                .iter()
+                .any(|(text, _)| *text == "Everything still matches the script."),
+            "{reported:?}"
+        );
+    }
+
+    /// Unticking takes the request back: the opened rows return, with their edits, and the report
+    /// goes away.
+    ///
+    /// The control is a checkbox, so it is reversible (`docs/behavior-changes.md`). A screen with
+    /// no other edit is then clean, and leaving it asks nothing.
+    #[test]
+    fn unticking_the_resync_restores_the_opened_rows_and_takes_the_report_back() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        let opened = view.clone();
+        view.update(SettingsAction::Resync);
+        previewed(&mut view, "tool", dropped_gone());
+        set(&mut view, "parameter:NAME:prompt", FieldValue::text("Who"));
+
+        // The click path does what the chord does.
+        assert_eq!(
+            set(&mut view, RESYNC_KEY, FieldValue::boolean(false)),
+            SettingsEffect::None
+        );
+        assert!(view.field("parameter:GONE:keep").is_some());
+        assert_eq!(
+            view.field("parameter:NAME:prompt").unwrap().value(),
+            &FieldValue::text("Who")
+        );
+        assert!(
+            !notes(&view, SettingsSectionId::Parameters)
+                .iter()
+                .any(|note| note.starts_with("Dropped")),
+        );
+        set(&mut view, "parameter:NAME:prompt", FieldValue::text(""));
+        assert!(!view.is_dirty());
+        assert_eq!(view.sections, opened.sections);
+        assert_eq!(view.update(SettingsAction::Close), SettingsEffect::Close);
+
+        // Unticking before any answer has nothing to restore.
+        let mut waiting = SettingsView::from_inputs(&resync_inputs());
+        waiting.update(SettingsAction::Resync);
+        assert_eq!(waiting.update(SettingsAction::Resync), SettingsEffect::None);
+        assert_eq!(waiting.sections, opened.sections);
+    }
+
+    /// Unticking gives back the edits on a row that the answer dropped, together with the row.
+    ///
+    /// The checkbox is reversible (`docs/behavior-changes.md`), so a tick and an untick must leave
+    /// the rows as they were. Failure modes: the edit goes away with the hidden row, so the save
+    /// keeps a parameter that the person unmanaged; the discard guard no longer sees the edit; the
+    /// edit travels while the resync that drops its row is ticked; a second tick and untick lose it.
+    #[test]
+    fn unticking_the_resync_gives_back_the_edits_on_a_dropped_row() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        set(&mut view, "parameter:GONE:keep", FieldValue::boolean(false));
+        set(&mut view, "parameter:GONE:prompt", FieldValue::text("Lost"));
+        let edited = view.clone();
+
+        for _ in 0..2 {
+            view.update(SettingsAction::Resync);
+            previewed(&mut view, "tool", dropped_gone());
+            assert!(view.field("parameter:GONE:keep").is_none());
+            let values = view.submitted_values();
+            assert!(
+                !values.keys().any(|key| key.starts_with("parameter:GONE:")),
+                "{values:?}"
+            );
+
+            assert_eq!(view.update(SettingsAction::Resync), SettingsEffect::None);
+            assert_eq!(view.sections, edited.sections);
+            assert!(view.is_dirty());
+            let values = view.submitted_values();
+            assert_eq!(
+                values.get("parameter:GONE:keep"),
+                Some(&FieldValue::boolean(false))
+            );
+            assert_eq!(
+                values.get("parameter:GONE:prompt"),
+                Some(&FieldValue::text("Lost"))
+            );
+        }
+        assert_eq!(
+            view.update(SettingsAction::Close),
+            SettingsEffect::ConfirmDiscard
+        );
+    }
+
+    /// An answer for another entry, or for a request that was taken back, changes nothing.
+    #[test]
+    fn a_stale_resync_answer_changes_nothing() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        view.update(SettingsAction::Resync);
+        let asked = view.clone();
+        previewed(&mut view, "other", dropped_gone());
+        assert_eq!(view, asked);
+
+        view.update(SettingsAction::Resync);
+        let taken_back = view.clone();
+        previewed(&mut view, "tool", dropped_gone());
+        assert_eq!(view, taken_back);
+        assert!(view.field("parameter:GONE:keep").is_some());
+    }
+
+    /// The answer is part of the screen state, so it survives serialization. So does an edit on a
+    /// row that the answer hides.
+    #[test]
+    fn a_shown_resync_answer_survives_a_serialized_round_trip() {
+        let mut view = SettingsView::from_inputs(&resync_inputs());
+        set(&mut view, "parameter:GONE:keep", FieldValue::boolean(false));
+        view.update(SettingsAction::Resync);
+        previewed(&mut view, "tool", dropped_gone());
+        let json = serde_json::to_string(&view).unwrap();
+        let mut restored: SettingsView = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, view);
+        restored.update(SettingsAction::Resync);
+        assert_eq!(
+            restored.field("parameter:GONE:keep").unwrap().value(),
+            &FieldValue::boolean(false)
+        );
+        let action = SettingsAction::ResyncPreviewed {
+            selector: "tool".to_owned(),
+            preview: dropped_gone(),
+        };
+        let restored: SettingsAction =
+            serde_json::from_str(&serde_json::to_string(&action).unwrap()).unwrap();
+        assert_eq!(restored, action);
     }
 
     fn presets(pairs: &[(&str, &[(&str, &str)])]) -> BTreeMap<String, BTreeMap<String, String>> {
@@ -2475,7 +3072,7 @@ mod tests {
         assert!(view.has_section(SettingsSectionId::Presets));
         assert_eq!(
             notes(&view, SettingsSectionId::Presets),
-            ["None yet — press Ctrl+S inside the run form to save one."]
+            ["None yet — press Ctrl+S in the launch menu to save one."]
         );
         assert!(
             view.sections

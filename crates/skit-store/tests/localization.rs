@@ -85,7 +85,7 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     );
     assert_eq!(
         error.message().localize(Locale::ZhTw),
-        "無法鎖定 /config/config.toml 處的組態：device is busy"
+        "無法鎖定 /config/config.toml 處的設定檔：device is busy"
     );
 }
 

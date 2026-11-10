@@ -2,7 +2,7 @@
 //! (`origin/main@206f9ef`): a regression guard that skit's directory resolution stays
 //! isolated even when the `SKIT_*` override env vars are absent — the second isolation
 //! layer (HOME + XDG redirect) the oracle's `conftest._isolate_skit_dirs` installs so a
-//! mutant that breaks the `SKIT_*` lookup still can not escape into the developer's real
+//! defect that breaks the `SKIT_*` lookup still can not escape into the developer's real
 //! `~/.local/share/skit` (Linux) or `~/Library/Application Support/skit` (macOS). The one
 //! `#[test]` keeps its Python `def test_*` name and its WHY comment.
 //!
@@ -110,10 +110,10 @@ fn located(doctor: &Value, field: &str) -> PathBuf {
     PathBuf::from(doctor[field].as_str().expect("string path field"))
 }
 
-/// Simulate a mutant that breaks the SKIT_DATA_DIR/STATE/CONFIG lookup.
+/// Simulate a defect that breaks the SKIT_DATA_DIR/STATE/CONFIG lookup.
 ///
-/// Even with those env vars entirely absent (as if paths.py's os.environ.get key were
-/// corrupted by a mutant), data_dir()/state_dir()/config_dir() must still resolve inside the
+/// Even with those env vars entirely absent (as if a bug had corrupted paths.py's
+/// os.environ.get key), data_dir()/state_dir()/config_dir() must still resolve inside the
 /// fixture's fake HOME (set by conftest._isolate_skit_dirs) — never inside the developer's
 /// real home directory.
 #[test]

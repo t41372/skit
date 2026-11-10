@@ -774,15 +774,14 @@ fn add_source_ctrl_d_is_distinct_from_bare_d_and_other_control_keys() {
 
     let mut session = AddScreenSession::default();
     let (_, geometry) = draw_add(&mut session, &state);
+    // A caret move changes no value, so it sends no action.
     assert_eq!(
         session.handle_event(
             Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             &state,
             &geometry,
         ),
-        Some(AddScreenEvent::Action(AddAction::SetSourcePath(
-            "abc".to_owned()
-        )))
+        Some(AddScreenEvent::Changed)
     );
     assert_eq!(
         session.handle_event(
@@ -892,7 +891,7 @@ fn add_review_notes_distinguish_empty_owned_metadata_and_modeled_boundaries() {
         "a zero-field parser must not claim a run form was modeled"
     );
     assert!(
-        !zero_rendered.contains("couldn't model them statically"),
+        !zero_rendered.contains("could not model them statically"),
         "a modeled zero-field parser must not get the unmodeled-framework notice"
     );
 
@@ -909,7 +908,7 @@ fn add_review_notes_distinguish_empty_owned_metadata_and_modeled_boundaries() {
     let (terminal, _) = draw_add_sized(&mut AddScreenSession::default(), &dynamic, 200, 100);
     assert!(
         text(terminal.backend().buffer())
-            .contains("so the run form offers an extra-arguments field"),
+            .contains("so the launch menu offers an extra-arguments field"),
         "the unmodeled CLI-framework notice is missing"
     );
 }
@@ -1602,7 +1601,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert!(
-        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        text(terminal.backend().buffer()).contains("Browse…  Ctrl+O"),
         "the visible Browse button must advertise its independent keyboard path"
     );
     assert_eq!(
@@ -1629,7 +1628,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert!(
-        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        text(terminal.backend().buffer()).contains("Browse…  Ctrl+O"),
         "Esc must return from the picker to Add Source"
     );
     assert_eq!(
@@ -1640,7 +1639,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
         ),
         EventHandling::Action(Action::Add(AddAction::Continue))
     );
-    let select_row = row_containing(terminal.backend().buffer(), "Select");
+    let select_row = row_containing(terminal.backend().buffer(), "Browse…");
     assert_eq!(
         session_click(&mut session, &state, &geometry, 3, select_row),
         EventHandling::Consumed
@@ -1765,7 +1764,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
     let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
     let rendered = text(terminal.backend().buffer());
     assert!(rendered.contains("Prompt runner"));
-    assert!(rendered.contains("Add Runner"));
+    assert!(rendered.contains("New agent…"));
 
     assert_eq!(
         session.handle_event(
@@ -1802,9 +1801,49 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
     );
 
     let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
-    let (runner_x, runner_y) = position_of(terminal.backend().buffer(), "Add Runner");
+    let (runner_x, runner_y) = position_of(terminal.backend().buffer(), "New agent…");
     assert_eq!(
         session_click(&mut session, &state, &geometry, runner_x, runner_y),
         EventHandling::Action(Action::OpenAddRunnerEditor)
+    );
+}
+
+// Ways this can fail: the wheel scrolls the focused Source path box out of view, a paste changes
+// its value there, and the page does not scroll back, so the person cannot see where the paste
+// went.
+#[test]
+fn a_paste_brings_the_focused_add_box_back_into_view() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(
+        AddWorkflowState::new(Vec::new()),
+    ))));
+    let mut session = TuiSession::default();
+    let (terminal, mut geometry) = draw_sized(&mut session, &state, 80, 12);
+    assert!(
+        text(terminal.backend().buffer()).contains("Path to a script"),
+        "the Source path box is not in view at the start"
+    );
+    for _ in 0..8 {
+        let _ = session.handle_event(scroll_down(10, 3), &state, &geometry);
+        (_, geometry) = draw_sized(&mut session, &state, 80, 12);
+    }
+    let (terminal, geometry) = draw_sized(&mut session, &state, 80, 12);
+    assert!(
+        !text(terminal.backend().buffer()).contains("Path to a script"),
+        "the wheel did not scroll the Source path box out of view"
+    );
+    let handling = session.handle_event(Event::Paste("tool.py".to_owned()), &state, &geometry);
+    assert_eq!(
+        handling,
+        EventHandling::Action(Action::Add(AddAction::SetSourcePath("tool.py".to_owned())))
+    );
+    if let EventHandling::Action(action) = handling {
+        state.update(action);
+    }
+    let (terminal, _) = draw_sized(&mut session, &state, 80, 12);
+    let rendered = text(terminal.backend().buffer());
+    assert!(
+        rendered.contains("tool.py"),
+        "the pasted value is not in view:\n{rendered}"
     );
 }

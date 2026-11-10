@@ -1,9 +1,7 @@
 use std::fs;
 
-use skit_application::{
-    CreateEntry, DiagnosticCode, EntryMutationRepository, EntryRepository, RepositoryError,
-};
-use skit_domain::{EntryKind, EntrySettings, StorageMode};
+use skit_application::{DiagnosticCode, EntryRepository, RepositoryError};
+use skit_domain::StorageMode;
 use skit_store::FileStore;
 use tempfile::TempDir;
 use toml::{Table, Value};
@@ -361,6 +359,9 @@ fn a_missing_metadata_file_is_an_io_diagnostic_during_best_effort_scan() {
 #[test]
 fn an_unusable_metadata_timestamp_never_hides_a_readable_entry() {
     use std::time::{Duration, SystemTime};
+
+    use skit_application::{CreateEntry, EntryMutationRepository as _};
+    use skit_domain::{EntryKind, EntrySettings};
 
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());

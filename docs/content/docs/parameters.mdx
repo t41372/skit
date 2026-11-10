@@ -44,7 +44,9 @@ per-field `delivers_empty` in `skit show --json`.
   a preset: presets store the run verbatim, cleared fields included.
 - **The `--` tail** (extra arguments after `--`) is remembered per entry and
   replays on the next argument-less run, with a note on stderr. `--forget-args`
-  clears it; `--raw` never replays it.
+  clears it; `--raw` never replays it. When you run an entry from the Library,
+  the launch menu shows the tail in its extra-arguments box, and the run uses
+  the box as it is. Clear the box to run without the tail; skit then forgets it.
 - **Run history**: each entry's state file records the last run's time, exit
   code, and exact values.
 - All of this lives in skit's state directory (one TOML per entry) — see

@@ -43,7 +43,7 @@
 //!   oracle's lower-level `save_last` stored the dict verbatim). `store.remove` also clearing the
 //!   state file is wired in the composition root (cli.rs:3214), so that test drives the real binary.
 //! - Python `uvman.download_url(triple)` -> `uv_asset(&target, mirror_base).url`; `uvman.UV_VERSION`
-//!   -> `skit_runtime::UV_VERSION` (deliberately bumped 0.11.26 -> 0.12.3, like `port_test_uvman.rs`);
+//!   -> `skit_runtime::UV_VERSION` (deliberately bumped 0.11.26 -> 0.13.7, like `port_test_uvman.rs`);
 //!   `uvman._triple()` (host resolution) -> `UvTarget::current()`; `uvman.ensure_uv_downloaded(quiet=True)`
 //!   -> `ensure_managed_uv(data_dir, mirror_base)` + `managed_uv_path(data_dir)`.
 //!

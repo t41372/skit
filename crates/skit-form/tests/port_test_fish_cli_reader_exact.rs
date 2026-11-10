@@ -1,7 +1,7 @@
 //! Exact public-surface ports of Python v0.4 `tests/test_fish_cli_reader_mut.py`.
 //!
 //! All eight Python tests are observable through Fish's published argparse projection. The Python
-//! SIGALRM helper only prevents a mutated implementation from hanging; the Rust test exercises the
+//! SIGALRM helper only prevents a broken implementation from hanging; the Rust test exercises the
 //! real reader directly and must complete with the exact projected field shape.
 
 use std::collections::BTreeMap;

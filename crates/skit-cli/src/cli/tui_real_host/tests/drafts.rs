@@ -458,7 +458,7 @@ fn every_accepted_allocation_purpose_projects_one_typed_sentinel() {
 }
 
 #[test]
-fn prompt_edit_drives_editor_terminal_output_and_raw_editor_failure() {
+fn prompt_edit_drives_editor_output_and_raw_editor_failure() {
     let mut spec = profile();
     spec.settings
         .insert("editor".to_owned(), "walker-editor --wait".to_owned());
@@ -489,6 +489,8 @@ fn prompt_edit_drives_editor_terminal_output_and_raw_editor_failure() {
         source: PathBuf::from("prompt.md"),
     });
     let mut success = RealWalkerHost::spawn(spec.clone()).unwrap();
+    // On this terminal, `skit edit` prints the placeholders that no parameter manages. The
+    // interface reports the edit in its status line instead, and the editor changes nothing.
     success.adapters.stdin_terminal.set(true);
     success.adapters.stdout_terminal.set(false);
     success.clear_transcript();
@@ -499,7 +501,11 @@ fn prompt_edit_drives_editor_terminal_output_and_raw_editor_failure() {
                 selector: "Editable prompt".to_owned(),
             })
             .unwrap(),
-        Action::Complete { .. }
+        Action::Complete {
+            ref message,
+            kind: skit_ui::StatusKind::Info,
+            ..
+        } if message == "No changes to Editable prompt."
     ));
     let observation = success.observe(&success.initial_state().unwrap()).unwrap();
     assert_eq!(
@@ -518,13 +524,6 @@ fn prompt_edit_drives_editor_terminal_output_and_raw_editor_failure() {
                 "editor": ["walker-editor", "--wait"],
                 "path": "<profile:fixture>/external/prompt.md",
                 "outcome": { "ok": true },
-            }),
-            json!({ "output": "success", "text": "Saved Editable prompt." }),
-            json!({ "terminal": "stdin", "result": true }),
-            json!({ "terminal": "stdout", "result": false }),
-            json!({
-                "output": "plain",
-                "text": "Detected but not yet managed: fresh (use --add to manage them)",
             }),
         ]
     );
