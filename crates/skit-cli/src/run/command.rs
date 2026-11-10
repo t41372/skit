@@ -272,6 +272,11 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) forget_args: bool,
 
+    /// The launch menu showed the extra-arguments box, so `extra_args` is the whole tail of this
+    /// run, also when the box is empty.
+    #[arg(skip)]
+    pub(crate) extra_args_from_menu: bool,
+
     /// Arguments after `--`.
     #[arg(last = true, value_name = "ARGS")]
     pub(crate) extra_args: Vec<String>,
@@ -575,7 +580,7 @@ pub(crate) fn run_with_services(
 
     let (extra_args, expand_extra, new_tail) = if args.raw {
         (args.extra_args.clone(), false, None)
-    } else if !args.extra_args.is_empty() {
+    } else if !args.extra_args.is_empty() || args.extra_args_from_menu {
         (
             args.extra_args.clone(),
             false,
@@ -586,7 +591,11 @@ pub(crate) fn run_with_services(
     } else {
         (saved.extra_args.clone(), saved.extra_args_raw, None)
     };
-    if !args.raw && args.extra_args.is_empty() && !args.forget_args && !saved.extra_args.is_empty()
+    if !args.raw
+        && args.extra_args.is_empty()
+        && !args.extra_args_from_menu
+        && !args.forget_args
+        && !saved.extra_args.is_empty()
     {
         services.output.diagnostic(&skit_i18n::format_text(
             services.invocation.locale,
@@ -2148,6 +2157,7 @@ mod tests {
                 plain: true,
                 raw: false,
                 forget_args: false,
+                extra_args_from_menu: false,
                 extra_args: Vec::new(),
             },
         )

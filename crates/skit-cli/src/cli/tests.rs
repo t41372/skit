@@ -1352,6 +1352,7 @@ fn interactive_runner_value_tracks_selection_separately_from_the_default() {
         plain: false,
         raw: false,
         forget_args: false,
+        extra_args_from_menu: false,
         extra_args: Vec::new(),
     };
     let baseline = BTreeMap::new();

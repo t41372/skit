@@ -36,6 +36,7 @@ const DELETE: &[u8] = b"\x1b[3~";
 const DOWN: &[u8] = b"\x1b[B";
 const ESCAPE: &[u8] = b"\x1b";
 const TAB: &[u8] = b"\t";
+const BACKSPACE: &[u8] = b"\x7f";
 
 /// A script that prints [`RUNNING`] when it starts, then waits until a key stops it.
 ///
@@ -89,11 +90,17 @@ impl Fixture {
 
     /// Add `source` to the library with `skit add` and the `flags`.
     fn add(&self, source: &Path, flags: &[&str]) {
-        let added = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
-            .arg("add")
-            .arg(source)
-            .args(flags)
-            .arg("--no-input")
+        let mut arguments = vec!["add", source.to_str().unwrap()];
+        arguments.extend(flags);
+        arguments.push("--no-input");
+        let added = self.output(&arguments);
+        assert!(added.status.success(), "{added:?}");
+    }
+
+    /// Run `skit` with `args` outside a terminal, in the directories of this session.
+    fn output(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+            .args(args)
             .current_dir(self.home.path())
             .env("NO_COLOR", "1")
             .env("SKIT_LANG", "en")
@@ -102,8 +109,7 @@ impl Fixture {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("HOME", self.home.path())
             .output()
-            .unwrap();
-        assert!(added.status.success(), "{added:?}");
+            .unwrap()
     }
 
     /// A library whose one command entry `Demo` runs `template` through `sh -c`.
@@ -973,6 +979,58 @@ fn an_add_that_cannot_remove_its_draft_reports_a_warning_until_the_next_key() {
         draft.exists(),
         "skit keeps the draft that it could not remove"
     );
+}
+
+// Ways this can fail: the launch menu takes an empty extra-arguments box as no answer, so the run
+// gets the remembered arguments again (version 0.4 runs with the box as it is:
+// `src/skit/tui_form.py:808-815`); skit says that it reuses them; the run also loses the value of
+// the field; or the run goes without the arguments, but skit still remembers them, so the next run
+// gets them again.
+#[test]
+fn an_emptied_extra_arguments_box_runs_without_the_remembered_arguments_and_forgets_them() {
+    // The command line shows `$((6*7))`, so only the output of the run holds `said-42`.
+    let fixture = Fixture::command("echo said-$((6*7))-{name}");
+    let first = fixture.output(&[
+        "run",
+        "demo",
+        "--set",
+        "name=world",
+        "--no-input",
+        "--",
+        "eee",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("said-42-world eee"),
+        "{first:?}"
+    );
+
+    let mut session = fixture.start();
+    session.send(b"\r");
+    session.screen_with("Run Demo");
+    // The name box has the focus. The next box shows the remembered arguments.
+    session.screen_with("eee");
+    session.send(TAB);
+    session.send(BACKSPACE);
+    session.send(BACKSPACE);
+    session.send(BACKSPACE);
+    session.screen_without("Run Demo", "eee");
+    session.send(b"\r");
+    let (code, history) = session.wait_exit();
+    assert_eq!(code, 0, "{history}");
+    // The screens of the launch menu showed the arguments, so read only the run.
+    let run = &history[history.find("── Run Demo ──").expect("the run header")..];
+    assert!(run.contains("said-42-world"), "{run}");
+    assert!(!run.contains("eee"), "{run}");
+    assert!(!run.contains("Reusing your last arguments"), "{run}");
+
+    let next = fixture.output(&["run", "demo", "--no-input"]);
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&next.stdout),
+        String::from_utf8_lossy(&next.stderr),
+    );
+    assert!(stdout.contains("said-42-world"), "{next:?}");
+    assert!(!stdout.contains("eee"), "{next:?}");
+    assert!(!stderr.contains("Reusing your last arguments"), "{next:?}");
 }
 
 // Ways this can fail: the preset picker shows a blank row for the last values, or a choice of a
