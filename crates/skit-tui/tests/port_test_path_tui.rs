@@ -1137,7 +1137,8 @@ fn test_picker_shows_only_the_parent_row_in_a_folder_it_cannot_read() {
 
     typed(&mut session, "d");
     assert_eq!(listing(&session), Vec::<(String, bool)>::new());
-    let _ = feed(&mut session, key(KeyCode::Esc));
+    let clear = Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(feed(&mut session, clear), Some(FilePickerEvent::Changed));
     only_parent(&mut session);
 
     let hidden = Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));

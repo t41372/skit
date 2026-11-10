@@ -67,12 +67,14 @@ const CTRL_H: &[u8] = b"\x08";
 const CTRL_K: &[u8] = b"\x0b";
 const CTRL_O: &[u8] = b"\x0f";
 const CTRL_S: &[u8] = b"\x13";
+const CTRL_T: &[u8] = b"\x14";
 const CTRL_U: &[u8] = b"\x15";
 const CTRL_V: &[u8] = b"\x16";
 const CTRL_W: &[u8] = b"\x17";
 const CTRL_X: &[u8] = b"\x18";
 const CTRL_Y: &[u8] = b"\x19";
 const CTRL_Z: &[u8] = b"\x1a";
+const ESCAPE: &[u8] = b"\x1b";
 
 /// The terminal row of the first launch-menu box: title, preset line, field label, top border.
 const NAME_ROW: u16 = 4;
@@ -281,6 +283,27 @@ impl Session {
         self.pty.wait_for_after_rendered(0, needle, |bytes| {
             final_terminal_screen(bytes, ROWS, COLUMNS)
         })
+    }
+
+    /// Click the primary button on the cell at `(row, column)`, counted from zero.
+    fn click(&mut self, row: u16, column: u16) {
+        let (row, column) = (row + 1, column + 1);
+        self.send(format!("\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m").as_bytes());
+    }
+
+    /// Wait until the screen no longer shows `needle`, and return the screen.
+    fn screen_without(&mut self, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let screen = self.screen();
+            if !screen.contains(needle) {
+                return screen;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the screen still shows {needle:?}:\n{screen}"
+            );
+        }
     }
 
     /// The screen as the terminal shows it now.
@@ -846,6 +869,73 @@ fn the_file_picker_search_box_takes_a_paste_and_every_editing_key_group() {
     assert!(
         screen.contains("Search") && !screen.contains("Press Ctrl+C again to quit"),
         "a key left the picker or armed the quit:\n{screen}"
+    );
+}
+
+// Ways this can fail: Esc with text in the Search box of the file picker only clears the box, so
+// the `[Esc] Cancel` chip does not do what it says; Esc puts the highlighted entry in the box;
+// Esc also closes the launch menu or the Add screen behind the picker; the `browse` chip opens
+// the closed picker again with its old search, so it shows no files, after Esc or after a click
+// on the `Esc Cancel` chip of the footer.
+#[test]
+fn esc_cancels_the_file_picker_also_when_its_search_box_has_text() {
+    let fixture = Fixture::new();
+    let mut session = fixture.launch_menu();
+    session.send(b"kept");
+    session.wait_box(NAME_ROW, BOX_COLUMN, "kept");
+    session.send(CTRL_T);
+    session.screen_with("File or folder…");
+    session.send(END);
+    session.send(ENTER);
+    session.screen_with("Show hidden files");
+    session.send(b"zz");
+    let screen = session.screen_with("No matching entries");
+    assert!(
+        screen.contains("[Esc] Cancel"),
+        "the picker does not show Esc as Cancel:\n{screen}"
+    );
+    session.send(ESCAPE);
+    let screen = session.screen_without("Show hidden files");
+    assert!(
+        screen.contains("Run Demo"),
+        "Esc left the launch menu:\n{screen}"
+    );
+
+    // The `browse` chip of the box opens a new picker with an empty Search box. The folder icon
+    // before the word takes two cells, so the click aims at the third letter of the word.
+    let browse = |session: &mut Session| {
+        let (row, column) = session.locate("browse");
+        session.click(row, column + 2);
+        let screen = session.screen_with("Show hidden files");
+        assert!(
+            !screen.contains("zz") && !screen.contains("No matching entries"),
+            "the picker opened again with the old search:\n{screen}"
+        );
+    };
+    browse(&mut session);
+
+    // A click on the `Esc Cancel` chip of the footer under the picker closes it the same way.
+    session.send(b"zz");
+    session.screen_with("No matching entries");
+    let (row, column) = session.locate("Esc Cancel");
+    session.click(row, column);
+    session.screen_without("Show hidden files");
+    browse(&mut session);
+    session.send(ESCAPE);
+    session.screen_without("Show hidden files");
+    session.wait_box(NAME_ROW, BOX_COLUMN, "kept");
+    assert_eq!(session.run_output(), "[kept|]");
+
+    let mut session = Session::start(fixture.command_builder(&["add"]), "Source path");
+    session.send(CTRL_O);
+    session.screen_with("Show hidden files");
+    session.send(b"zz");
+    session.screen_with("No matching entries");
+    session.send(ESCAPE);
+    let screen = session.screen_without("Show hidden files");
+    assert!(
+        screen.contains("Source path"),
+        "Esc left the Add screen:\n{screen}"
     );
 }
 

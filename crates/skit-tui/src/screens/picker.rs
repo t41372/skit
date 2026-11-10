@@ -1285,12 +1285,9 @@ impl FilePickerSession {
                 self.go_up();
                 Some(FilePickerEvent::Changed)
             }
-            KeyCode::Esc if self.query.value().is_empty() => Some(FilePickerEvent::Cancelled),
-            KeyCode::Esc => {
-                self.query.replace_text("");
-                self.sync_filter();
-                Some(FilePickerEvent::Changed)
-            }
+            // The footer shows Esc as Cancel, so Esc cancels also when the Search box has text.
+            // Version 0.4 does the same (`src/skit/tui_pathpick.py:285`). Ctrl+U clears the box.
+            KeyCode::Esc => Some(FilePickerEvent::Cancelled),
             _ => self.edit_query(&key),
         }
     }
@@ -2784,7 +2781,7 @@ mod tests {
             vec!["xz", "xa"]
         );
         assert_eq!(
-            session.handle_event(key(KeyCode::Esc), &geometry),
+            session.handle_event(key(KeyCode::Backspace), &geometry),
             Some(FilePickerEvent::Changed)
         );
         assert_eq!(
@@ -3701,7 +3698,7 @@ mod tests {
         );
         assert_eq!(
             directory.handle_event(key(KeyCode::Esc), &default_geometry),
-            Some(FilePickerEvent::Changed)
+            Some(FilePickerEvent::Cancelled)
         );
 
         let mut empty_file = FilePickerSession::new(PathPickerState::new(

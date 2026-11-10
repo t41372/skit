@@ -2569,6 +2569,10 @@ impl TuiSession {
         if !matches!(state.modal(), Some(ModalState::RunnerEditor { .. })) {
             self.runner_editor.reset_editors();
         }
+        // A launch-menu file picker opens fresh every time, also after a close by a footer chip.
+        if !matches!(state.modal(), Some(ModalState::RunFilePicker { .. })) {
+            self.run_modal.forget_file_picker();
+        }
         self.search.sync(state.query());
         if let Screen::Run(form) = state.screen() {
             self.run.sync(form);

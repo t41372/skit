@@ -419,6 +419,14 @@ impl RunModalSession {
         }
     }
 
+    /// Make the next file picker start again in its first folder with an empty Search box, as the
+    /// Add picker and version 0.4 do. Call this only while no file picker is open.
+    pub(crate) fn forget_file_picker(&mut self) {
+        if matches!(self.signature, Some(ModalSignature::File { .. })) {
+            self.signature = None;
+        }
+    }
+
     fn render_preset(
         &mut self,
         frame: &mut Frame,

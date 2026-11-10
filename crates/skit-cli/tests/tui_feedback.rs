@@ -826,8 +826,8 @@ fn the_hidden_files_chip_says_what_it_changes_during_a_search_that_starts_with_a
     let screen = session.screen_with("[Ctrl+H] Hide hidden files after this search");
     assert!(screen.contains("· .env"), "{screen}");
 
-    // Esc clears the search, and the setting now shows the hidden file.
-    session.send(ESCAPE);
+    // Ctrl+U clears the search, and the setting now shows the hidden file.
+    session.send(b"\x15");
     let screen = session.screen_without("[Ctrl+H] Hide hidden files", "after this search");
     assert!(screen.contains("· .env"), "{screen}");
 
