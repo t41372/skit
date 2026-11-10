@@ -28,7 +28,7 @@ skit                 # 打开菜单——选、填、跑
 
 你的 AI agent 也能用 skit：你从菜单操作，agent 走确定性的 CLI 和 skill—— AI 写完脚本存进去，之后也能轻松调用。
 
-<video src="https://github.com/user-attachments/assets/5eda5387-8f2b-45d7-aadd-ad334ede7f58" controls></video>
+<video src="https://github.com/user-attachments/assets/2a0c689f-659c-42e2-84b0-eef67afa37f0" controls></video>
 
 ### 界面
 

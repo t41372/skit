@@ -28,7 +28,7 @@ Not a terminal person? That is fine — skit works like a GUI app that happens t
 
 Your AI agent gets the same library: you use it from a menu, agents use it through a deterministic CLI and a skill, so scripts get saved and reused.
 
-<video src="https://github.com/user-attachments/assets/c992e855-965f-45c6-a746-6ef8a7a8ad40" controls></video>
+<video src="https://github.com/user-attachments/assets/3d69726e-914f-4384-bef9-02c1a176007e" controls></video>
 
 ### The interface
 
